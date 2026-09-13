@@ -2145,6 +2145,11 @@ export class SendspinOutput implements ZoneOutput {
      * A live stream has `duration` 0 or absent, and `seek_max_ms` is what tells the
      * client where the bar ends — offering `seek` without it would put a scrubber on
      * something that cannot be scrubbed.
+     *
+     * This says what the server can do, not what a given client can be told: a peer
+     * whose library predates these two enum values would reject the whole
+     * `server/state` over them, and node-sendspin filters that per connection on the
+     * way out. Nothing to gate here.
      */
     const seekMaxMs = this.resolveSeekMaxMs(zoneState);
     if (seekMaxMs !== null) {
