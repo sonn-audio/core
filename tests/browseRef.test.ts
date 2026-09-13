@@ -128,3 +128,39 @@ test('a container id resolves to a provider folder path for queue building', () 
   const localId = encodeContainerRef({ kind: 'album', service: 'library', folderId: 'library:album:1' });
   assert.equal(resolveUriFromRef(localId), 'library:album:1');
 });
+
+// Adding a second Spotify account renamed the service key from `spotify` to `spotify:AccountA`,
+// and the prefix was pasted in front of a folder id that already named its account. The queue
+// builder strips one leading `spotify:` and hands the rest to the provider, so what arrived was
+// `AccountA:spotify@AccountA:playlist:…` — recognised by nothing, expanded to zero tracks, and
+// then refused by Soloist as an unplayable URI. Tracks kept working because a playable ref is the
+// audiopath verbatim, which is exactly the shape a container should resolve to as well (#379).
+
+test('a Spotify folder id is not prefixed with a service key it already carries', () => {
+  for (const service of ['spotify', 'spotify:AccountA']) {
+    const id = encodeContainerRef({
+      kind: 'playlist',
+      service,
+      folderId: 'spotify@AccountA:playlist:0ok51BKsq8sS9ATr4StbNc',
+    });
+    assert.equal(resolveUriFromRef(id), 'spotify@AccountA:playlist:0ok51BKsq8sS9ATr4StbNc', service);
+  }
+});
+
+test('a multi-account service key is not pasted in front of an id that already has it', () => {
+  // The service-native providers spell the account the same way the key does, so the plain
+  // `startsWith` covers them — but only once the slug is part of the comparison.
+  const id = encodeContainerRef({
+    kind: 'playlist',
+    service: 'ytmusic:1ryw2i',
+    folderId: 'ytmusic:1ryw2i:playlist:VLPLabc',
+  });
+  assert.equal(resolveUriFromRef(id), 'ytmusic:1ryw2i:playlist:VLPLabc');
+});
+
+test('a bare folder id still gets its service prefix', () => {
+  // The whole point of the prefix: a provider folder id that names no service is unroutable
+  // without one.
+  const id = encodeContainerRef({ kind: 'category', service: 'spotify:AccountA', folderId: 'playlists' });
+  assert.equal(resolveUriFromRef(id), 'spotify:AccountA:playlists');
+});

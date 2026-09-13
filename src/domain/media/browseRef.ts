@@ -114,12 +114,41 @@ export function decodeBrowseRef(id: string): BrowseRef | null {
  * raw form has to keep working: it is what favourites, recents and `source.id` report.
  *
  * A container ref names a provider folder rather than a directly playable audiopath. Turn it
- * into the provider-prefixed folder path the queue builder already understands. Native local
- * folder ids can already carry their `library:` prefix, so do not prefix those twice.
+ * into the provider-prefixed folder path the queue builder already understands — unless the
+ * folder id already names its own service, in which case prefixing would name it twice.
  */
 export function resolveUriFromRef(uri: string): string {
   const ref = decodeBrowseRef(uri);
   if (!ref) return uri;
   if (ref.target === 'playable') return ref.audiopath;
-  return ref.folderId.startsWith(`${ref.service}:`) ? ref.folderId : `${ref.service}:${ref.folderId}`;
+  return namesItsOwnService(ref.folderId, ref.service)
+    ? ref.folderId
+    : `${ref.service}:${ref.folderId}`;
+}
+
+/**
+ * Whether a folder id already carries the identity the service key would add.
+ *
+ * Most providers emit ids in exactly the service-native form the key uses — `applemusic:playlist:…`
+ * under the key `applemusic`, `ytmusic:1ryw2i:playlist:…` under `ytmusic:1ryw2i` — and native local
+ * folder ids carry their own `library:` prefix. Those are the `startsWith` case.
+ *
+ * Spotify is the exception, and the reason this is a function. Its account providers are keyed by
+ * the Loxone provider id, so the ids they emit read `spotify@AccountA:playlist:…` while the
+ * browsable key reads `spotify`, or `spotify:AccountA` once a second account makes the bare name
+ * ambiguous. Prefixing produced `spotify:AccountA:spotify@AccountA:playlist:…`, and the queue
+ * builder strips only the leading `spotify:` from that — leaving the account slug in front of the
+ * folder id, which no provider recognises, so every playlist and album expanded to nothing the
+ * moment a second Spotify account existed (#379). Left alone, the id is the same `spotify@account:`
+ * form a track already plays from, which also names the account the content belongs to instead of
+ * falling back to the default one.
+ */
+function namesItsOwnService(folderId: string, service: string): boolean {
+  const id = folderId.toLowerCase();
+  const key = service.toLowerCase();
+  if (id.startsWith(`${key}:`)) {
+    return true;
+  }
+  const provider = key.split(':')[0] ?? '';
+  return provider.length > 0 && id.startsWith(`${provider}@`);
 }
