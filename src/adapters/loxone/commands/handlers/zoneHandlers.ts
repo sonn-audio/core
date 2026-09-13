@@ -475,6 +475,19 @@ async function audioRoomFavPlus(
 ) {
   const parts = splitCommand(command);
   const zoneId = parseNumberPart(parts[1], 0);
+  const state = zoneManager.getState(zoneId);
+
+  // Loxone describes this button as "double-click starts playback or chooses next favorite", and
+  // starting comes first: a zone sitting on a track it can resume is asking to be un-paused, not to
+  // be thrown onto a radio station. Keyed off `audiopath` because that is exactly what the resume
+  // path falls back to, so the check cannot promise a resume the zone then fails to perform. Without
+  // it, a zone with no room favourites answered the double-click with nothing at all (#381), which
+  // left only the single-click volume step visible.
+  if (state && state.mode !== 'play' && state.audiopath) {
+    zoneManager.handleCommand(zoneId, 'play');
+    return buildEmptyResponse(command);
+  }
+
   const favorites = await favoritesManager.get(zoneId);
   if (!favorites.items.length) {
     return buildEmptyResponse(command);
@@ -484,7 +497,6 @@ async function audioRoomFavPlus(
   if (!metadata) {
     return buildEmptyResponse(command);
   }
-  const state = zoneManager.getState(zoneId);
 
   const lastFavoriteId = metadata.lastFavoriteId as number | undefined;
   let currentIndex = -1;

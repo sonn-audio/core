@@ -170,7 +170,7 @@ export function registerRoutes(
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/playlist\/play\/.+$/, zoneHandlers.audioPlaylistPlay);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/library\/play\/.+$/, zoneHandlers.audioLibraryPlay);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/roomfav\/play\//, zoneHandlers.audioFavoritePlay);
-  router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/roomfav\/plus$/, zoneHandlers.audioRoomFavPlus);
+  router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/roomfav\/plus\/?$/, zoneHandlers.audioRoomFavPlus);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/playurl\/.+$/, zoneHandlers.audioPlayUrl);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/equalizersettings\/[^/]+\/?$/, zoneHandlers.audioEqualizerSettings);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/linein(?:\/.*)?$/, inputHandlers.audioLineIn);
