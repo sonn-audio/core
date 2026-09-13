@@ -1,5 +1,10 @@
 import type { PlaybackMetadata } from '@/ports/types/playback';
-import { createQueueItem, normalizeSpotifyAudiopath, sanitizeStation } from '@/application/zones/helpers/queueHelpers';
+import {
+  createQueueItem,
+  normalizeSpotifyAudiopath,
+  resolveSpotifyAccountId,
+  sanitizeStation,
+} from '@/application/zones/helpers/queueHelpers';
 import { clamp } from '@/application/zones/helpers/stateHelpers';
 import { isBridgeQueueService } from '@/domain/zones/audiopath';
 import type { QueueItem } from '@/ports/types/queueTypes';
@@ -82,7 +87,11 @@ export async function buildQueueForRequest(args: {
         request.zoneName,
         enrichedMetadata,
         queueAudioType,
-        content.getDefaultSpotifyAccountId(),
+        // The request still names its account; the normalized audiopath handed to createQueueItem
+        // no longer does. Without this the one row a failed lookup leaves behind carries the
+        // default account, and the track plays from the wrong one (#377).
+        resolveSpotifyAccountId(request.resolvedTarget) ??
+          content.getDefaultSpotifyAccountId(),
       ),
     ];
   if (request.isRadio) {

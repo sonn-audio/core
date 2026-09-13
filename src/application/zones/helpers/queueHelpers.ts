@@ -81,6 +81,28 @@ export function parseSpotifyUser(audiopath: string): string {
   return match?.[1] ?? 'nouser';
 }
 
+/**
+ * Which Spotify account a track is to be played from.
+ *
+ * The account lives in the audiopath only until the queue takes it: every row is stored
+ * normalized (`spotify:track:…`), and `spotify@AccountB:` is dropped on the way in — the row keeps
+ * the account in `user` instead. So reading the prefix alone answers this for a request as it
+ * arrives and for nothing afterwards, which is why a second account's track was played out of the
+ * first account's Soloist store (#377): by playback time the prefix was gone and the input fell
+ * back to its default account.
+ *
+ * `undefined` rather than `'nouser'` when neither says: the input reads that as "no account named"
+ * and picks its default, whereas `'nouser'` would be taken for an account id.
+ */
+export function resolveSpotifyAccountId(audiopath: string, queueUser?: string | null): string | undefined {
+  const fromUri = parseSpotifyUser(audiopath);
+  if (fromUri && fromUri !== 'nouser') {
+    return fromUri;
+  }
+  const fromQueue = queueUser?.trim();
+  return fromQueue && fromQueue !== 'nouser' ? fromQueue : undefined;
+}
+
 import { generateQueueId } from '@/shared/utils/queueId';
 export { generateQueueId };
 

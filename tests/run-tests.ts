@@ -19,6 +19,7 @@ import './serviceNativeIdentity.test';
 import './trackIdentity.test';
 import './appleMusicNewReleases.test';
 import './serviceNativeBoundary.test';
+import './spotifyAccountRouting.test';
 import './streamingServicesMigration.test';
 import './engine/rollingBuffer.test';
 import './engine/pcmFrameAligner.test';

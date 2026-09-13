@@ -47,7 +47,7 @@ import {
 import { handlePlaybackError as handlePlaybackErrorTransition } from '@/application/zones/playback/playbackErrors';
 import { updateOutputState as handleUpdateOutputState } from '@/application/zones/playback/outputStateUpdater';
 import { RadioParadiseBlockService } from '@/application/zones/radioparadise/radioParadiseBlockService';
-import { normalizeSpotifyAudiopath, parseSpotifyUser } from '@/application/zones/helpers/queueHelpers';
+import { normalizeSpotifyAudiopath, resolveSpotifyAccountId } from '@/application/zones/helpers/queueHelpers';
 
 type PlaybackCoordinatorDeps = {
   zones: ZoneRepository;
@@ -259,11 +259,10 @@ export class PlaybackCoordinator {
       isLocalQueueAuthority: this.isLocalQueueAuthority.bind(this),
       dispatchOutputs: this.dispatchOutputs.bind(this),
       startQueuePlayback: (...args) => this.startQueuePlayback(...args),
-      prefetchInputSource: (zoneId, audiopath) => {
+      prefetchInputSource: (zoneId, audiopath, queueUser) => {
         // Mirror executePlaybackPlan's account handling so the prefetched source
         // is keyed identically to the real start.
-        const parsedUser = parseSpotifyUser(audiopath);
-        const accountId = parsedUser && parsedUser !== 'nouser' ? parsedUser : undefined;
+        const accountId = resolveSpotifyAccountId(audiopath, queueUser);
         void this.inputsPort
           .prefetchPlaybackSourceForUri(zoneId, normalizeSpotifyAudiopath(audiopath), accountId)
           .catch(() => undefined);

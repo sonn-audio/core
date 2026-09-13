@@ -4,7 +4,7 @@ import type { ZoneAudioPreferences } from '@/application/playback/ZoneAudioPrefe
 import { applyPreferredPlaybackSettings } from '@/application/playback/PlaybackSettingsApplier';
 import type { PlaybackPlan } from '@/application/playback/types/PlaybackPlan';
 import type { ZoneContext } from '@/application/zones/internal/zoneTypes';
-import { normalizeSpotifyAudiopath, parseSpotifyUser } from '@/application/zones/helpers/queueHelpers';
+import { normalizeSpotifyAudiopath, resolveSpotifyAccountId } from '@/application/zones/helpers/queueHelpers';
 import type { ContentPort } from '@/ports/ContentPort';
 import type { InputsPort } from '@/ports/InputsPort';
 import type { ComponentLogger } from '@/shared/logging/logger';
@@ -84,10 +84,11 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
   }
 
   if (plan.playExternalLabel === 'spotify') {
-    const parsedUser = parseSpotifyUser(plan.audiopath);
-    // When the queue normalizes to `spotify:...`, parsing yields `nouser`. Never pass `nouser`
-    // to the spotify input, since it overrides the configured/default account selection.
-    const accountId = parsedUser && parsedUser !== 'nouser' ? parsedUser : undefined;
+    // The queue normalizes `spotify@AccountB:track:…` to `spotify:track:…`, so by the time a track
+    // is played the audiopath no longer names the account — the queue row does, in `user`. Asking
+    // the row first is what starts the second account in its own Soloist store instead of falling
+    // through to the default account's (#377).
+    const accountId = resolveSpotifyAccountId(plan.audiopath, findQueueUser(ctx, plan.audiopath));
     const seekPositionMs = normalizedStartAt ? Math.max(0, Math.round(normalizedStartAt * 1000)) : 0;
     const playbackSource = await inputs.getPlaybackSourceForUri(
       ctx.id,
@@ -118,4 +119,23 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
   }
 
   return ctx.player.playUri(plan.audiopath, plan.metadata, normalizedStartAt);
+}
+
+/**
+ * The account the queue recorded for this track, if it is still the track the queue is on.
+ *
+ * Matched on the audiopath rather than taken from the current index: a fast-start plays before the
+ * queue has been rebuilt, and answering with whatever the previous queue was on would name the
+ * wrong account.
+ */
+function findQueueUser(ctx: ZoneContext, audiopath: string): string | undefined {
+  const normalized = normalizeSpotifyAudiopath(audiopath);
+  const current = ctx.queueController.current();
+  if (current && normalizeSpotifyAudiopath(current.audiopath ?? '') === normalized) {
+    return current.user;
+  }
+  const match = ctx.queue.items.find(
+    (item) => normalizeSpotifyAudiopath(item.audiopath ?? '') === normalized,
+  );
+  return match?.user;
 }
