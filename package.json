@@ -67,7 +67,7 @@
   "dependencies": {
     "@sonn-audio/node-airplay": "^0.1.1",
     "@sonn-audio/node-googlecast": "^0.1.2",
-    "@sonn-audio/node-sendspin": "^0.6.1",
+    "@sonn-audio/node-sendspin": "^0.6.2",
     "@sonn-audio/node-slimproto": "0.1.4",
     "@sonn-audio/node-snapcast": "^0.2.2",
     "@sonn-audio/node-sonos": "^0.3.0",
