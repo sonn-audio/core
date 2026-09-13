@@ -53,6 +53,10 @@ export function buildSpotifyAuthLink(params: BuildLinkParams, configPort: Config
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
     state: encodeURIComponent(localCallbackUrl),
+    // Without this, Spotify silently reuses the browser's existing session and hands back a
+    // code for the account that is already linked, so a second account can only be added from
+    // a private window. The dialog is where the user picks or switches account.
+    show_dialog: 'true',
   });
 
   const link = `https://accounts.spotify.com/authorize?${paramsStr.toString()}`;
