@@ -447,3 +447,47 @@ test('spotify account provider trusts an empty page pathfinder could actually re
     global.fetch = originalFetch;
   }
 });
+
+test('spotify account provider pages a 120-row playlist window past the API limit (issue #380)', async () => {
+  const originalFetch = global.fetch;
+  const seenLimits: string[] = [];
+
+  global.fetch = (async (input: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.toString());
+    if (url.pathname !== '/v1/me/playlists') {
+      return json({ error: 'unexpected-url', url: url.toString() }, 404);
+    }
+
+    const offset = Number(url.searchParams.get('offset')) || 0;
+    const limit = Number(url.searchParams.get('limit')) || 0;
+    seenLimits.push(String(limit));
+    // Spotify's own behaviour: anything above 50 is refused outright.
+    if (limit > 50) {
+      return json({ error: { status: 400, message: 'Invalid limit' } }, 400);
+    }
+
+    const count = Math.max(0, Math.min(limit, 120 - offset));
+    return json({
+      total: 120,
+      items: Array.from({ length: count }, (_, i) => ({
+        id: `playlist-${offset + i}`,
+        name: `Playlist ${offset + i}`,
+        owner: { id: 'bianca' },
+        tracks: { total: 1 },
+      })),
+    });
+  }) as typeof fetch;
+
+  try {
+    const provider = newProvider();
+    const folder = await provider.getFolder('playlists', 0, 120);
+
+    assert.deepEqual(seenLimits, ['50', '50', '20'], 'the window is split into accepted pages');
+    assert.equal(folder?.items?.length, 120);
+    assert.equal(folder?.totalitems, 120);
+    assert.equal(folder?.items?.[0]?.name, 'Playlist 0');
+    assert.equal(folder?.items?.[119]?.name, 'Playlist 119');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

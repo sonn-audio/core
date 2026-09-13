@@ -86,6 +86,8 @@ const SPOTIFY_ROOT_FOLDERS: ReadonlyArray<{
 
 const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
 const SPOTIFY_HTTP_TIMEOUT_MS = 10_000;
+/** Every paged Web API endpoint caps `limit` at 50 and answers 400 "Invalid limit" above it. */
+const SPOTIFY_PAGE_MAX = 50;
 /** Spotify's stable "Music" browse hub: the source for "Popular Playlists" (the
  *  Features section). Its editorial playlists (New Music Friday NL, Hot Hits NL,
  *  …) match what the real audioserver shows there. */
@@ -690,23 +692,59 @@ export class SpotifyAccountProvider implements ContentProvider {
     return raw;
   }
 
+  /**
+   * Read `limit` entries from a paged Web API endpoint, in pages Spotify accepts.
+   * A browser window wider than 50 rows (the Loxone client asks for 120) becomes
+   * several 50-item requests instead of one that Spotify rejects with 400.
+   */
+  private async fetchPaged(
+    url: string,
+    offset: number,
+    limit: number,
+    fallbackLimit: number,
+    options?: { suppressWarn?: boolean },
+  ): Promise<{ items: any[]; total?: number }> {
+    const safeOffset = Math.max(0, offset || 0);
+    const safeLimit = Math.max(1, limit || fallbackLimit);
+    const collected: any[] = [];
+    let total: number | undefined;
+    let fetched = 0;
+
+    while (fetched < safeLimit) {
+      const pageLimit = Math.min(SPOTIFY_PAGE_MAX, safeLimit - fetched);
+      const data = await this.request<{ items?: any[]; total?: number }>(url, {
+        params: { offset: String(safeOffset + fetched), limit: String(pageLimit) },
+        suppressWarn: options?.suppressWarn,
+      });
+      if (total === undefined && typeof data?.total === 'number') {
+        total = data.total;
+      }
+      const items = Array.isArray(data?.items) ? data!.items : [];
+      if (items.length === 0) {
+        break;
+      }
+      collected.push(...items);
+      fetched += items.length;
+      if (items.length < pageLimit) {
+        break;
+      }
+    }
+
+    return { items: collected, total };
+  }
+
   private async fetchUserPlaylists(
     offset: number,
     limit: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    const data = await this.request<{ items?: any[]; total?: number }>(
-      `${SPOTIFY_API_BASE}/me/playlists`,
-      {
-        params: { offset: String(offset), limit: String(limit || 20) },
-      },
-    );
+    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/playlists`, offset, limit, 20);
 
-    const items = Array.isArray(data?.items) ? data!.items : [];
+    const items = data.items;
     const visible = items.filter((pl) => {
       const playlistId = typeof pl?.id === 'string' ? pl.id.trim() : '';
       return Boolean(playlistId);
     });
-    return { items: visible.map((pl) => this.mapPlaylist(pl)), total: data?.total ?? visible.length };
+    return { items: visible.map((pl) => this.mapPlaylist(pl)), total: data.total ?? visible.length };
   }
 
   private async fetchPlaylistTracks(
@@ -735,42 +773,21 @@ export class SpotifyAccountProvider implements ContentProvider {
     }
 
     // Fallback: Web API /items (owner-only since Feb 2026).
-    // Spotify caps /playlists/{id}/items at 50 items per request; chunk larger windows.
-    const SPOTIFY_PAGE_MAX = 50;
+    const data = await this.fetchPaged(
+      `${SPOTIFY_API_BASE}/playlists/${encodeURIComponent(playlistId)}/items`,
+      safeOffset,
+      safeLimit,
+      50,
+      { suppressWarn: true },
+    );
     const mapped: ContentFolderItem[] = [];
-    let total: number | undefined;
-    let fetched = 0;
-    while (fetched < safeLimit) {
-      const chunkLimit = Math.min(SPOTIFY_PAGE_MAX, safeLimit - fetched);
-      const data = await this.request<{ items?: any[]; total?: number }>(
-        `${SPOTIFY_API_BASE}/playlists/${encodeURIComponent(playlistId)}/items`,
-        {
-          params: {
-            offset: String(safeOffset + fetched),
-            limit: String(chunkLimit),
-          },
-          suppressWarn: true,
-        },
-      );
-      if (total === undefined && typeof data?.total === 'number') {
-        total = data.total;
-      }
-      const items = Array.isArray(data?.items) ? data!.items : [];
-      if (items.length === 0) {
-        break;
-      }
-      for (const entry of items) {
-        const track = (entry as any)?.item ?? (entry as any)?.track ?? entry;
-        if (track) {
-          mapped.push(this.mapTrack(track));
-        }
-      }
-      fetched += items.length;
-      if (items.length < chunkLimit) {
-        break;
+    for (const entry of data.items) {
+      const track = (entry as any)?.item ?? (entry as any)?.track ?? entry;
+      if (track) {
+        mapped.push(this.mapTrack(track));
       }
     }
-    return { items: mapped, total: total ?? mapped.length };
+    return { items: mapped, total: data.total ?? mapped.length };
   }
 
   private async fetchAlbumTracks(
@@ -794,36 +811,26 @@ export class SpotifyAccountProvider implements ContentProvider {
       `${SPOTIFY_API_BASE}/albums/${encodeURIComponent(albumId)}`,
     );
 
-    const data = await this.request<{ items?: any[]; total?: number }>(
+    const data = await this.fetchPaged(
       `${SPOTIFY_API_BASE}/albums/${encodeURIComponent(albumId)}/tracks`,
-      {
-        params: {
-          offset: String(offset),
-          limit: String(limit || 50),
-        },
-      },
+      offset,
+      limit,
+      50,
     );
-    const items = Array.isArray(data?.items) ? data!.items : [];
-    const mapped = items.map((track) => this.mapTrack(track, albumMeta || undefined));
-    return { items: mapped, total: data?.total ?? mapped.length };
+    const mapped = data.items.map((track) => this.mapTrack(track, albumMeta || undefined));
+    return { items: mapped, total: data.total ?? mapped.length };
   }
 
   private async fetchUserAlbums(
     offset: number,
     limit: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    const data = await this.request<{ items?: any[]; total?: number }>(
-      `${SPOTIFY_API_BASE}/me/albums`,
-      {
-        params: { offset: String(offset), limit: String(limit || 20) },
-      },
-    );
-    const items = Array.isArray(data?.items) ? data!.items : [];
-    const mapped = items
+    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/albums`, offset, limit, 20);
+    const mapped = data.items
       .map((entry) => entry?.album)
       .filter(Boolean)
       .map((album) => this.mapAlbum(album, true));
-    return { items: mapped, total: data?.total ?? mapped.length };
+    return { items: mapped, total: data.total ?? mapped.length };
   }
 
   private async fetchLikedSongs(
