@@ -87,6 +87,7 @@ import './soloistStores.test';
 import './pulseSoundCard.test';
 import './pulseSoundCardWire.test';
 import './soloistTransport.test';
+import './soloistConnectAdopt.test';
 import './deezerRetryStream.test';
 import './subsonicIds.test';
 import './subsonicResponse.test';

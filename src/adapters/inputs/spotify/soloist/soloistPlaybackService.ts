@@ -103,6 +103,15 @@ type ZoneRunner = {
   queue: { previous: string[]; upcoming: string[] };
   stream: Readable | null;
   /**
+   * Armed while an adoption is in flight.
+   *
+   * Adopting waits for the player's format before it opens anything, so `stream` is still null for
+   * as long as that takes. Every adopt below is edge-triggered except the one on `playing`, which
+   * keeps arriving while the app plays — without this, one takeover would start an adoption per
+   * event and each would open its own stream.
+   */
+  adopting: boolean;
+  /**
    * The level this zone and Soloist last agreed on.
    *
    * Both directions write it, which is what keeps them from chasing each other: a `set_volume` of
@@ -586,6 +595,7 @@ export class SoloistPlaybackService {
       currentTrack: null,
       queue: { previous: [], upcoming: [] },
       stream: null,
+      adopting: false,
       volume: null,
       volumeLatch: null,
     };
@@ -712,7 +722,15 @@ export class SoloistPlaybackService {
     if (event.status === 'playing') {
       // Playing something nobody here asked for means the zone was taken over from the Spotify
       // app. Adopting it is the whole of Connect: open the pipe and let the zone follow along.
-      if (uri && uri !== runner.currentUri) {
+      //
+      // A new uri is the ordinary way that shows up. The second test is for the room that is
+      // already labelled with the track it is meant to be playing and has nothing carrying it:
+      // `currentUri` was set by `track_changed` (or by an adoption that lost its stream since),
+      // so the uri never moves again and the app can no longer reach this room at all. Pause
+      // still worked, because that branch is unconditional — but every play, skip and seek came
+      // back here and did nothing. The room showed the right track, queue, position and volume
+      // and stayed silent until the server was restarted.
+      if ((uri && uri !== runner.currentUri) || !runner.stream) {
         void this.adoptConnectPlayback(zoneId, event);
       }
       return;
@@ -834,6 +852,24 @@ export class SoloistPlaybackService {
     if (!runner) {
       return;
     }
+    // One takeover, one stream. `waitForSpec` below can hold this open across several events, and
+    // the `playing` caller repeats for as long as the app plays.
+    if (runner.adopting) {
+      return;
+    }
+    runner.adopting = true;
+    try {
+      await this.adoptConnectPlaybackInner(zoneId, runner, event);
+    } finally {
+      runner.adopting = false;
+    }
+  }
+
+  private async adoptConnectPlaybackInner(
+    zoneId: number,
+    runner: ZoneRunner,
+    event: SoloistStateEvent,
+  ): Promise<void> {
     const track = readTrack(event.item);
     runner.owner = 'connect';
     runner.currentUri = track.uri ?? null;
