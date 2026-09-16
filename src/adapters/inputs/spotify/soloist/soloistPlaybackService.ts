@@ -732,7 +732,14 @@ export class SoloistPlaybackService {
       // and stayed silent until the server was restarted.
       if ((uri && uri !== runner.currentUri) || !runner.stream) {
         void this.adoptConnectPlayback(zoneId, event);
+        return;
       }
+      // A live stream already on this track: the app is resuming what it paused. The `paused`
+      // branch below pauses the zone unconditionally and nothing here ever started it again, so a
+      // room paused from the app stayed paused while Soloist played on — the same silence as
+      // above, reached from the other side. `resumePlayback` is a no-op once the session is
+      // playing, which is what makes it safe on an event the app repeats while the music runs.
+      this.controller?.resumePlayback(zoneId);
       return;
     }
     if (event.status === 'paused') {

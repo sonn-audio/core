@@ -59,6 +59,7 @@ function serviceWithRunner(runner: Record<string, unknown>): {
   internals: Internals;
   opened: () => number;
   started: () => number;
+  resumed: () => number;
   releaseSpec: () => void;
 } {
   const service = new SoloistPlaybackService(fakeConfigPort());
@@ -67,6 +68,7 @@ function serviceWithRunner(runner: Record<string, unknown>): {
 
   let openedCount = 0;
   let startedCount = 0;
+  let resumedCount = 0;
   let release = (): void => {};
   const specReached = new Promise<void>((resolve) => {
     release = resolve;
@@ -85,6 +87,9 @@ function serviceWithRunner(runner: Record<string, unknown>): {
     updateMetadata: () => {},
     updateTiming: () => {},
     pausePlayback: () => {},
+    resumePlayback: () => {
+      resumedCount += 1;
+    },
     stopPlayback: () => {},
   };
 
@@ -93,6 +98,7 @@ function serviceWithRunner(runner: Record<string, unknown>): {
     internals,
     opened: () => openedCount,
     started: () => startedCount,
+    resumed: () => resumedCount,
     releaseSpec: release,
   };
 }
@@ -124,6 +130,20 @@ test('a room already carrying its track is left alone', () => {
   }
 
   assert.equal(opened(), 0, 'nothing is reopened under a stream that is already there');
+});
+
+test('a room the app paused is started again when the app resumes it', () => {
+  // The other half of the same silence. `paused` pauses the zone unconditionally, and nothing on
+  // the way back ever told it to carry on — so a room paused from the app stayed paused while
+  // Soloist played to nobody. Safe to send on every `playing` because a session already playing
+  // ignores it.
+  const stream = Readable.from([]);
+  const { internals, resumed } = serviceWithRunner(connectedRunner({ stream }));
+
+  internals.onEvent(ZONE, { type: 'playback_state', status: 'paused', item: { uri: URI } });
+  internals.onEvent(ZONE, playing);
+
+  assert.equal(resumed(), 1, 'the zone is told to carry on');
 });
 
 test('one takeover opens one stream, however many times it is announced', async () => {
