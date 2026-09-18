@@ -193,3 +193,75 @@ test('a room the app is playing through keeps its daemon', () => {
   assert.deepEqual(stopped, []);
   assert.equal((service as unknown as { runners: Map<number, unknown> }).runners.size, 1);
 });
+
+/**
+ * A room the Spotify app is asking for sound in, that has none.
+ *
+ * Adoption used to be gated on the track having changed, which is not the same question. The app
+ * says `playing` for the track a room already believes is current every time somebody resumes it,
+ * and the labels, queue and position keep arriving either way — so a room whose stream had gone
+ * displayed perfect playback and stayed silent, with no event left that could open the pipe. #383.
+ */
+
+function withConnectRunner(state: { currentUri: string | null; stream: unknown }): {
+  service: SoloistPlaybackService;
+  runner: { currentUri: string | null; stream: unknown; currentTrack: unknown };
+  adopted: string[];
+  fire: (event: Record<string, unknown>) => void;
+} {
+  const service = new SoloistPlaybackService(
+    fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } }, zones: [{ id: 1 }] }),
+  );
+  const adopted: string[] = [];
+  const runner = {
+    owner: 'connect',
+    currentUri: state.currentUri,
+    currentTrack: { id: 'x' },
+    stream: state.stream,
+    track: null,
+    queue: { previous: [], upcoming: [] },
+    volume: null,
+    volumeLatch: null,
+    ws: { isActive: true, isLoggedIn: true, requestQueue: () => undefined },
+  };
+  (service as unknown as { runners: Map<number, unknown> }).runners.set(1, runner);
+  (service as unknown as { adoptConnectPlayback: unknown }).adoptConnectPlayback = (
+    _zoneId: number,
+    event: { item?: { uri?: string } },
+  ): Promise<void> => {
+    adopted.push(event.item?.uri ?? '');
+    return Promise.resolve();
+  };
+  const internals = service as unknown as { onEvent: (id: number, event: unknown) => void };
+  return { service, runner, adopted, fire: (event) => internals.onEvent(1, event) };
+}
+
+test('playing with nothing carrying the audio is adopted, same track or not', () => {
+  const { adopted, fire } = withConnectRunner({ currentUri: 'spotify:track:same', stream: null });
+  fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  assert.deepEqual(adopted, ['spotify:track:same']);
+});
+
+test('playing the track that is already sounding is left alone', () => {
+  // The app reports `playing` continually while a room plays; acting on those would tear the
+  // stream down and open it again under every one of them.
+  const { adopted, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  assert.deepEqual(adopted, []);
+});
+
+test('the stream going takes what it was playing with it', () => {
+  // The other half of #383: a room stopped here kept the app's last track on the runner, so the
+  // app resuming that same track read as "already current" and never reached the adopt above.
+  const { service, runner } = withConnectRunner({
+    currentUri: 'spotify:track:old',
+    stream: { destroy: () => undefined },
+  });
+  (service as unknown as { finishTrack: (id: number) => void }).finishTrack(1);
+  assert.equal(runner.currentUri, null);
+  assert.equal(runner.currentTrack, null);
+  assert.equal(runner.stream, null);
+});

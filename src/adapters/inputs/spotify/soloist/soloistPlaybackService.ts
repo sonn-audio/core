@@ -712,7 +712,13 @@ export class SoloistPlaybackService {
     if (event.status === 'playing') {
       // Playing something nobody here asked for means the zone was taken over from the Spotify
       // app. Adopting it is the whole of Connect: open the pipe and let the zone follow along.
-      if (uri && uri !== runner.currentUri) {
+      //
+      // A missing stream counts as much as a new track. The app says `playing` for a track this
+      // room already believes is current whenever somebody resumes it, and if nothing is carrying
+      // the audio then that is precisely the room the app is asking for sound in and cannot get
+      // any: the labels, queue and position all keep arriving, so the zone looks alive while it
+      // is silent, and no later event ever reaches a path that would open the pipe. See #383.
+      if ((uri && uri !== runner.currentUri) || !runner.stream) {
         void this.adoptConnectPlayback(zoneId, event);
       }
       return;
@@ -925,6 +931,11 @@ export class SoloistPlaybackService {
     const stream = runner.stream;
     runner.stream = null;
     stream?.destroy();
+    // What the app was playing described the stream that just went, so it goes with it. Left
+    // behind, it makes the room claim a track it is not playing: the app resuming that same track
+    // reads as "already current", and the room stays silent under a perfectly correct display.
+    runner.currentUri = null;
+    runner.currentTrack = null;
     // Whatever arrives from here on belongs to the track that is over.
     this.audio.discardPending(zoneId);
   }
