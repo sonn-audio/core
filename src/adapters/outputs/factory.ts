@@ -274,6 +274,9 @@ function createAirplayOutput(
   const debug = extras?.debug;
   const et = extras?.et;
   const md = extras?.md;
+  const features = extras?.features;
+  const flags = extras?.flags;
+  const model = extras?.model;
   const latencyMs = extras?.latencyMs;
   const rawBufferMs = extras?.bufferMs;
   const bufferMs =
@@ -293,6 +296,9 @@ function createAirplayOutput(
       debug: typeof debug === 'boolean' ? debug : undefined,
       et: typeof et === 'string' ? et : undefined,
       md: typeof md === 'string' ? md : undefined,
+      features: typeof features === 'string' ? features : undefined,
+      flags: typeof flags === 'string' ? flags : undefined,
+      model: typeof model === 'string' ? model : undefined,
       latencyMs: typeof latencyMs === 'number' ? latencyMs : undefined,
       bufferMs: Number.isFinite(bufferMs) ? bufferMs : undefined,
     },

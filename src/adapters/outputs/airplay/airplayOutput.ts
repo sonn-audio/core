@@ -3,7 +3,8 @@ import type { PassThrough } from 'node:stream';
 import type { PlaybackSession } from '@/ports/types/playback';
 import { zoneSessionKey } from '@/ports/types/SessionKey';
 import type { PreferredOutput, OutputConfigDefinition, ZoneOutput } from '@/ports/OutputsTypes';
-import { Ap2Sender, computeGroupAnchorNtp } from '@/adapters/outputs/airplay/ap2Sender';
+import { computeGroupAnchorNtp } from '@/adapters/outputs/airplay/ap2Sender';
+import { AirplayLaneSender } from '@/adapters/outputs/airplay/laneSender';
 import type { AirplaySender } from '@/adapters/outputs/airplay/airplaySender';
 import { AirplayStreamSession } from '@/adapters/outputs/airplay/airplayStreamSession';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
@@ -19,6 +20,16 @@ export interface AirPlayOutputConfig {
   et?: string;
   /** Device metadata capabilities (mDNS TXT `md`), resolved by the AdminUI picker. */
   md?: string;
+  /**
+   * What the device advertises about itself (mDNS TXT `features`/`ft`, `flags`/
+   * `sf`, `model`/`am`), resolved by the AdminUI picker. This is what says
+   * whether the device speaks AirPlay 2 at all, and so which lane to open; a
+   * config saved before these were recorded simply has the AirPlay 2 handshake
+   * tried first.
+   */
+  features?: string;
+  flags?: string;
+  model?: string;
   /** Multiroom sync offset (ms) for this output; positive = plays later. NOT the buffer. */
   latencyMs?: number;
   /**
@@ -131,11 +142,16 @@ export class AirPlayOutput implements ZoneOutput {
     private readonly ports: OutputPorts,
     initialVolume?: number,
   ) {
-    this.sender = new Ap2Sender(
+    this.sender = new AirplayLaneSender(
       {
         host: config.host.trim(),
         ...(typeof config.port === 'number' ? { port: config.port } : {}),
         ...(config.password?.trim() ? { password: config.password.trim() } : {}),
+        ...(config.et ? { et: config.et } : {}),
+        ...(config.features ? { features: config.features } : {}),
+        ...(config.flags ? { flags: config.flags } : {}),
+        ...(config.model ? { model: config.model } : {}),
+        ...(Number.isFinite(config.bufferMs) ? { bufferMs: config.bufferMs } : {}),
         name: zoneName,
         onUnavailable: (reason: string) => this.handleSenderUnavailable(reason),
       },

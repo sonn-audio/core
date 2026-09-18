@@ -54,6 +54,7 @@ import './sonnClientApi.test';
 import './beoremoteKeys.test';
 import './localLibraryStore.rollup.test';
 import './airplayAdvertisement.test';
+import './airplayLane.test';
 import './mdnsAdvertisedAddresses.test';
 import './lineInCommandQueue.test';
 import './lineInActivationService.test';

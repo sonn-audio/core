@@ -15,6 +15,7 @@ import {
 import { ntpNow } from '@sonn-audio/node-airplay';
 import { createLogger } from '@/shared/logging/logger';
 import type { AirplaySender } from '@/adapters/outputs/airplay/airplaySender';
+import { PcmRing } from '@/adapters/outputs/airplay/pcmRing';
 
 const SAMPLE_RATE = 44_100;
 const BYTES_PER_FRAME = 4; // s16le stereo
@@ -41,24 +42,6 @@ const LEAD_MS = 500;
  */
 const PRIME_MS = 400;
 const SEND_TICK_MS = 4;
-/**
- * Backpressure bounds. The engine produces faster than realtime, so without
- * these the ring simply grows — and everything in it is audio the listener has
- * to sit through before a skip is heard. Measured before this existed: a track
- * change kept playing the old track for the best part of ten seconds.
- *
- * The window is deliberately wide and sits well above {@link PRIME_MS}. A LIVE
- * source — an AirPlay input feeding this output — never stops for a paused
- * reader, so every pause simply pushes the backlog one buffer upstream and the
- * input logs a failed write for every packet that arrives meanwhile. Priming to
- * the pause threshold made that permanent. With this spacing a realtime source
- * settles below the gate and never trips it, while a source that genuinely runs
- * fast is still held. MAX_RING_BYTES is the last-resort cap for one that ignores
- * both.
- */
-const PAUSE_RING_BYTES = Math.round(SAMPLE_RATE * BYTES_PER_FRAME * 1.2);
-const RESUME_RING_BYTES = Math.round(SAMPLE_RATE * BYTES_PER_FRAME * 0.7);
-const MAX_RING_BYTES = SAMPLE_RATE * BYTES_PER_FRAME * 3;
 
 /**
  * One PTP grandmaster for the whole process.
@@ -155,10 +138,7 @@ export class Ap2Sender implements AirplaySender {
   private sender: RealtimeSender | null = null;
   private ptp: PtpEngine | null = null;
 
-  private source: NodeJS.ReadableStream | null = null;
-  private onData: ((chunk: Buffer) => void) | null = null;
-  private readonly ring: Buffer[] = [];
-  private ringBytes = 0;
+  private readonly ring = new PcmRing();
 
   private sendTimer: NodeJS.Timeout | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
@@ -167,7 +147,6 @@ export class Ap2Sender implements AirplaySender {
   private currentVolume = 30;
   private starting = false;
   private paused = false;
-  private sourcePaused = false;
   /** Wall-clock instant the first sample must be audible, for a synced group. */
   private groupStartUnixMs: number | null = null;
   private ntpResponder: NtpTimingResponder | null = null;
@@ -191,7 +170,7 @@ export class Ap2Sender implements AirplaySender {
     this.paused = false;
 
     if (this.sender) {
-      this.attachSource(source);
+      this.ring.attach(source);
       return true;
     }
     if (this.starting) {
@@ -201,11 +180,11 @@ export class Ap2Sender implements AirplaySender {
     try {
       // Fill the ring FIRST: the session must not sit idle after its stream
       // SETUP (see PRIME_MS).
-      this.attachSource(source);
-      const primed = await this.waitForPrime();
+      this.ring.attach(source);
+      const primed = await this.ring.waitForPrime(PRIME_MS);
       if (!primed) {
         this.log.warn('no PCM arrived; not opening an AirPlay 2 session', this.context);
-        this.detachSource();
+        this.ring.detach();
         return false;
       }
       return await this.openSession();
@@ -255,7 +234,7 @@ export class Ap2Sender implements AirplaySender {
 
   public resume(source: NodeJS.ReadableStream): void {
     this.paused = false;
-    this.attachSource(source);
+    this.ring.attach(source);
     if (this.sender) {
       this.startSendLoop();
     }
@@ -266,8 +245,8 @@ export class Ap2Sender implements AirplaySender {
     // previous track's tail over the new one. What the receiver already holds
     // (up to LEAD_MS) still plays out — the realtime path has no flush yet, so
     // the lead is what bounds that.
-    this.clearRing();
-    this.attachSource(source);
+    this.ring.clear();
+    this.ring.attach(source);
   }
 
   public async setVolume(volume: number): Promise<void> {
@@ -340,8 +319,8 @@ export class Ap2Sender implements AirplaySender {
 
   public stop(): void {
     this.stopSendLoop();
-    this.detachSource();
-    this.clearRing();
+    this.ring.detach();
+    this.ring.clear();
     this.sender?.stop();
     this.sender = null;
     this.connection?.close();
@@ -486,95 +465,6 @@ export class Ap2Sender implements AirplaySender {
 
   // -- audio -----------------------------------------------------------------
 
-  private attachSource(source: NodeJS.ReadableStream): void {
-    if (this.source === source) {
-      return;
-    }
-    this.detachSource();
-    this.source = source;
-    this.onData = (chunk: Buffer): void => {
-      if (this.ringBytes >= MAX_RING_BYTES) {
-        return;
-      }
-      this.ring.push(chunk);
-      this.ringBytes += chunk.length;
-      if (!this.sourcePaused && this.ringBytes >= PAUSE_RING_BYTES) {
-        this.sourcePaused = true;
-        this.source?.pause();
-      }
-    };
-    source.on('data', this.onData);
-    this.sourcePaused = false;
-  }
-
-  private detachSource(): void {
-    if (this.source && this.onData) {
-      this.source.removeListener('data', this.onData);
-    }
-    this.source = null;
-    this.onData = null;
-    this.sourcePaused = false;
-  }
-
-  private clearRing(): void {
-    this.ring.length = 0;
-    this.ringBytes = 0;
-  }
-
-  private async waitForPrime(): Promise<boolean> {
-    // Below PAUSE_RING_BYTES by construction, so priming never trips the
-    // backpressure gate it shares a ring with.
-    const target = Math.min(
-      PAUSE_RING_BYTES,
-      Math.ceil((PRIME_MS / 1000) * SAMPLE_RATE) * BYTES_PER_FRAME,
-    );
-    const deadline = Date.now() + 15_000;
-    while (this.ringBytes < target && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return this.ringBytes > 0;
-  }
-
-  /**
-   * Let the source run again once the ring has drained enough.
-   *
-   * This must be reachable on EVERY path through the reader, not only after a
-   * successful read: a ring that empties while the source is paused would
-   * otherwise never resume it, and the stall propagates all the way back up the
-   * chain — a live AirPlay input then fills its whole buffer and reports a
-   * failed write for every packet that arrives.
-   */
-  private maybeResume(): void {
-    if (this.sourcePaused && this.ringBytes <= RESUME_RING_BYTES) {
-      this.sourcePaused = false;
-      this.source?.resume();
-    }
-  }
-
-  private takePacket(): Buffer | null {
-    if (this.ringBytes < BYTES_PER_PACKET) {
-      this.maybeResume();
-      return null;
-    }
-    const parts: Buffer[] = [];
-    let needed = BYTES_PER_PACKET;
-    while (needed > 0) {
-      const head = this.ring[0] as Buffer;
-      if (head.length <= needed) {
-        parts.push(head);
-        needed -= head.length;
-        this.ring.shift();
-      } else {
-        parts.push(head.subarray(0, needed));
-        this.ring[0] = head.subarray(needed);
-        needed = 0;
-      }
-    }
-    this.ringBytes -= BYTES_PER_PACKET;
-    this.maybeResume();
-    return Buffer.concat(parts);
-  }
-
   private startSendLoop(): void {
     if (this.sendTimer) {
       return;
@@ -593,8 +483,8 @@ export class Ap2Sender implements AirplaySender {
       }
       this.log.debug('ap2 sender state', {
         ...this.context,
-        ringMs: Math.round((this.ringBytes / (SAMPLE_RATE * BYTES_PER_FRAME)) * 1000),
-        sourcePaused: this.sourcePaused,
+        ringMs: this.ring.bufferedMs,
+        sourcePaused: this.ring.isSourcePaused,
         packetsSent: sender.packetsSent,
         rtxAnswered: sender.rtxAnswered,
         timing: this.timing,
@@ -632,7 +522,7 @@ export class Ap2Sender implements AirplaySender {
     const elapsedFrames = ((Date.now() - this.startedAt) / 1000) * SAMPLE_RATE;
     const dueFrames = elapsedFrames + (LEAD_MS / 1000) * SAMPLE_RATE;
     while (this.packetsDue * FRAMES_PER_PACKET < dueFrames) {
-      const pcm = this.takePacket();
+      const pcm = this.ring.take(BYTES_PER_PACKET);
       if (!pcm) {
         return; // nothing to send yet; the clock will catch us up
       }
