@@ -24,7 +24,7 @@
     "fetch:player": "node scripts/fetch-player-dist.mjs",
     "build": "rimraf ./dist && tsc && tsc-alias -p tsconfig.json && npm run fetch:admin && npm run fetch:player",
     "start": "node dist/server.js",
-    "test": "npm run typecheck && npm run depcheck && ts-node --transpile-only tests/run-tests.ts",
+    "test": "npm run typecheck && npm run depcheck && ts-node --transpile-only tests/supervise.ts",
     "prepare": "husky .husky"
   },
   "engines": {

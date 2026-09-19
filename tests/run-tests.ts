@@ -52,6 +52,7 @@ import './beoremoteMenu.test';
 import './beoremoteApi.test';
 import './sonnClientApi.test';
 import './beoremoteKeys.test';
+import './nodeVersionGuard.test';
 import './localLibraryStore.rollup.test';
 import './airplayAdvertisement.test';
 import './airplayLane.test';
@@ -1291,10 +1292,26 @@ async function withTimeout(name: string, fn: TestFn): Promise<void> {
   }
 }
 
+/*
+ * When tests/supervise.ts started us there is an IPC channel on fd 3. Announcing
+ * each test before it runs is the only way a crash that kills this process — a
+ * native addon's segfault, say — can still be attributed to a test: no handler
+ * here survives a signal, but the parent has the last breadcrumb. Unref the
+ * channel so it does not hold the event loop open, which would turn the
+ * never-settles failure above into a hang instead of an early exit.
+ */
+process.channel?.unref();
+const announce = process.send
+  ? (index: number, name: string) => {
+      process.send?.({ type: 'test:start', index, name, total: tests.length });
+    }
+  : () => {};
+
 async function run(): Promise<void> {
   let failures = 0;
-  for (const { name, fn } of tests) {
+  for (const [index, { name, fn }] of tests.entries()) {
     try {
+      announce(index, name);
       await withTimeout(name, fn);
       console.log(`ok - ${name}`);
     } catch (error) {
