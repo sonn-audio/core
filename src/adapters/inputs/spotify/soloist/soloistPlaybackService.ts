@@ -228,13 +228,16 @@ export class SoloistPlaybackService {
    */
   private readonly orphanRuns = new Map<number, SoloistTrackRun>();
   /**
-   * Runs that have been told to stop but may not have gone yet, per room.
+   * Runs that have been told to stop but may not have gone yet, per account.
    *
    * A data directory holds a lock, so the next track cannot start from the same account until the
    * previous process has actually exited. Killing it is not the same as it having gone: measured,
    * a run spawned straight after a kill is refused outright — which is what a skip looked like.
+   *
+   * Kept by account rather than by room, because the store is the account's: a run put down in one
+   * room is exactly what the next room has to wait for when it asks for that same account.
    */
-  private readonly draining = new Map<number, Promise<void>>();
+  private readonly draining = new Map<string, Promise<void>>();
   /** Why the last track would not start, so the screen can say something better than "no". */
   private lastFailure: TrackRunFailure | null = null;
   private readonly starting = new Map<number, Promise<ZoneRunner | null>>();
@@ -921,8 +924,9 @@ export class SoloistPlaybackService {
     }
     this.orphanRuns.delete(zoneId);
     if (track) {
-      // Kept so the next track can wait for the store rather than being refused it.
-      this.draining.set(zoneId, track.stop());
+      // Kept so the next track can wait for the store rather than being refused it — under the
+      // account, since that is whose directory is being let go of.
+      this.draining.set(track.accountId, track.stop());
     }
     if (!runner) {
       this.audio.discardPending(zoneId);
@@ -968,13 +972,10 @@ export class SoloistPlaybackService {
     // pickable in the app, and from here on nothing it says is about this room's music.
     const runner = this.runners.get(zoneId);
     this.finishTrack(zoneId);
-    // The previous run's store is the same directory this one needs, and its lock outlives the
-    // kill by a moment. Waiting here is what makes a skip work.
-    const draining = this.draining.get(zoneId);
-    if (draining) {
-      this.draining.delete(zoneId);
-      await draining;
-    }
+    // The store this run needs is the account's, and its lock outlives the kill by a moment —
+    // whether the room letting go is this one or another. Waiting here is what makes a skip work,
+    // and what makes an account follow a listener from one room to the next.
+    await this.releaseAccount(account, zoneId);
     if (runner) {
       runner.owner = 'queue';
       runner.currentTrack = null;
@@ -1010,9 +1011,10 @@ export class SoloistPlaybackService {
       });
     let started = await start();
     if (!started.ok && started.failure === 'store_busy') {
-      // Another room may have stopped a moment ago and still be letting go. Tried once more, and
-      // then left alone: a store that is still busy belongs to a room that is playing, and taking
-      // it would stop that room's music to start this one.
+      // Every run this server knows of has been put down and waited for by now, so a store still
+      // held is one taking longer to let go than its budget allowed — or a stray process from a
+      // previous life of this server. One more try, and then the room is told rather than left
+      // retrying a directory that may never come free.
       await new Promise((resolve) => setTimeout(resolve, STORE_WAIT_MS));
       started = await start();
     }
@@ -1091,6 +1093,51 @@ export class SoloistPlaybackService {
     }
     this.log.warn('spotify playback stopped for this room', { zoneId, uri, detail: end.detail });
     this.controller?.transport(zoneId, 'stop');
+  }
+
+  /**
+   * Free an account's store, wherever it is being held, and wait until it is actually free.
+   *
+   * A store belongs to an account and not to a room: one directory, one lock, one run at a time.
+   * So a room asking for an account another room is holding is a move, not a second stream — the
+   * same thing the Spotify app does when you pick another speaker — and the only way to honour it
+   * is to put the other room's run down first. A paused room in particular holds its run for as
+   * long as it stays paused, which is how starting the same account elsewhere used to sit there
+   * being refused the directory until something else happened to end it.
+   *
+   * The waiting is the point: the lock outlives the kill, so letting go and having let go are not
+   * the same moment.
+   */
+  private async releaseAccount(accountId: string, forZoneId: number): Promise<void> {
+    for (const [zoneId, run] of this.trackRuns()) {
+      if (zoneId === forZoneId || run.accountId !== accountId) {
+        continue;
+      }
+      this.log.info('an account is moving to another room', {
+        account: accountId,
+        from: zoneId,
+        to: forZoneId,
+      });
+      this.finishTrack(zoneId);
+      // The room that lost the account is left showing a track nothing is sending it any more, so
+      // it is told. Nobody else is going to: this is not a stop it asked for.
+      this.controller?.transport(zoneId, 'stop');
+    }
+    const draining = this.draining.get(accountId);
+    if (draining) {
+      this.draining.delete(accountId);
+      await draining;
+    }
+  }
+
+  /** Every track run this server is holding, whichever of the two places it is kept in. */
+  private *trackRuns(): Iterable<[number, SoloistTrackRun]> {
+    for (const [zoneId, runner] of this.runners) {
+      if (runner.track) {
+        yield [zoneId, runner.track];
+      }
+    }
+    yield* this.orphanRuns;
   }
 
   /** The run carrying this room's queue, wherever it is being kept. */

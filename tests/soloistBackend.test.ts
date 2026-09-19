@@ -265,3 +265,121 @@ test('the stream going takes what it was playing with it', () => {
   assert.equal(runner.currentTrack, null);
   assert.equal(runner.stream, null);
 });
+
+/**
+ * Moving one account from room to room (#388).
+ *
+ * The store is the account's, not the room's: one directory, one lock, one run. So a room paused
+ * on an account holds that account's directory for as long as it stays paused, and the room that
+ * asks for it next has to take it — and, because the lock outlives the kill, wait for it to
+ * actually be let go of before spawning into it.
+ */
+
+type FakeRun = {
+  accountId: string;
+  uri: string;
+  stopped: boolean;
+  stop: () => Promise<void>;
+};
+
+function fakeRun(accountId: string, release: Promise<void> = Promise.resolve()): FakeRun {
+  const run: FakeRun = {
+    accountId,
+    uri: `spotify:track:${accountId}`,
+    stopped: false,
+    stop: () => {
+      run.stopped = true;
+      return release;
+    },
+  };
+  return run;
+}
+
+function withRuns(): {
+  service: SoloistPlaybackService;
+  orphans: Map<number, FakeRun>;
+  draining: Map<string, Promise<void>>;
+  stops: number[];
+  release: (accountId: string, forZoneId: number) => Promise<void>;
+} {
+  const service = new SoloistPlaybackService(
+    fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } } }),
+  );
+  const stops: number[] = [];
+  const internals = service as unknown as {
+    orphanRuns: Map<number, FakeRun>;
+    draining: Map<string, Promise<void>>;
+    controller: unknown;
+    releaseAccount: (accountId: string, forZoneId: number) => Promise<void>;
+  };
+  internals.controller = {
+    transport: (zoneId: number, action: string) => {
+      if (action === 'stop') {
+        stops.push(zoneId);
+      }
+    },
+  };
+  return {
+    service,
+    orphans: internals.orphanRuns,
+    draining: internals.draining,
+    stops,
+    release: (accountId, forZoneId) => internals.releaseAccount(accountId, forZoneId),
+  };
+}
+
+test('an account paused in one room is let go of when another room asks for it', async () => {
+  // The reported case. Zone 1 is paused on AccountB — its run is alive and holding the store — and
+  // zone 2 asking for AccountB used to be refused the directory until something else happened to
+  // end that run.
+  const { orphans, stops, release } = withRuns();
+  const held = fakeRun('AccountB');
+  orphans.set(1, held);
+  await release('AccountB', 2);
+  assert.equal(held.stopped, true);
+  assert.equal(orphans.has(1), false);
+  // The room that lost it is showing a track nothing is sending it any more, and nobody else is
+  // going to tell it: this is not a stop it asked for.
+  assert.deepEqual(stops, [1]);
+});
+
+test('a room on another account keeps playing when an account moves', async () => {
+  const { orphans, stops, release } = withRuns();
+  const other = fakeRun('AccountA');
+  orphans.set(1, other);
+  await release('AccountB', 2);
+  assert.equal(other.stopped, false);
+  assert.deepEqual(stops, []);
+});
+
+test('the room asking for the account does not put its own run down twice', async () => {
+  // Its own previous run has already been finished by the caller; reaching it here would stop the
+  // room it is starting.
+  const { orphans, stops, release } = withRuns();
+  const mine = fakeRun('AccountB');
+  orphans.set(2, mine);
+  await release('AccountB', 2);
+  assert.equal(mine.stopped, false);
+  assert.deepEqual(stops, []);
+});
+
+test('starting waits for the store to be free, not for the room that freed it', async () => {
+  // The bug underneath: the drain was kept per room, so a run put down in zone 1 was something
+  // only zone 1 ever waited for — and zone 2 spawned into a directory still locked.
+  const { orphans, draining, release } = withRuns();
+  let letGo = () => undefined as void;
+  const released = new Promise<void>((resolve) => {
+    letGo = () => resolve();
+  });
+  orphans.set(1, fakeRun('AccountB', released));
+  let done = false;
+  const waiting = release('AccountB', 2).then(() => {
+    done = true;
+  });
+  await Promise.resolve();
+  assert.equal(done, false, 'started while the previous run still held the store');
+  letGo();
+  await waiting;
+  assert.equal(done, true);
+  assert.equal(draining.has('AccountB'), false);
+});
