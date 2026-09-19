@@ -351,6 +351,21 @@ function handleVolume(
     target,
   });
   applyVolumeLevel(coordinator, ctx, zoneId, mode, target);
+
+  // A volume step on a paused zone also starts it playing. That is not our invention: a real Loxone
+  // Audioserver does exactly this, verified against a Loxone test server, and it is what both the
+  // app's volume buttons and a T5 single click rely on (#381). The Miniserver sends nothing but the
+  // volume step in that case, so if we only move the level the room stays silent and the button
+  // looks broken.
+  //
+  // Narrow on purpose. Only a relative step counts: dragging a slider to a level is setting a level,
+  // not pressing a button. And only the client-facing `volume` command, never `volume_set` — that is
+  // what the fade controller ramps with, and a fade-in that restarted the zone it is fading would
+  // never end.
+  if (volume.command === 'volume' && volume.isRelative && ctx.state.mode === 'pause') {
+    coordinator.log.debug('volume step resumes paused zone', { zoneId, volume: target });
+    handlePlayResume(coordinator, ctx, zoneId, mode);
+  }
 }
 
 /**

@@ -157,6 +157,7 @@ import './publicApi.test';
 import './dlnaRendererReflection.test';
 import './dlnaRendererCast.test';
 import './zoneMute.test';
+import './zoneVolumeResume.test';
 import './sonnCoreDiscovery.test';
 import './itemAbout.test';
 import './browseContainerIdentity.test';
