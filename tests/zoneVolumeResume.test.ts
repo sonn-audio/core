@@ -7,7 +7,7 @@ import type { ZoneContext } from '../src/application/zones/internal/zoneTypes';
 import type { ZoneState } from '../src/domain/zones/zoneState';
 import type { ZoneConfig } from '../src/domain/config/types';
 
-// A volume step on a paused zone starts it playing again — verified against a real Loxone
+// A volume step on a zone that is not playing starts it — verified against a real Loxone
 // Audioserver, and what both the app's volume buttons and a T5 single click depend on (#381).
 // The Miniserver sends nothing but the volume step, so the resume has to happen here or the
 // room stays silent.
@@ -117,8 +117,28 @@ test('a volume step on a playing zone only moves the level', () => {
   assert.deepEqual(h.dispatched, []);
 });
 
-test('a volume step on a stopped zone only moves the level', () => {
+test('a volume step starts a stopped zone that has a favourite loaded', () => {
+  // What a zone looks like after a restart: stopped, with its first room favourite primed.
   const h = harness({ volume: 40, mode: 'stop' });
+
+  h.send('volume', '+1');
+
+  assert.equal(h.ctx.state.volume, 41);
+  assert.equal(h.resumes, 1);
+});
+
+test('a stopped zone starts at the level just asked for, not at the zone default', () => {
+  const h = harness({ volume: 40, mode: 'stop' });
+
+  h.send('volume', '+1');
+
+  // onPlayerStarted reads this and skips the cold-start default, which would otherwise discard
+  // the very press that started the music.
+  assert.equal(h.ctx.startAtCurrentVolume, true);
+});
+
+test('a volume step on an empty stopped zone has nothing to start', () => {
+  const h = harness({ volume: 40, mode: 'stop', audiopath: '' });
 
   h.send('volume', '+1');
 

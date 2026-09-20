@@ -151,4 +151,13 @@ export interface ZoneContext {
    * Undefined on a zone that has not played yet, which is a cold start and is treated as one.
    */
   playerActive?: boolean;
+
+  /**
+   * Start the next playback at the level the zone already carries, not at the zone default.
+   *
+   * Set when a volume step is what started the zone: the listener pressed a volume button, so
+   * discarding that press and snapping to the default is the one thing the start must not do.
+   * One-shot -- `onPlayerStarted` consumes it -- so it cannot leak into the next cold start.
+   */
+  startAtCurrentVolume?: boolean;
 }

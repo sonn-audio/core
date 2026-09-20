@@ -352,18 +352,24 @@ function handleVolume(
   });
   applyVolumeLevel(coordinator, ctx, zoneId, mode, target);
 
-  // A volume step on a paused zone also starts it playing. That is not our invention: a real Loxone
-  // Audioserver does exactly this, verified against a Loxone test server, and it is what both the
-  // app's volume buttons and a T5 single click rely on (#381). The Miniserver sends nothing but the
-  // volume step in that case, so if we only move the level the room stays silent and the button
-  // looks broken.
+  // A volume step on a zone that is not playing also starts it. That is not our invention: a real
+  // Loxone Audioserver does exactly this, verified against a Loxone test server, and it is what both
+  // the app's volume buttons and a T5 single click rely on (#381). The Miniserver sends nothing but
+  // the volume step, so if we only move the level the room stays silent and the button looks broken.
+  //
+  // A stopped zone counts as much as a paused one, because after a restart every zone comes up
+  // stopped with its first room favourite loaded, and starting from cold is exactly what the wall
+  // switch is for (#281). What it takes is something to start: with no audiopath there is nothing a
+  // resume could reach for.
   //
   // Narrow on purpose. Only a relative step counts: dragging a slider to a level is setting a level,
   // not pressing a button. And only the client-facing `volume` command, never `volume_set` — that is
   // what the fade controller ramps with, and a fade-in that restarted the zone it is fading would
   // never end.
-  if (volume.command === 'volume' && volume.isRelative && ctx.state.mode === 'pause') {
-    coordinator.log.debug('volume step resumes paused zone', { zoneId, volume: target });
+  if (volume.command === 'volume' && volume.isRelative && ctx.state.mode !== 'play' && ctx.state.audiopath) {
+    coordinator.log.debug('volume step starts idle zone', { zoneId, volume: target, mode: ctx.state.mode });
+    // The level the listener just asked for is the level it starts at -- see ZoneContext.
+    ctx.startAtCurrentVolume = true;
     handlePlayResume(coordinator, ctx, zoneId, mode);
   }
 }

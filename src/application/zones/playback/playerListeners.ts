@@ -152,8 +152,14 @@ function onPlayerStarted(
   if (ctx) {
     // During an alert, the alert flow has already set state.volume to the
     // per-event volume (e.g. the TTS slider value). Don't replace it.
+    // A volume step that started the zone carries the listener's own choice of level. Honouring the
+    // default there would throw away the very press that started the music.
+    const startAtCurrentVolume = ctx.startAtCurrentVolume === true;
+    ctx.startAtCurrentVolume = undefined;
     const isFreshStart =
-      !ctx.alert && ((ctx.state.mode === 'stop' && !wasPlayerActive) || hadPendingReset);
+      !ctx.alert &&
+      !startAtCurrentVolume &&
+      ((ctx.state.mode === 'stop' && !wasPlayerActive) || hadPendingReset);
     const volume = isFreshStart
       ? getZoneDefaultVolume(ctx.config)
       : clampVolumeForZone(ctx.config, ctx.state.volume);
