@@ -5,6 +5,8 @@ import type { ContentPort } from '@/ports/ContentPort';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
 import { BRIDGE_STREAMING_SERVICES, parseServiceNativeAudiopath } from '@/domain/zones/audiopath';
 import { bestEffort } from '@/shared/bestEffort';
+import { isRadioAudiopath } from '@/application/zones/internal/zoneAudioHelpers';
+import { AudioType } from '@/domain/zones/enums';
 
 function createItem(id: number, slot: number, title: string, audiopath: string): FavoriteItem {
   const providerId = extractProviderId(audiopath);
@@ -103,12 +105,19 @@ export class FavoritesManager {
       if (!favorite) {
         continue;
       }
+      // Without a kind, a primed favourite reads as a File of length zero, and a zero-length file is
+      // what a client draws as a live stream. A station has to say it is a station, and a track has
+      // to carry its length, or every zone comes up claiming to be live.
+      const isRadio = isRadioAudiopath(favorite.audiopath);
+      const duration = isRadio ? 0 : await this.resolveFavoriteDuration(favorite.audiopath);
       this.zones.applyPatch(state.id, {
         audiopath: favorite.audiopath,
         title: favorite.title ?? favorite.name ?? '',
         artist: favorite.artist ?? '',
         album: favorite.album ?? '',
         coverurl: favorite.coverurl ?? '',
+        audiotype: isRadio ? AudioType.Radio : AudioType.File,
+        duration,
       });
       // Remember it as the favourite on display, so the first `roomfav/plus` moves to the second
       // one rather than replaying what is already loaded -- the button selects the *next* favourite.
@@ -117,6 +126,24 @@ export class FavoritesManager {
         metadata.lastFavoriteId = first.id;
       }
     }
+  }
+
+  /**
+   * The length of a favourite, or zero when nobody can say.
+   *
+   * A stored favourite never carries one -- the file it lives in has no field for it -- so it has to
+   * be looked up. Raced against a short timeout the way `playFavorite` races it: priming is startup
+   * work, and a slow provider must not hold the boot open for a number that is only cosmetic until
+   * the track actually plays.
+   */
+  private async resolveFavoriteDuration(audiopath: string): Promise<number> {
+    const resolved = await Promise.race([
+      bestEffort(() => this.contentPort.resolveMetadata(audiopath), { fallback: null }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 800).unref?.()),
+    ]);
+    return typeof resolved?.duration === 'number' && resolved.duration > 0
+      ? Math.round(resolved.duration)
+      : 0;
   }
 
   public async get(zoneId: number, start = 0, limit = 50): Promise<FavoriteResponse> {

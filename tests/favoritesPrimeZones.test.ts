@@ -22,7 +22,7 @@ async function withTempCwd(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-async function writeFavorites(zoneId: number): Promise<void> {
+async function writeFavorites(zoneId: number, audiopath = 'tunein:station:one'): Promise<void> {
   await fs.mkdir(path.join(process.cwd(), 'data', 'favorites'), { recursive: true });
   await fs.writeFile(
     path.join(process.cwd(), 'data', 'favorites', `${zoneId}.json`),
@@ -38,7 +38,7 @@ async function writeFavorites(zoneId: number): Promise<void> {
           plus: true,
           name: 'Radio One',
           title: 'Radio One',
-          audiopath: 'tunein:station:one',
+          audiopath,
           type: 'station',
           coverurl: 'http://cover/one.png',
           artist: 'BBC',
@@ -73,12 +73,15 @@ type Fixture = {
   prime: () => Promise<void>;
 };
 
-function fixture(states: Array<Partial<ZoneState> & { id: number }>): Fixture {
+function fixture(
+  states: Array<Partial<ZoneState> & { id: number }>,
+  metadataLookup: { duration?: number } | null = null,
+): Fixture {
   const patches: Array<[number, Partial<ZoneState>]> = [];
   const metadata: Record<string, unknown> = {};
   const favoritesManager = createFavoritesManager({
     notifier: { notifyRoomFavoritesChanged: () => {} } as any,
-    contentPort: { resolveMetadata: async () => null } as any,
+    contentPort: { resolveMetadata: async () => metadataLookup } as any,
   });
   favoritesManager.initOnce({
     zoneManager: {
@@ -105,8 +108,24 @@ test('an idle zone comes up showing its first room favourite, stopped', async ()
     assert.equal(patch.title, 'Radio One');
     assert.equal(patch.artist, 'BBC');
     assert.equal(patch.coverurl, 'http://cover/one.png');
+    // A station says it is a station. Left as a File of length zero, a client draws it as live.
+    assert.equal(patch.audiotype, 1);
+    assert.equal(patch.duration, 0);
     // Nothing starts playing: the patch carries no mode at all.
     assert.equal(patch.mode, undefined);
+  });
+});
+
+test('a primed track carries its length, so it is not mistaken for a live stream', async () => {
+  await withTempCwd(async () => {
+    await writeFavorites(7, 'library:track:42');
+    const f = fixture([{ id: 7, mode: 'stop', audiopath: '' }], { duration: 212.4 });
+
+    await f.prime();
+
+    const [, patch] = f.patches[0]!;
+    assert.equal(patch.audiotype, 0);
+    assert.equal(patch.duration, 212);
   });
 });
 
