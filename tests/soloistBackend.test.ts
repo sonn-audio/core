@@ -207,14 +207,17 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
   service: SoloistPlaybackService;
   runner: { currentUri: string | null; stream: unknown; currentTrack: unknown };
   adopted: string[];
+  calls: string[];
   fire: (event: Record<string, unknown>) => void;
 } {
   const service = new SoloistPlaybackService(
     fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } }, zones: [{ id: 1 }] }),
   );
   const adopted: string[] = [];
+  const calls: string[] = [];
   const runner = {
     owner: 'connect',
+    paused: false,
     currentUri: state.currentUri,
     currentTrack: { id: 'x' },
     stream: state.stream,
@@ -226,6 +229,14 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
     ws: { isActive: true, isLoggedIn: true, requestQueue: () => undefined },
   };
   (service as unknown as { runners: Map<number, unknown> }).runners.set(1, runner);
+  (service as unknown as { controller: unknown }).controller = {
+    pausePlayback: () => calls.push('pause'),
+    resumePlayback: () => calls.push('resume'),
+    stopPlayback: () => calls.push('stop'),
+    updateQueue: () => undefined,
+    updateMetadata: () => undefined,
+    updateTiming: () => undefined,
+  };
   (service as unknown as { adoptConnectPlayback: unknown }).adoptConnectPlayback = (
     _zoneId: number,
     event: { item?: { uri?: string } },
@@ -234,7 +245,7 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
     return Promise.resolve();
   };
   const internals = service as unknown as { onEvent: (id: number, event: unknown) => void };
-  return { service, runner, adopted, fire: (event) => internals.onEvent(1, event) };
+  return { service, runner, adopted, calls, fire: (event) => internals.onEvent(1, event) };
 }
 
 test('playing with nothing carrying the audio is adopted, same track or not', () => {
@@ -446,4 +457,43 @@ test('a takeover announced four times opens one stream', async () => {
 
   assert.equal(opened, 1, 'one stream');
   assert.equal(started, 1, 'one start');
+});
+
+test('a room the app paused carries on when the app resumes it', () => {
+  // `paused` holds the zone and nothing ever let it go again: the app showed its bar moving while
+  // the room stayed silent, and only the next track brought it back.
+  const { calls, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  fire({ type: 'playback_state', status: 'paused', item: { uri: 'spotify:track:same' } });
+  fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  assert.deepEqual(calls, ['pause', 'resume']);
+});
+
+test('a room that was playing all along is not told to carry on', () => {
+  // The reason this hangs off the pause rather than off `playing`: the app repeats that event for
+  // the length of a track, and a zone resumed while it is already playing restarts its position
+  // clock and sends a resume to every one of its outputs for nothing.
+  const { calls, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  for (let i = 0; i < 5; i += 1) {
+    fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('a pause the app asked for does not outlive the stream it held', () => {
+  // A room stopped while the app had it paused must not come back resuming: the next thing to
+  // reach it is a takeover, which starts the zone itself.
+  const { service, runner, calls, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  fire({ type: 'playback_state', status: 'paused', item: { uri: 'spotify:track:same' } });
+  (service as unknown as { finishTrack: (id: number) => void }).finishTrack(1);
+  assert.equal((runner as unknown as { paused: boolean }).paused, false);
+  assert.deepEqual(calls, ['pause']);
 });

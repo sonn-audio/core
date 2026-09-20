@@ -112,6 +112,15 @@ type ZoneRunner = {
    */
   adopting: boolean;
   /**
+   * Set while the zone is being held for a pause the Spotify app asked for.
+   *
+   * What makes the difference between a resume and the app simply saying what it is doing. Reading
+   * `playing` alone as a resume would be level-triggered against an event the app repeats while
+   * the music runs, and a zone told to carry on when it already is restarts its position clock
+   * and sends a resume to every output for its trouble.
+   */
+  paused: boolean;
+  /**
    * The level this zone and Soloist last agreed on.
    *
    * Both directions write it, which is what keeps them from chasing each other: a `set_volume` of
@@ -599,6 +608,7 @@ export class SoloistPlaybackService {
       queue: { previous: [], upcoming: [] },
       stream: null,
       adopting: false,
+      paused: false,
       volume: null,
       volumeLatch: null,
     };
@@ -733,10 +743,21 @@ export class SoloistPlaybackService {
       // is silent, and no later event ever reaches a path that would open the pipe. See #383.
       if ((uri && uri !== runner.currentUri) || !runner.stream) {
         void this.adoptConnectPlayback(zoneId, event);
+        return;
+      }
+      // A stream that is already on this track, held for a pause the app asked for: this is the
+      // app letting it go again. Nothing else ever did — `paused` below holds the zone
+      // unconditionally, so a room paused from the app stayed paused while Soloist played on to
+      // nobody, and only the next track brought it back. The same silence as above, from the
+      // other end.
+      if (runner.paused) {
+        runner.paused = false;
+        this.controller?.resumePlayback(zoneId);
       }
       return;
     }
     if (event.status === 'paused') {
+      runner.paused = true;
       this.controller?.pausePlayback(zoneId);
       return;
     }
@@ -874,6 +895,7 @@ export class SoloistPlaybackService {
   ): Promise<void> {
     const track = readTrack(event.item);
     runner.owner = 'connect';
+    runner.paused = false;
     runner.currentUri = track.uri ?? null;
     runner.currentTrack = queueTrackOf(track);
     // A takeover is announced as playback, not as a queue, so the list has to be asked for once.
@@ -969,6 +991,7 @@ export class SoloistPlaybackService {
     // reads as "already current", and the room stays silent under a perfectly correct display.
     runner.currentUri = null;
     runner.currentTrack = null;
+    runner.paused = false;
     // Whatever arrives from here on belongs to the track that is over.
     this.audio.discardPending(zoneId);
   }
