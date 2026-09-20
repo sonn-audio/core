@@ -485,6 +485,7 @@ export function createRuntime(): Runtime {
       const cfg = await configPort.load();
       await contentManager.reinitialize();
       await zoneManager.replaceAll(cfg.zones ?? [], cfg.inputs ?? null, cfg.groups ?? null);
+      await favoritesManager.primeZones();
       log.info('light reinitialize complete');
       return true;
     } catch (error) {
@@ -551,6 +552,9 @@ export function createRuntime(): Runtime {
 
     await zoneManager.initialize();
     await contentManager.reinitialize();
+    // After the zones exist: every idle zone comes up showing its first room favourite, stopped,
+    // the way a real Audioserver does. See FavoritesManager.primeZones.
+    await favoritesManager.primeZones();
 
     // Restore manual audio groups that were persisted before the last shutdown.
     const persistedGroups = storedConfig.groups?.audioGroups ?? [];

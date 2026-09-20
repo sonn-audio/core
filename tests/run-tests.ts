@@ -148,6 +148,7 @@ import './ttsProviders.test';
 import './loxberryTtsProvider.test';
 import './zoneHandlers.roomfavs.test';
 import './favoritesManager.compat.test';
+import './favoritesPrimeZones.test';
 import './recentsManager.compat.test';
 import './contentMetadataHarvestCache.test';
 import './contentProviderDispatch.test';

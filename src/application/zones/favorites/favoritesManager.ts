@@ -73,6 +73,52 @@ export class FavoritesManager {
     return response;
   }
 
+  /**
+   * Put each idle zone's first room favourite on the display without playing it.
+   *
+   * A real Loxone Audioserver comes up this way: after a reboot every zone already shows its first
+   * favourite, stopped. That is not cosmetic — it is what makes the wall switches work from cold.
+   * A T5 single click, and the app's volume buttons, only start a zone that has something loaded,
+   * so a zone that boots empty answers every press with silence (#281, #381).
+   *
+   * Only zones that are stopped with nothing loaded are touched, which is what makes this safe to
+   * run again after a config reload: a zone that is playing, or that already carries a track, keeps
+   * what it has.
+   */
+  public async primeZones(): Promise<void> {
+    for (const state of this.zones.getAllZoneStates()) {
+      if (state.mode !== 'stop' || state.audiopath) {
+        continue;
+      }
+      const stored = await bestEffort(() => loadFavorites(state.id), { fallback: null });
+      const first = stored?.items?.[0];
+      if (!first) {
+        continue;
+      }
+      // Through getForPlayback, so the loaded path carries the provider prefix a play would need.
+      // Priming a path the zone cannot actually start would be worse than priming nothing.
+      const favorite = await bestEffort(() => this.getForPlayback(state.id, first.id), {
+        fallback: undefined,
+      });
+      if (!favorite) {
+        continue;
+      }
+      this.zones.applyPatch(state.id, {
+        audiopath: favorite.audiopath,
+        title: favorite.title ?? favorite.name ?? '',
+        artist: favorite.artist ?? '',
+        album: favorite.album ?? '',
+        coverurl: favorite.coverurl ?? '',
+      });
+      // Remember it as the favourite on display, so the first `roomfav/plus` moves to the second
+      // one rather than replaying what is already loaded -- the button selects the *next* favourite.
+      const metadata = this.zones.getMetadata(state.id);
+      if (metadata) {
+        metadata.lastFavoriteId = first.id;
+      }
+    }
+  }
+
   public async get(zoneId: number, start = 0, limit = 50): Promise<FavoriteResponse> {
     const stored = await loadFavorites(zoneId);
     const items = limit > 0 ? stored.items.slice(start, start + limit) : stored.items;
