@@ -103,6 +103,15 @@ type ZoneRunner = {
   queue: { previous: string[]; upcoming: string[] };
   stream: Readable | null;
   /**
+   * Armed for as long as an adoption is on its way.
+   *
+   * Adopting waits for the player to say what format it plays in, and `stream` is still null for
+   * however long that takes — so the condition that started the adoption is still true when the
+   * next event arrives. Every other adopt here is edge-triggered; the one on `playing` is not,
+   * because the app keeps saying `playing` while the music runs.
+   */
+  adopting: boolean;
+  /**
    * The level this zone and Soloist last agreed on.
    *
    * Both directions write it, which is what keeps them from chasing each other: a `set_volume` of
@@ -589,6 +598,7 @@ export class SoloistPlaybackService {
       currentTrack: null,
       queue: { previous: [], upcoming: [] },
       stream: null,
+      adopting: false,
       volume: null,
       volumeLatch: null,
     };
@@ -843,6 +853,25 @@ export class SoloistPlaybackService {
     if (!runner) {
       return;
     }
+    // One takeover, one stream. Dropping the events that arrive while the first one is still
+    // waiting for a format costs nothing: the adoption they would have started publishes the
+    // track and the queue itself, and anything that moved since arrives again straight after.
+    if (runner.adopting) {
+      return;
+    }
+    runner.adopting = true;
+    try {
+      await this.followConnectPlayback(zoneId, runner, event);
+    } finally {
+      runner.adopting = false;
+    }
+  }
+
+  private async followConnectPlayback(
+    zoneId: number,
+    runner: ZoneRunner,
+    event: SoloistStateEvent,
+  ): Promise<void> {
     const track = readTrack(event.item);
     runner.owner = 'connect';
     runner.currentUri = track.uri ?? null;

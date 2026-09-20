@@ -218,6 +218,7 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
     currentUri: state.currentUri,
     currentTrack: { id: 'x' },
     stream: state.stream,
+    adopting: false,
     track: null,
     queue: { previous: [], upcoming: [] },
     volume: null,
@@ -382,4 +383,67 @@ test('starting waits for the store to be free, not for the room that freed it', 
   await waiting;
   assert.equal(done, true);
   assert.equal(draining.has('AccountB'), false);
+});
+
+test('a takeover announced four times opens one stream', async () => {
+  // `playing` is the one adopt here that is not edge-triggered: it keeps arriving while the app
+  // plays, and the adoption it starts waits for the player's format before it has a stream to
+  // show for itself. Without a guard each event starts its own and `takeStream` tears down the
+  // one before it, so a room could be taken over into a stream nothing was reading.
+  const service = new SoloistPlaybackService(
+    fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } }, zones: [{ id: 1 }] }),
+  );
+  const runner = {
+    owner: 'connect',
+    currentUri: 'spotify:track:same',
+    currentTrack: { uri: 'spotify:track:same' },
+    stream: null,
+    adopting: false,
+    track: null,
+    queue: { previous: [], upcoming: [] },
+    volume: null,
+    volumeLatch: null,
+    ws: { isActive: true, isLoggedIn: true, requestQueue: () => undefined },
+  };
+  (service as unknown as { runners: Map<number, unknown> }).runners.set(1, runner);
+
+  let opened = 0;
+  let started = 0;
+  // The format only arrives once the test lets it, which is the window every extra event lands in.
+  let releaseSpec = (): void => undefined;
+  const spec = new Promise<void>((resolve) => {
+    releaseSpec = resolve;
+  });
+  const internals = service as unknown as {
+    audio: unknown;
+    openAudio: unknown;
+    controller: unknown;
+    onEvent: (id: number, event: unknown) => void;
+  };
+  internals.audio = { waitForSpec: () => spec };
+  internals.openAudio = (): { stream: unknown; source: unknown } => {
+    opened += 1;
+    return { stream: { destroy: () => undefined }, source: { kind: 'pipe' } };
+  };
+  internals.controller = {
+    startPlayback: () => {
+      started += 1;
+    },
+    updateQueue: () => undefined,
+    updateMetadata: () => undefined,
+    updateTiming: () => undefined,
+  };
+
+  for (let i = 0; i < 4; i += 1) {
+    internals.onEvent(1, {
+      type: 'playback_state',
+      status: 'playing',
+      item: { uri: 'spotify:track:same' },
+    });
+  }
+  releaseSpec();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(opened, 1, 'one stream');
+  assert.equal(started, 1, 'one start');
 });
