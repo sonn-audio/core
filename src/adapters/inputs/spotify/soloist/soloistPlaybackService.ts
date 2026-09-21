@@ -103,6 +103,15 @@ type ZoneRunner = {
   queue: { previous: string[]; upcoming: string[] };
   stream: Readable | null;
   /**
+   * Armed while an adoption is in flight.
+   *
+   * `!runner.stream` above stays true for as long as adoption takes, and adoption awaits
+   * `waitForSpec` before it assigns the stream — while `playing` keeps arriving. Without this one
+   * takeover starts several, and `takeStream()` destroys the stream it replaces, so the second
+   * tears down what the first has just handed to the zone.
+   */
+  adopting: boolean;
+  /**
    * The level this zone and Soloist last agreed on.
    *
    * Both directions write it, which is what keeps them from chasing each other: a `set_volume` of
@@ -589,6 +598,7 @@ export class SoloistPlaybackService {
       currentTrack: null,
       queue: { previous: [], upcoming: [] },
       stream: null,
+      adopting: false,
       volume: null,
       volumeLatch: null,
     };
@@ -852,6 +862,23 @@ export class SoloistPlaybackService {
     if (!runner) {
       return;
     }
+    // One takeover, one stream.
+    if (runner.adopting) {
+      return;
+    }
+    runner.adopting = true;
+    try {
+      await this.adoptConnectPlaybackInner(zoneId, runner, event);
+    } finally {
+      runner.adopting = false;
+    }
+  }
+
+  private async adoptConnectPlaybackInner(
+    zoneId: number,
+    runner: ZoneRunner,
+    event: SoloistStateEvent,
+  ): Promise<void> {
     const track = readTrack(event.item);
     runner.owner = 'connect';
     runner.currentUri = track.uri ?? null;

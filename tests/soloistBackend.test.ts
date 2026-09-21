@@ -299,6 +299,71 @@ test('resuming is sent on every playing, because a playing session ignores it', 
   assert.equal(resumed(), 4);
 });
 
+/**
+ * One takeover, one stream.
+ *
+ * `!runner.stream` is level-triggered where the other two adopt paths are edge-triggered: it stays
+ * true for as long as adoption takes, adoption awaits the player's format before it assigns the
+ * stream, and the app keeps saying `playing` throughout. `takeStream()` destroys the stream it
+ * replaces, so a second adoption tears down what the first has just handed to the zone.
+ */
+function withRealAdoption(): {
+  opened: () => number;
+  fire: (event: Record<string, unknown>) => void;
+  releaseSpec: () => void;
+} {
+  const service = new SoloistPlaybackService(
+    fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } }, zones: [{ id: 1 }] }),
+  );
+  const runner = {
+    owner: 'connect',
+    currentUri: 'spotify:track:same',
+    currentTrack: { id: 'x' },
+    stream: null,
+    adopting: false,
+    track: null,
+    queue: { previous: [], upcoming: [] },
+    volume: null,
+    volumeLatch: null,
+    ws: { isActive: true, isLoggedIn: true, requestQueue: () => undefined },
+  };
+  (service as unknown as { runners: Map<number, unknown> }).runners.set(1, runner);
+
+  let openedCount = 0;
+  let release = (): void => undefined;
+  const specReached = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  (service as unknown as { audio: unknown }).audio = { waitForSpec: () => specReached };
+  (service as unknown as { openAudio: unknown }).openAudio = () => {
+    openedCount += 1;
+    return { stream: { destroy: () => undefined }, source: { kind: 'pipe' } };
+  };
+  (service as unknown as { controller: unknown }).controller = {
+    startPlayback: () => undefined,
+    resumePlayback: () => undefined,
+    updateQueue: () => undefined,
+    updateMetadata: () => undefined,
+    updateTiming: () => undefined,
+  };
+  const internals = service as unknown as { onEvent: (id: number, event: unknown) => void };
+  return {
+    opened: () => openedCount,
+    fire: (event) => internals.onEvent(1, event),
+    releaseSpec: release,
+  };
+}
+
+test('a takeover announced four times still opens one stream', async () => {
+  const { opened, fire, releaseSpec } = withRealAdoption();
+  for (let i = 0; i < 4; i += 1) {
+    fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  }
+  releaseSpec();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(opened(), 1);
+});
+
 test('the stream going takes what it was playing with it', () => {
   // The other half of #383: a room stopped here kept the app's last track on the runner, so the
   // app resuming that same track read as "already current" and never reached the adopt above.
