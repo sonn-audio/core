@@ -723,7 +723,16 @@ export class SoloistPlaybackService {
       // is silent, and no later event ever reaches a path that would open the pipe. See #383.
       if ((uri && uri !== runner.currentUri) || !runner.stream) {
         void this.adoptConnectPlayback(zoneId, event);
+        return;
       }
+      // A live stream already on this track: the app is resuming what it paused. `paused` below
+      // pauses the zone unconditionally and nothing here ever started it again, and a pause does
+      // not go through `finishTrack` — so the stream survives, the uri never moves, and the room
+      // stayed paused while Soloist played on. The same silence as above, from the other side.
+      //
+      // Safe on an event the app repeats for the length of a track: `resumePlayback` returns
+      // early on a session that is already playing.
+      this.controller?.resumePlayback(zoneId);
       return;
     }
     if (event.status === 'paused') {

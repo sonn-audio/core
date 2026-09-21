@@ -207,6 +207,7 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
   service: SoloistPlaybackService;
   runner: { currentUri: string | null; stream: unknown; currentTrack: unknown };
   adopted: string[];
+  resumed: () => number;
   fire: (event: Record<string, unknown>) => void;
 } {
   const service = new SoloistPlaybackService(
@@ -232,8 +233,26 @@ function withConnectRunner(state: { currentUri: string | null; stream: unknown }
     adopted.push(event.item?.uri ?? '');
     return Promise.resolve();
   };
+  let resumedCount = 0;
+  (service as unknown as { controller: unknown }).controller = {
+    resumePlayback: () => {
+      resumedCount += 1;
+    },
+    pausePlayback: () => undefined,
+    stopPlayback: () => undefined,
+    startPlayback: () => undefined,
+    updateQueue: () => undefined,
+    updateMetadata: () => undefined,
+    updateTiming: () => undefined,
+  };
   const internals = service as unknown as { onEvent: (id: number, event: unknown) => void };
-  return { service, runner, adopted, fire: (event) => internals.onEvent(1, event) };
+  return {
+    service,
+    runner,
+    adopted,
+    resumed: () => resumedCount,
+    fire: (event) => internals.onEvent(1, event),
+  };
 }
 
 test('playing with nothing carrying the audio is adopted, same track or not', () => {
@@ -251,6 +270,33 @@ test('playing the track that is already sounding is left alone', () => {
   });
   fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
   assert.deepEqual(adopted, []);
+});
+
+test('a room the app paused is started again when the app resumes it', () => {
+  // A pause does not go through `finishTrack`, so the stream survives and the uri never moves —
+  // which is exactly what the test above leaves alone. Nothing else called `resumePlayback`, and
+  // the Soloist input never called it at all, so the room stayed paused while Soloist played on.
+  const { resumed, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  fire({ type: 'playback_state', status: 'paused', item: { uri: 'spotify:track:same' } });
+  fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  assert.equal(resumed(), 1);
+});
+
+test('resuming is sent on every playing, because a playing session ignores it', () => {
+  // The app repeats `playing` for the length of a track. `audioManager.resumePlayback` returns
+  // early on a session already playing, which is what makes sending it each time the simple
+  // thing to do rather than tracking a second copy of the zone's state on the runner.
+  const { resumed, fire } = withConnectRunner({
+    currentUri: 'spotify:track:same',
+    stream: { destroy: () => undefined },
+  });
+  for (let i = 0; i < 4; i += 1) {
+    fire({ type: 'playback_state', status: 'playing', item: { uri: 'spotify:track:same' } });
+  }
+  assert.equal(resumed(), 4);
 });
 
 test('the stream going takes what it was playing with it', () => {
