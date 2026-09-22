@@ -20,6 +20,13 @@ const TTS_FIXED_GAIN_DB = 6;
 // This is a safety net; we also try to reduce output buffering for alerts where possible.
 const MIN_ALERT_AUDIBLE_MS = 2500;
 const ALERT_STOP_MARGIN_MS = 750;
+/** Slack on top of the measured window, so a rounding error cannot cost the last syllable. */
+const ALERT_STOP_GUARD_MS = 150;
+/**
+ * How long the stop window waits for the engine's first byte before settling for its estimate.
+ * An alert that has produced nothing by then is not going to be rescued by waiting longer.
+ */
+const ALERT_FIRST_AUDIO_WAIT_MS = 5000;
 /**
  * How far ahead of the alert's first audible sample the announcement volume is set.
  *
@@ -219,19 +226,7 @@ export class AlertsCoordinator {
     this.scheduleAlertVolume(ctx, alertRecord, clampedVolume, volumeDelayMs);
 
     if (durationMs && durationMs > 0) {
-      // The auto-stop timer runs on wall clock from here, but audible content does not
-      // begin until the engine has emitted the prepended wake-up silence. Without
-      // accounting for it the timer fires preDelay-too-early and clips the tail of every
-      // alert (the timer "starts on click" while sound starts late) — issue #293. Read
-      // what the engine actually prepended off the session rather than re-deriving it,
-      // so the window can never disagree with the stream it is timing.
-      const preDelayMs = resolveSessionPreDelayMs(session);
-      const clampedMs = Math.min(preDelayMs + durationMs + 150, 2147483647);
-      ctx.alert.stopTimer = setTimeout(() => {
-        // Timer fires after we release the lock, so go through the public
-        // path so a concurrent caller cannot race the auto-stop.
-        void this.stopAlert(zoneId);
-      }, clampedMs);
+      this.armAlertStopTimer(ctx, alertRecord, session, durationMs);
     }
 
 	    this.applyPatch(zoneId, {
@@ -249,6 +244,73 @@ export class AlertsCoordinator {
       sourceName: ctx.name,
     });
 	  }
+
+  /**
+   * End the alert once the *room* has heard it out, not once the server has finished sending it.
+   *
+   * Three things sit between `playUri` and the first sample in the room: the engine's own
+   * start-up, the wake-up silence it prepends, and the audio the output is still holding.
+   * The window used to count the silence alone — everything else came off the tail, because
+   * a clip that starts late with a fixed-length window can only end early. That was survivable
+   * while the deficit was small; when the engine grew a second stage (the float DSP bus, which
+   * every TTS clip takes for its gain) the start-up cost grew with it and announcements began
+   * ending a word short (#387).
+   *
+   * The timer is armed twice, deliberately. First on the modelled lead, so a zone whose engine
+   * never produces a byte still gets its music back; then again the moment the first byte
+   * actually exists, which is when the clock the tail depends on truly starts.
+   */
+  private armAlertStopTimer(
+    ctx: ZoneContext,
+    alert: NonNullable<ZoneContext['alert']>,
+    session: PlaybackSession,
+    durationMs: number,
+  ): void {
+    const zoneId = ctx.id;
+    // Read what the engine actually prepended off the session rather than re-deriving it, so the
+    // window can never disagree with the stream it is timing (#293).
+    const preDelayMs = resolveSessionPreDelayMs(session);
+    const roomLagMs = this.resolveOutputLagMs(ctx);
+
+    const arm = (engineStartMs: number): void => {
+      // The alert can be replaced or stopped while we wait for the engine.
+      if (this.zoneRepo.get(zoneId) !== ctx || ctx.alert !== alert) {
+        return;
+      }
+      if (alert.stopTimer) {
+        clearTimeout(alert.stopTimer);
+      }
+      const leadMs = engineStartMs + preDelayMs + roomLagMs;
+      const clampedMs = Math.min(leadMs + durationMs + ALERT_STOP_GUARD_MS, 2147483647);
+      this.log.debug('alert stop window', {
+        zoneId,
+        engineStartMs,
+        preDelayMs,
+        roomLagMs,
+        durationMs,
+        stopInMs: clampedMs,
+      });
+      alert.stopTimer = setTimeout(() => {
+        // Timer fires after we release the lock, so go through the public
+        // path so a concurrent caller cannot race the auto-stop.
+        void this.stopAlert(zoneId);
+      }, clampedMs);
+    };
+
+    // Nothing measured yet: a clip the engine never gets a byte out of is silent anyway, so
+    // assuming no start-up cost is the right way to be wrong about this one.
+    arm(0);
+    void this.playbackCoordinator
+      .waitForFirstAudioMs(ctx, ALERT_FIRST_AUDIO_WAIT_MS)
+      .then((engineStartMs) => {
+        if (engineStartMs !== null) {
+          arm(engineStartMs);
+        }
+      })
+      .catch(() => {
+        // Best-effort; the modelled window stands.
+      });
+  }
 
   /**
    * How long after `playUri` the alert's first sample actually reaches the room:
@@ -338,11 +400,25 @@ export class AlertsCoordinator {
     );
     if (nativeOutputs.length !== realOutputs.length) {
       // At least one output cannot overlay — use the engine-stream fallback for all of them.
+      this.log.debug('alert has no native overlay; using the stream path', {
+        zoneId,
+        outputs: realOutputs.map((o) => o.type),
+        nativeCount: nativeOutputs.length,
+      });
       return false;
     }
 
     const url = this.resolveAlertHttpUrl(media);
     if (!url) {
+      // The renderer fetches this URL itself, so a loopback address is no use to it: without a
+      // LAN-reachable host configured there is nothing to hand over. Worth saying out loud —
+      // the fallback is the path that has to stop the music, and a log that passes over the
+      // choice in silence leaves no way to tell a deliberate fallback from a misconfigured one.
+      this.log.debug('alert overlay has no reachable url; using the stream path', {
+        zoneId,
+        url: media.url,
+        hasRelativePath: Boolean(media.relativePath),
+      });
       return false;
     }
     const request: NativeAlertRequest = {

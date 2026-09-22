@@ -46,12 +46,19 @@ function remember(key: string, seconds: number): void {
 }
 
 /**
- * Resolve the playable length of an alert clip in whole seconds, or `undefined`
- * when it cannot be determined.
+ * Resolve the playable length of an alert clip in seconds, or `undefined` when it
+ * cannot be determined.
  *
  * Every alert source funnels through here — bundled files, uploads, and the
  * clips synthesized by the TTS providers — so the stop timer is fed by one
  * measurement method regardless of where the audio came from.
+ *
+ * The fraction is kept. Rounding to whole seconds here quietly shortened the stop
+ * window by up to half a second on every clip that does not land on a second
+ * boundary — a 5.14 s announcement was timed as 5 s — and that comes straight off
+ * the tail, which is the one end of an alert nothing else can give back (#387).
+ * Whole seconds are what Loxone is *told*; they are not what the clip lasts, so
+ * the rounding belongs at that edge and only there.
  */
 export async function probeAlertDurationSeconds(absPath: string): Promise<number | undefined> {
   const key = await cacheKey(absPath);
@@ -63,12 +70,11 @@ export async function probeAlertDurationSeconds(absPath: string): Promise<number
   }
   const seconds = await decode(absPath);
   if (typeof seconds === 'number' && seconds > 0) {
-    const rounded = Math.round(seconds);
     if (key !== null) {
-      remember(key, rounded);
+      remember(key, seconds);
     }
-    log.debug('alert duration probed', { path: absPath, durationSec: rounded });
-    return rounded;
+    log.debug('alert duration probed', { path: absPath, durationSec: seconds });
+    return seconds;
   }
   return undefined;
 }

@@ -1,6 +1,6 @@
 import type { ComponentLogger } from '@/shared/logging/logger';
 import type { AudioManager } from '@/application/playback/audioManager';
-import type { PlaybackSource } from '@/ports/EngineTypes';
+import type { OutputProfile, PlaybackSource } from '@/ports/EngineTypes';
 import type { ZoneAudioPreferences } from '@/application/playback/ZoneAudioPreferences';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { toServiceNative } from '@/domain/zones/bridgeIdentity';
@@ -624,6 +624,23 @@ export class PlaybackCoordinator {
 
     const known = Math.max(reportedMs, measuredMs);
     return known > 0 ? Math.round(known) : UNKNOWN_OUTPUT_LAG_MS;
+  }
+
+  /**
+   * How long the engine took to produce this zone's first audio byte, or null if it never did.
+   *
+   * The engine's own start-up is the one part of the delay before a room hears anything that
+   * no figure can be assumed for: it is the source, the topology and the machine. A file
+   * decoded straight to the output profile is quick; the same file through the float DSP bus
+   * pays for a second process, and on a slow box that difference is most of a second. Alerts
+   * time their tail against this rather than against a constant (#387).
+   */
+  public async waitForFirstAudioMs(ctx: ZoneContext, timeoutMs: number): Promise<number | null> {
+    const startedAt = Date.now();
+    const profiles = ctx.player.getSession()?.profiles ?? [];
+    const profile: OutputProfile = profiles.includes('pcm') ? 'pcm' : profiles[0] ?? 'mp3';
+    const ready = await this.audioManager.waitForFirstChunk(ctx.id, profile, timeoutMs);
+    return ready ? Math.max(0, Date.now() - startedAt) : null;
   }
 
   private computeOutputLatencyMs(outputs: ZoneOutput[]): number {

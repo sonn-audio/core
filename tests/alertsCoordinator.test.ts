@@ -95,6 +95,7 @@ test('startAlert applies alert volume after switching to the alert source', asyn
       },
       alignOutputFormat: () => {},
       applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
     } as any,
     applyPatch: (zoneId, patch) => {
       assert.equal(zoneId, zone.id);
@@ -200,6 +201,7 @@ test('startAlert stop timer waits for the playback pre-delay so the tail is not 
       },
       alignOutputFormat: () => {},
       applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
     } as any,
     applyPatch: (_zoneId, patch) => {
       ctx.state = { ...ctx.state, ...(patch as Record<string, unknown>) };
@@ -235,6 +237,127 @@ test('startAlert stop timer waits for the playback pre-delay so the tail is not 
   // duration 4 s → durationMs = max(4000 + 750, 2500) = 4750; window = preDelay 3000 + 4750 + 150.
   const stopDelay = Math.max(...delays);
   assert.equal(stopDelay, 3000 + 4750 + 150);
+});
+
+test('the alert stop window waits for the room, start-up and all (#387)', async () => {
+  const zone: ZoneConfig = {
+    id: 1,
+    name: 'Living',
+    sourceMac: '00:00:00:00:00:01',
+    volumes: {
+      default: 20,
+      alarm: 20,
+      fire: 20,
+      bell: 55,
+      buzzer: 20,
+      tts: 20,
+      volstep: 1,
+      fading: 0,
+      maxVolume: 100,
+    },
+  };
+
+  const zoneRepo = new ZoneRepository();
+  const ctx = {
+    id: zone.id,
+    name: zone.name,
+    sourceMac: zone.sourceMac,
+    config: zone,
+    state: buildInitialState(zone),
+    queue: { items: [], shuffle: false, repeat: 0, currentIndex: 0, authority: 'local' },
+    queueController: { setItems: () => {}, currentIndex: () => 0, current: () => null },
+    inputAdapter: {},
+    spotifyAdapter: {},
+    metadata: {},
+    outputs: [],
+    // No wake-up silence here: what is on trial is the engine's start-up and the
+    // renderer's buffer, neither of which the window used to count.
+    player: {
+      setVolume: () => {},
+      playUri: () => ({ playbackSource: { kind: 'file', path: '/tmp/tts.mp3' } }) as any,
+    },
+    outputTimingActive: false,
+    lastOutputTimingAt: 0,
+    lastZoneBroadcastAt: 0,
+    lastPositionUpdateAt: 0,
+    lastPositionValue: 0,
+    lastPlaybackErrorAt: 0,
+    activeOutputTypes: new Set<string>(),
+    activeOutput: 'sonos',
+    activeInput: null,
+    lastMetadataDispatchAt: 0,
+    inputMode: 'queue',
+  } as unknown as ZoneContext;
+  zoneRepo.set(zone.id, ctx);
+
+  let releaseFirstAudio!: () => void;
+  const firstAudio = new Promise<void>((resolve) => {
+    releaseFirstAudio = resolve;
+  });
+
+  const coordinator = new AlertsCoordinator({
+    zones: zoneRepo,
+    configPort: alertConfigPort,
+    playbackCoordinator: {
+      setInputMode: (_ctx: ZoneContext, mode: ZoneContext['inputMode']) => {
+        _ctx.inputMode = mode;
+      },
+      alignOutputFormat: () => {},
+      applyOutputEndGuard: () => {},
+      getRoomLagMs: () => 1000,
+      // The engine took 600 ms to get its first byte out — the cost of the float DSP
+      // bus on a slow box, and the part of the delay no constant can stand in for.
+      waitForFirstAudioMs: async () => {
+        await firstAudio;
+        return 600;
+      },
+    } as any,
+    applyPatch: (_zoneId, patch) => {
+      ctx.state = { ...ctx.state, ...(patch as Record<string, unknown>) };
+    },
+    log: { warn: () => {}, debug: () => {} } as any,
+    audioHelpers: { resolveAlertEventType: () => 0 } as any,
+    zoneAudioPrefs: {
+      setTransientGainDb: () => {},
+      setAlertPreDelayFloorMs: () => {},
+    } as any,
+  });
+
+  const delays: number[] = [];
+  const realSetTimeout = global.setTimeout;
+  (global as any).setTimeout = (_fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    delays.push(ms ?? 0);
+    const handle = realSetTimeout(() => {}, 1_000_000, ...(rest as []));
+    handle.unref?.();
+    return handle;
+  };
+  try {
+    await coordinator.startAlert(
+      zone.id,
+      'tts',
+      {
+        title: 'Announcement',
+        url: 'alerts://cache/tts.mp3',
+        relativePath: 'cache/tts.mp3',
+        // The fraction is the point: rounded to 5 s this clip loses 140 ms off its tail
+        // before any of the rest is counted.
+        duration: 5.14,
+      },
+      55,
+    );
+
+    // Armed on the modelled lead first, so a zone whose engine never produces a byte
+    // still gets its music back: room lag 1000 + (5140 + 750) + 150.
+    assert.equal(Math.max(...delays), 1000 + 5890 + 150);
+
+    releaseFirstAudio();
+    await firstAudio;
+    // Re-armed once the first byte exists, now counting the 600 ms it took to appear.
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    assert.equal(Math.max(...delays), 600 + 1000 + 5890 + 150);
+  } finally {
+    (global as any).setTimeout = realSetTimeout;
+  }
 });
 
 test('alert restore settles to stop when playback cannot resume (releases power-group relay)', async () => {
@@ -313,6 +436,7 @@ test('alert restore settles to stop when playback cannot resume (releases power-
       },
       alignOutputFormat: () => {},
       applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
       // Resume fails: no session is returned.
       startQueuePlayback: async () => null,
     } as any,
@@ -411,6 +535,7 @@ test('the announcement volume waits for the alert to be audible (#359)', async (
       },
       alignOutputFormat: () => {},
       applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
       getRoomLagMs: () => 600,
     } as any,
     applyPatch: (_zoneId, patch) => {
@@ -517,6 +642,7 @@ test('a stopped alert does not get its volume applied afterwards (#359)', async 
       },
       alignOutputFormat: () => {},
       applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
       getRoomLagMs: () => 800,
     } as any,
     applyPatch: (_zoneId, patch) => {

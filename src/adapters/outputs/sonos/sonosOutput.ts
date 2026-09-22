@@ -458,10 +458,14 @@ export class SonosOutput implements ZoneOutput {
   public async playNativeAlert(request: NativeAlertRequest): Promise<boolean> {
     const client = await this.ensureS2Client();
     if (!client?.player) {
+      this.log.debug('no S2 client for the native alert; falling back to the stream path', {
+        zoneId: this.zoneId,
+      });
       return false;
     }
     const playerId = client.playerId || client.player.id;
     if (!playerId) {
+      this.log.debug('S2 client has no player id for the native alert', { zoneId: this.zoneId });
       return false;
     }
     try {
