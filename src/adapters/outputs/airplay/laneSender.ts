@@ -49,6 +49,13 @@ export class AirplayLaneSender implements AirplaySender {
   private starting = false;
   /** Whether a refused AirPlay 2 handshake may fall through to RAOP. */
   private readonly raopFallback: boolean;
+  /**
+   * The lane that has actually carried audio to this device. A device that
+   * played over RAOP once is an AirPlay 1 device, so every later start goes
+   * straight there instead of paying for the refused handshake again -- which in
+   * a retry loop is what stands between the listener and the music.
+   */
+  private proven: 'ap2' | 'raop' | null = null;
 
   constructor(
     private readonly config: LaneSenderConfig,
@@ -165,13 +172,16 @@ export class AirplayLaneSender implements AirplaySender {
     }
     this.starting = true;
     try {
-      if (this.ap2 && (await attempt(this.ap2))) {
-        this.active = this.ap2;
-        return true;
-      }
-      if (this.ap2) {
+      const tryAp2 = this.ap2 !== null && this.proven !== 'raop';
+      if (tryAp2 && this.ap2) {
+        if (await attempt(this.ap2)) {
+          this.active = this.ap2;
+          this.proven = 'ap2';
+          return true;
+        }
         // Let go of the PCM source and the half-open session before anything
-        // else primes from the same stream.
+        // else primes from the same stream: a lane that gives up has to hand the
+        // audio back running, or the next one waits on a stopped stream (#386).
         this.ap2.stop();
         if (!this.raopFallback) {
           return false;
@@ -183,6 +193,7 @@ export class AirplayLaneSender implements AirplaySender {
       }
       if (await attempt(this.raop)) {
         this.active = this.raop;
+        this.proven = 'raop';
         return true;
       }
       this.raop.stop();

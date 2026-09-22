@@ -70,11 +70,22 @@ export class PcmRing {
     };
     source.on('data', this.onData);
     this.sourcePaused = false;
+    // Attaching means we want the audio NOW, and the stream we are handed may
+    // already be stopped -- a `pause()` sticks, and adding a `data` listener does
+    // not undo it. This is what a lane handover walks into: the AirPlay 2 attempt
+    // holds the source back for its own buffer, is refused, and hands RAOP a
+    // stream that will never produce another byte (#386).
+    source.resume();
   }
 
   public detach(): void {
     if (this.source && this.onData) {
       this.source.removeListener('data', this.onData);
+      // Hand the source back the way we found it. Ours is not the only consumer
+      // a stream can have, and one left stopped stalls whoever takes it next.
+      if (this.sourcePaused) {
+        this.source.resume();
+      }
     }
     this.source = null;
     this.onData = null;
