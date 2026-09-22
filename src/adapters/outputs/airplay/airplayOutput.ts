@@ -333,8 +333,13 @@ export class AirPlayOutput implements ZoneOutput {
         return;
       }
     }
-    if (session) {
-      await this.play(session);
+    // A fresh start is the only way back for a sender that is no longer running
+    // (the AirPlay 1 lane ends its session on pause), so this must not dead-end
+    // on a resume that arrives without a session: the one we were playing is
+    // still the right one.
+    const target = session ?? this.lastSession;
+    if (target) {
+      await this.play(target);
     }
   }
 

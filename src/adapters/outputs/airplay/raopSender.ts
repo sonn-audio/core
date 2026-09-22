@@ -157,9 +157,25 @@ export class RaopSender implements AirplaySender {
     }
   }
 
+  /**
+   * Pause by ending the session, not by going quiet.
+   *
+   * RAOP's timeline IS the frame counter, and this lane has no way to move it:
+   * the streamer anchors once and every sync packet reports where that anchor has
+   * carried it. Simply stopping the feed freezes that position while the device's
+   * own clock keeps running, so the frames sent on resume describe a moment that
+   * has already passed and the device has nothing to render them at -- it accepts
+   * them and stays silent (#386, reported as a hang on resume; libraop re-anchored
+   * with an explicit `play` here, which node-airplay's RAOP lane does not offer).
+   *
+   * Tearing down instead also stops the speaker at once rather than letting it
+   * play out its read-ahead, and resume is then the ordinary fresh start that the
+   * output already falls back to when the sender is not running.
+   */
   public pause(): void {
     this.paused = true;
     this.stopSendLoop();
+    this.closeSession('pause');
   }
 
   public resume(source: NodeJS.ReadableStream): void {
@@ -167,7 +183,12 @@ export class RaopSender implements AirplaySender {
     this.ring.attach(source);
     if (this.streamer) {
       this.startSendLoop();
+      return;
     }
+    // Nothing to resume: pause ended the session. The output sees isRunning()
+    // false and starts a fresh one, which is the only way back onto a live
+    // timeline here.
+    this.log.debug('resume with no session; the output will start a fresh one', this.context);
   }
 
   public rebind(source: NodeJS.ReadableStream): void {
@@ -245,9 +266,20 @@ export class RaopSender implements AirplaySender {
     this.stopSendLoop();
     this.ring.detach();
     this.ring.clear();
-    // The streamer owns the UDP sockets and the timing responder; the RTSP
-    // connection is the session's, so both have to be let go or a restart binds
-    // a second set on top of the first.
+    this.closeSession('stop');
+  }
+
+  /**
+   * Let go of the session and everything it bound.
+   *
+   * The streamer owns the UDP sockets and the timing responder; the RTSP
+   * connection is the session's, so both have to be released or a restart binds
+   * a second set on top of the first.
+   */
+  private closeSession(reason: 'pause' | 'stop'): void {
+    if (!this.streamer && !this.session) {
+      return;
+    }
     this.streamer?.stop();
     this.streamer = null;
     if (this.session) {
@@ -258,7 +290,7 @@ export class RaopSender implements AirplaySender {
       }
       this.session = null;
     }
-    this.log.info('RAOP sender stopped', this.context);
+    this.log.info('RAOP session closed', { ...this.context, reason });
   }
 
   // -- session ---------------------------------------------------------------
