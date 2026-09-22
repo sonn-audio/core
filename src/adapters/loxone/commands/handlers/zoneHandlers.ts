@@ -28,6 +28,7 @@ const log = createLogger('Loxone', 'ZoneHandlers');
 
 const noopFadeController: FadeControllerPort = {
   parseFadeOptions: () => ({}),
+  prime: () => {},
   fadeIn: async () => {},
 };
 
@@ -459,6 +460,11 @@ async function audioFavoritePlay(
   const zoneId = parseNumberPart(parts[1], 0);
   const favoriteId = parseNumberPart(parts[4], 0);
   const fadeOpts = fadeController.parseFadeOptions(command);
+  // Mute first, then ask for the music. The other way round the zone starts at its normal listening
+  // level and only then drops to zero, which is a loud second in a dark bedroom (#392).
+  if (fadeOpts.fade) {
+    fadeController.prime(zoneId);
+  }
   await playFavorite(zoneManager, favoritesManager, contentManager, zoneId, favoriteId);
   if (fadeOpts.fade) {
     const duration = fadeOpts.fadeDurationMs ?? 120_000;

@@ -27,6 +27,7 @@ export type ZoneManagerFacade = Pick<
   | 'supportsNativeGrouping'
   | 'getGroupMembership'
   | 'getZoneVolumes'
+  | 'keepVolumeOnNextStart'
   | 'getOutputHandlers'
   | 'applyPatch'
   | 'applySourceDuration'

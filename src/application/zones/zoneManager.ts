@@ -550,6 +550,23 @@ export class ZoneManager {
     return this.zoneRepo.get(zoneId)?.config?.volumes;
   }
 
+  /**
+   * Keep the level the zone already carries when the next play starts.
+   *
+   * The fade-in needs this. A gentle wake mutes the room and ramps back up, but the start of
+   * playback lands in the middle of that ramp and would otherwise put the zone default on the
+   * outputs as its own first act -- the one loud second the fade exists to avoid (#392). Marking
+   * the zone says the level is already someone's decision.
+   *
+   * One-shot: `onPlayerStarted` consumes it. See `ZoneContext.startAtCurrentVolume`.
+   */
+  public keepVolumeOnNextStart(zoneId: number, keep: boolean): void {
+    const ctx = this.zoneRepo.get(zoneId);
+    if (ctx) {
+      ctx.startAtCurrentVolume = keep ? true : undefined;
+    }
+  }
+
   public async playContent(
     zoneId: number,
     uri: string,
