@@ -65,7 +65,7 @@
     "@isaacs/brace-expansion": "^5.0.0"
   },
   "dependencies": {
-    "@sonn-audio/node-airplay": "^0.1.1",
+    "@sonn-audio/node-airplay": "^0.1.2",
     "@sonn-audio/node-googlecast": "^0.1.2",
     "@sonn-audio/node-sendspin": "^0.6.2",
     "@sonn-audio/node-slimproto": "0.1.4",
