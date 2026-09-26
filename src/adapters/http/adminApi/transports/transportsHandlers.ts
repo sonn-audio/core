@@ -201,7 +201,8 @@ async function handleSonosDiscovery(
     const payload = devices.map((device) => ({
       id: device.udn || device.host,
       host: device.host,
-      name: device.name ?? device.roomName,
+      name: [device.roomName ?? device.name, device.model, device.host].filter(Boolean).join(' · '),
+      model: device.model,
       roomName: device.roomName,
       householdId: device.householdId,
       active: activeHost ? device.host === activeHost : undefined,
