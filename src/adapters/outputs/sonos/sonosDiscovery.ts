@@ -306,13 +306,19 @@ async function resolveDeviceFromLocation(
     if (!host) {
       return null;
     }
-    const name = matchTag(xml, 'friendlyName');
+    const friendlyName = matchTag(xml, 'friendlyName');
+    // S2 device descriptions carry the user-configured room name directly; /status/zp
+    // no longer has <RoomName> and its <ZoneName> carries a channel suffix like "(LF,RF)".
+    const descRoomName = matchTag(xml, 'roomName');
+    const model = matchTag(xml, 'modelName') ?? undefined;
     const udn = matchTag(xml, 'UDN')?.replace(/^uuid:/i, '');
     const status = await fetchStatus(host, householdId);
+    const roomName = descRoomName ?? status?.roomName ?? undefined;
     return {
       host,
-      name: name ?? status?.roomName ?? undefined,
-      roomName: status?.roomName,
+      name: roomName ?? friendlyName ?? undefined,
+      roomName,
+      model,
       udn,
       householdId: status?.householdId,
     };
@@ -340,7 +346,7 @@ async function fetchStatus(
       return null;
     }
     return {
-      roomName: matchTag(xml, 'RoomName') ?? matchTag(xml, 'ZoneName') ?? undefined,
+      roomName: matchTag(xml, 'RoomName') ?? stripChannelSuffix(matchTag(xml, 'ZoneName')) ?? undefined,
       householdId: household ?? undefined,
     };
   } catch {
@@ -452,6 +458,11 @@ function buildSearchRequest(mx: number, target: string): Buffer {
     '',
   ].join('\r\n');
   return Buffer.from(payload);
+}
+
+function stripChannelSuffix(value: string | null): string | null {
+  if (!value) return null;
+  return value.replace(/\s*\([A-Z,+]+\)\s*$/, '').trim() || null;
 }
 
 function matchTag(xml: string, tag: string): string | null {
