@@ -8,7 +8,7 @@ import {
   invalidateWidevineArtifactsCache,
   loadWidevineArtifacts,
   WidevineArtifactsError,
-} from '@/adapters/content/providers/applemusic/widevine';
+} from '@/adapters/content/drm/widevine';
 import type { AppleMusicAdminPort, WidevineVerification } from '@/ports/AppleMusicAdminPort';
 import { createLogger } from '@/shared/logging/logger';
 

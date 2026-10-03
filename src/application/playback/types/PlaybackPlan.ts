@@ -2,7 +2,15 @@ import type { PlaybackMetadata } from '@/ports/types/playback';
 import type { PreferredPlaybackSettings } from '@/application/playback/policies/OutputFormatPolicy';
 
 export type PlaybackKind = 'queue' | 'live-input' | 'provider-stream';
-export type ProviderKind = 'applemusic' | 'deezer' | 'tidal' | 'ytmusic' | 'youtube' | 'soundcloud' | null;
+export type ProviderKind =
+  | 'applemusic'
+  | 'deezer'
+  | 'tidal'
+  | 'amazonmusic'
+  | 'ytmusic'
+  | 'youtube'
+  | 'soundcloud'
+  | null;
 
 export type PlaybackPlan = {
   zoneId: number;

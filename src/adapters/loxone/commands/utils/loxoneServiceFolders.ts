@@ -91,6 +91,15 @@ const SLOT_NODES: Record<string, ServiceSlots> = {
     },
     projectRoot: true,
   },
+  // Amazon Music's library is its playlists: the account's own in My Playlists, the ones it
+  // follows beside them in the slot the app shows as liked. Everything else is search.
+  amazonmusic: {
+    nodes: {
+      '3': 'playlists',
+      '4': 'followed-playlists',
+    },
+    projectRoot: false,
+  },
   // Deezer's four chart feeds and Music Assistant's library sections have always
   // gone out under their own names, so they stay that way (projectRoot: false).
   deezer: {

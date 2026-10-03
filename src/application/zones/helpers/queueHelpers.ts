@@ -27,7 +27,7 @@ export function normalizeSpotifyAudiopath(value: string): string {
   if (/tidal/i.test(cleaned)) {
     return cleaned;
   }
-  if (/^(soundcloud|ytmusic|youtube):/i.test(cleaned)) {
+  if (/^(soundcloud|ytmusic|youtube|amazonmusic):/i.test(cleaned)) {
     return cleaned;
   }
   if (cleaned.startsWith('spotify:') && !cleaned.startsWith('spotify@')) {

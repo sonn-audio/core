@@ -68,6 +68,8 @@ import './ytMusicAdminRoutes.test';
 import './integrationAdminRoutes.test';
 import './sendspinGroupController.test';
 import './appleMusicStreamHelpers.test';
+import './amazonMusic.test';
+import './amazonMusicServiceSave.test';
 import './audioServersAndBearer.test';
 import './outputFactory.airplay.test';
 import './outputFactory.sendspin.test';

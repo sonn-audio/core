@@ -1,4 +1,5 @@
 import type { AppleMusicAdminPort } from '@/ports/AppleMusicAdminPort';
+import type { AmazonMusicAdminPort } from '@/ports/AmazonMusicAdminPort';
 import type { TuneInUsernameCheck } from '@/adapters/content/providers/tunein/tuneinAdmin';
 import type { SoloistAdminPort } from '@/ports/SoloistAdminPort';
 import type { YtMusicAdminPort } from '@/ports/YtMusicAdminPort';
@@ -35,6 +36,8 @@ import type { MqttPublisher } from '@/adapters/mqtt/mqttPublisher';
 export type AdminApiOptions = {
   /** Apple Music's management operations; see AppleMusicAdminPort. */
   appleMusicAdmin: AppleMusicAdminPort;
+  /** Amazon Music's sign-in; see AmazonMusicAdminPort. */
+  amazonMusicAdmin: AmazonMusicAdminPort;
   /** Whether a TuneIn username resolves; see the TuneIn admin module. */
   validateTuneInUsername: (username: string) => Promise<TuneInUsernameCheck>;
   /** Soloist's management operations; see SoloistAdminPort. */
@@ -88,6 +91,7 @@ import {
 import { MiniserverAuthClient } from '@/adapters/http/adminApi/auth/miniserverAuthClient';
 import { buildAuthRoutes } from '@/adapters/http/adminApi/auth/authHandlers';
 import { buildAppleMusicRoutes } from '@/adapters/http/adminApi/applemusic/appleMusicHandlers';
+import { buildAmazonMusicRoutes } from '@/adapters/http/adminApi/amazonmusic/amazonMusicHandlers';
 import { buildAlertsRoutes } from '@/adapters/http/adminApi/alerts/alertsHandlers';
 import { buildSubsonicRoutes } from '@/adapters/http/adminApi/subsonic/subsonicHandlers';
 import { buildMqttRoutes } from '@/adapters/http/adminApi/mqtt/mqttHandlers';
@@ -197,6 +201,7 @@ export class AdminApiHandler {
   private readonly radioAdmin: RadioAdminPort;
   private readonly soloistAdmin: SoloistAdminPort;
   private readonly appleMusicAdmin: AppleMusicAdminPort;
+  private readonly amazonMusicAdmin: AmazonMusicAdminPort;
   private readonly validateTuneInUsername: AdminApiOptions['validateTuneInUsername'];
   private readonly spotifyInputService: SpotifyInputService;
   private readonly sendspinLineInService: SendspinLineInService;
@@ -238,6 +243,7 @@ export class AdminApiHandler {
     this.ytMusicAdmin = options.ytMusicAdmin;
     this.soloistAdmin = options.soloistAdmin;
     this.appleMusicAdmin = options.appleMusicAdmin;
+    this.amazonMusicAdmin = options.amazonMusicAdmin;
     this.validateTuneInUsername = options.validateTuneInUsername;
     this.radioAdmin = options.radioAdmin;
     this.spotifyInputService = options.spotifyInputService;
@@ -290,6 +296,12 @@ export class AdminApiHandler {
         sendJson: (res, status, payload) => sendJson(res, status, payload),
         sendHtml: (res, status, html) => sendHtml(res, status, html),
       }),
+      ...buildAmazonMusicRoutes({
+        log: this.log,
+        amazonMusicAdmin: this.amazonMusicAdmin,
+        readJsonBody: (req, res) => readJsonBody(req, res),
+        sendJson: (res, status, payload) => sendJson(res, status, payload),
+      }),
       ...buildYtDlpRoutes({
         log: this.log,
         ytMusicAdmin: this.ytMusicAdmin,
@@ -305,6 +317,7 @@ export class AdminApiHandler {
       ...buildSpotifyRoutes({
         log: this.log,
         ytMusicAdmin: this.ytMusicAdmin,
+        amazonMusicAdmin: this.amazonMusicAdmin,
         soloistAdmin: this.soloistAdmin,
         configPort: this.configPort,
         notifier: this.notifier,

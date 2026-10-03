@@ -14,6 +14,8 @@ import { YoutubeStreamService } from '@/adapters/content/providers/youtube/youtu
 import { YoutubeStreamResolver } from '@/adapters/content/providers/youtube/youtubeStreamResolver';
 import { SoundCloudStreamService } from '@/adapters/content/providers/soundcloud/soundcloudStreamService';
 import { SoundCloudStreamResolver } from '@/adapters/content/providers/soundcloud/soundcloudStreamResolver';
+import { AmazonMusicStreamService } from '@/adapters/content/providers/amazonmusic/amazonMusicStreamService';
+import { AmazonMusicStreamResolver } from '@/adapters/content/providers/amazonmusic/amazonMusicStreamResolver';
 
 /** How a stream service says a zone's playback failed. */
 type OutputErrorHandler = (zoneId: number, reason?: string) => void;
@@ -27,13 +29,13 @@ export type StreamProviders = {
   /**
    * The services that hand the player a URL on our own host instead of the
    * service's — DRM manifests and segment fetches that need our credentials.
-   * Only three of the six do.
+   * Four of the seven do.
    */
   proxyRoutes: StreamProxyRoute[];
 };
 
 /**
- * Build the six bridged streaming services and the resolvers that front them.
+ * Build the seven bridged streaming services and the resolvers that front them.
  *
  * They are constructed identically — an error callback and the config port —
  * and the composition root has nothing to say about any of them individually,
@@ -55,6 +57,7 @@ export function createStreamProviders(
   const ytmusic = new YtMusicStreamService(onOutputError, configPort);
   const youtube = new YoutubeStreamService(onOutputError, configPort);
   const soundcloud = new SoundCloudStreamService(onOutputError, configPort);
+  const amazonMusic = new AmazonMusicStreamService(onOutputError, configPort);
 
   return {
     resolvers: [
@@ -64,7 +67,13 @@ export function createStreamProviders(
       new YtMusicStreamResolver(ytmusic),
       new YoutubeStreamResolver(youtube),
       new SoundCloudStreamResolver(soundcloud),
+      new AmazonMusicStreamResolver(amazonMusic),
     ],
-    proxyRoutes: [tidal.getProxyRoute(), deezer.getProxyRoute(), appleMusic.getProxyRoute()],
+    proxyRoutes: [
+      tidal.getProxyRoute(),
+      deezer.getProxyRoute(),
+      appleMusic.getProxyRoute(),
+      amazonMusic.getProxyRoute(),
+    ],
   };
 }

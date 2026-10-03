@@ -24,7 +24,7 @@ import {
   extractPsshFromKeyUri,
   extractKidFromKeyUri,
   normalizeBase64,
-} from './widevine';
+} from '@/adapters/content/drm/widevine';
 import {
   extractKeyInfo,
   findPsshKeyUri,

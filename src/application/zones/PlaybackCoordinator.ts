@@ -100,6 +100,12 @@ const STREAM_FAILURE_REPORTS: ReadonlyArray<StreamFailureReport> = [
   },
   { provider: 'deezer', label: 'deezer' },
   { provider: 'tidal', label: 'tidal' },
+  {
+    provider: 'amazonmusic',
+    label: 'amazon music',
+    reasonAlreadyRecorded: (lastError) =>
+      lastError === 'widevine missing' || lastError?.startsWith('amazon music') === true,
+  },
   { provider: 'ytmusic', label: 'ytmusic' },
   { provider: 'youtube', label: 'youtube' },
   {

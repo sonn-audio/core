@@ -1,4 +1,5 @@
 import type { AppleMusicAdminPort } from '@/ports/AppleMusicAdminPort';
+import type { AmazonMusicAdminPort } from '@/ports/AmazonMusicAdminPort';
 import type { TuneInUsernameCheck } from '@/adapters/content/providers/tunein/tuneinAdmin';
 import type { SoloistAdminPort } from '@/ports/SoloistAdminPort';
 import type { YtMusicAdminPort } from '@/ports/YtMusicAdminPort';
@@ -42,6 +43,8 @@ import type { WebdavServer } from '@/adapters/webdav/webdavServer';
 export type AdminSurfaceDeps = {
   /** Apple Music's management operations; see AppleMusicAdminPort. */
   appleMusicAdmin: AppleMusicAdminPort;
+  /** Amazon Music's sign-in; see AmazonMusicAdminPort. */
+  amazonMusicAdmin: AmazonMusicAdminPort;
   /** Whether a TuneIn username resolves; see the TuneIn admin module. */
   validateTuneInUsername: (username: string) => Promise<TuneInUsernameCheck>;
   /** Finding a radio station, and hearing one; see RadioAdminPort. */
@@ -94,6 +97,7 @@ export function createAdminApiDeps(
 ): AdminApiOptions {
   return {
     appleMusicAdmin: deps.appleMusicAdmin,
+    amazonMusicAdmin: deps.amazonMusicAdmin,
     validateTuneInUsername: deps.validateTuneInUsername,
     radioAdmin: deps.radioAdmin,
     soloistAdmin: deps.soloistAdmin,

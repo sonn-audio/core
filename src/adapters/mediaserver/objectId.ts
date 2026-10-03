@@ -29,6 +29,7 @@ export type MediaServerService =
   | 'applemusic'
   | 'deezer'
   | 'tidal'
+  | 'amazonmusic'
   | 'ytmusic'
   | 'youtube'
   | 'soundcloud'

@@ -143,6 +143,7 @@ export class QueueController {
       authority === 'applemusic' ||
       authority === 'deezer' ||
       authority === 'tidal' ||
+      authority === 'amazonmusic' ||
       authority === 'ytmusic' ||
       authority === 'soundcloud'
     );

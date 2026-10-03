@@ -112,6 +112,7 @@ export const BRIDGE_STREAMING_SERVICES = new Set([
   'applemusic',
   'deezer',
   'tidal',
+  'amazonmusic',
   'soundcloud',
   'ytmusic',
   'youtube',
@@ -130,6 +131,7 @@ export const BRIDGE_QUEUE_SERVICES = [
   'applemusic',
   'deezer',
   'tidal',
+  'amazonmusic',
   'ytmusic',
   'soundcloud',
 ] as const;
@@ -218,7 +220,17 @@ export function parseTrackAudiopath(audiopath: string): ParsedTrackAudiopath | n
  */
 export function detectServiceFromAudiopath(
   p: string,
-): 'spotify' | 'radio' | 'library' | 'musicassistant' | 'applemusic' | 'deezer' | 'tidal' | 'ytmusic' | 'soundcloud' {
+):
+  | 'spotify'
+  | 'radio'
+  | 'library'
+  | 'musicassistant'
+  | 'applemusic'
+  | 'deezer'
+  | 'tidal'
+  | 'amazonmusic'
+  | 'ytmusic'
+  | 'soundcloud' {
   const raw = (p || '').toLowerCase();
   if (
     raw.includes('musicassistant') ||
@@ -235,6 +247,9 @@ export function detectServiceFromAudiopath(
   }
   if (raw.includes('tidal')) {
     return 'tidal';
+  }
+  if (raw.includes('amazonmusic')) {
+    return 'amazonmusic';
   }
   if (raw.includes('soundcloud')) {
     return 'soundcloud';
@@ -258,6 +273,9 @@ export function detectServiceFromAudiopath(
   }
   if (lower.includes('tidal')) {
     return 'tidal';
+  }
+  if (lower.includes('amazonmusic')) {
+    return 'amazonmusic';
   }
   if (lower.includes('soundcloud')) {
     return 'soundcloud';
@@ -391,6 +409,7 @@ export function inferAudiotype(uri: string): number {
     lower.includes('applemusic') ||
     lower.includes('deezer') ||
     lower.includes('tidal') ||
+    lower.includes('amazonmusic') ||
     lower.includes('soundcloud') ||
     lower.startsWith('spotify:') ||
     lower.startsWith('spotify@')

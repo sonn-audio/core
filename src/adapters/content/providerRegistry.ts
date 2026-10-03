@@ -8,6 +8,7 @@ import { YtMusicProvider } from '@/adapters/content/providers/ytmusic/ytmusicPro
 import { scheduleYtMusicCookieCheck } from '@/adapters/content/providers/ytmusic/ytmusicAuthState';
 import { YoutubeProvider } from '@/adapters/content/providers/youtube/youtubeProvider';
 import { SoundCloudProvider } from '@/adapters/content/providers/soundcloud/soundcloudProvider';
+import { AmazonMusicProvider } from '@/adapters/content/providers/amazonmusic/amazonMusicProvider';
 
 /**
  * What a provider needs to know about the account it is being built for.
@@ -146,6 +147,13 @@ export const CONTENT_PROVIDERS: readonly ProviderDefinition[] = [
         oauthToken: bridge.soundcloudOauthToken,
         clientId: bridge.soundcloudClientId,
       }),
+  },
+  {
+    id: 'amazonmusic',
+    title: 'Amazon Music',
+    icon: '/admin/providers/amazon-music.svg',
+    create: ({ providerId, serviceNativePrefix, label, bridge }) =>
+      new AmazonMusicProvider({ providerId, serviceNativePrefix, label, credentials: bridge.amazonMusic }),
   },
 ];
 

@@ -25,6 +25,7 @@ const FORCE_LOCAL_QUEUE_SERVICES: ReadonlySet<string> = new Set([
   'applemusic',
   'deezer',
   'tidal',
+  'amazonmusic',
   'soundcloud',
 ]);
 

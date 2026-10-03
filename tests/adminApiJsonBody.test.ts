@@ -159,6 +159,12 @@ function createHandler(): AdminApiHandler {
       scrapedDeveloperToken: async () => null,
       verifyWidevineArtifacts: async () => ({ ok: false, code: 'missing', details: [] }),
     },
+    amazonMusicAdmin: {
+      storefronts: () => [],
+      startLogin: () => ({ loginId: '', url: '' }),
+      finishLogin: async () => ({ ok: false, error: 'expired', message: '' }),
+      takeCredentials: () => null,
+    },
     validateTuneInUsername: async () => ({ found: false }),
     radioAdmin: makeRadioAdminFake(),
     zoneManager,

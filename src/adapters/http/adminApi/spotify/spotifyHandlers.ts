@@ -1,5 +1,6 @@
 import type { SoloistAdminPort } from '@/ports/SoloistAdminPort';
 import type { YtMusicAdminPort } from '@/ports/YtMusicAdminPort';
+import type { AmazonMusicAdminPort } from '@/ports/AmazonMusicAdminPort';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ComponentLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
@@ -41,6 +42,8 @@ export type SpotifyHandlerDeps = {
    * asks the same object rather than importing the same two modules a second time.
    */
   ytMusicAdmin: YtMusicAdminPort;
+  /** Hands over the device registration an Amazon Music sign-in produced, when one is saved. */
+  amazonMusicAdmin: AmazonMusicAdminPort;
   log: ComponentLogger;
   configPort: ConfigPort;
   notifier: NotifierPort;
@@ -285,6 +288,27 @@ async function handleStreamingServiceCreate(
 
   const generatedId = `bridge-${provider}-${Math.random().toString(36).slice(2, 8)}`;
   const id = typeof body?.id === 'string' && body.id.trim() ? body.id.trim() : generatedId;
+
+  // An Amazon Music account is its device registration, which the sign-in flow holds server-side
+  // and hands over by login id. Re-saving an existing account (a new label, say) keeps the one it
+  // has; a new account without a finished sign-in has nothing to play with.
+  let amazonMusicCredentials: StreamingServiceConfig['amazonMusic'];
+  if (provider === 'amazonmusic') {
+    const loginId = typeof (body as { amazonMusicLoginId?: unknown } | null)?.amazonMusicLoginId === 'string'
+      ? String((body as { amazonMusicLoginId: string }).amazonMusicLoginId)
+      : '';
+    amazonMusicCredentials = loginId ? deps.amazonMusicAdmin.takeCredentials(loginId) ?? undefined : undefined;
+    const existing = (deps.configPort.getConfig().content?.streamingServices ?? []).find(
+      (b) => b?.id?.toLowerCase() === id.toLowerCase(),
+    );
+    if (!amazonMusicCredentials && !existing?.amazonMusic) {
+      deps.sendJson(res, 400, {
+        error: 'amazonmusic-login-required',
+        message: loginId ? 'This sign-in has expired. Sign in to Amazon again.' : 'Sign in to Amazon first.',
+      });
+      return;
+    }
+  }
   const defaultLabel =
     provider === 'applemusic'
       ? 'Apple Music'
@@ -294,9 +318,11 @@ async function handleStreamingServiceCreate(
           ? 'Deezer'
           : provider === 'tidal'
             ? 'Tidal'
-            : provider === 'ytmusic'
-              ? 'YouTube Music'
-              : id;
+            : provider === 'amazonmusic'
+              ? 'Amazon Music'
+              : provider === 'ytmusic'
+                ? 'YouTube Music'
+                : id;
 
   const bridge: StreamingServiceConfig = {
     id,
@@ -351,6 +377,12 @@ async function handleStreamingServiceCreate(
         ? body.soundcloudClientId.trim()
         : undefined,
   };
+
+  // Only when there is a new one: the update below merges over the stored account, and an
+  // explicit undefined would erase the registration it already has.
+  if (amazonMusicCredentials) {
+    bridge.amazonMusic = amazonMusicCredentials;
+  }
 
   try {
     await deps.configPort.updateConfig((cfg) => {

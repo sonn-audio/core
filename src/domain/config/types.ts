@@ -384,6 +384,27 @@ export interface SpotifyAccountConfig {
   deviceId?: string;
 }
 
+/**
+ * An Amazon Music account, as the device it registered as.
+ *
+ * Amazon has no API for third parties, so an account is added the way its Android app adds one:
+ * a sign-in that registers a device, whose RSA key then signs every request. Nothing here expires
+ * on a schedule — the registration holds until the device is removed from the Amazon account.
+ */
+export interface AmazonMusicCredentials {
+  /** ISO country of the storefront signed in to; decides the API backend and marketplace. */
+  country: string;
+  deviceSerial: string;
+  adpToken: string;
+  /** PEM. */
+  devicePrivateKey: string;
+  websiteCookies: Record<string, string>;
+  customerId: string;
+  accountName?: string;
+  /** What the subscription can play: lossless needs `unlimited`. */
+  tier?: 'unlimited' | 'prime' | 'free';
+}
+
 export interface StreamingServiceConfig {
   id: string;
   label: string;
@@ -425,6 +446,8 @@ export interface StreamingServiceConfig {
    * automatically from the public web player; set this only to pin a value.
    */
   soundcloudClientId?: string;
+  /** Device registration when provider === 'amazonmusic'; written by the sign-in flow. */
+  amazonMusic?: AmazonMusicCredentials;
   /** Optional Apple Music input pacing toggle (true keeps ffmpeg -re; false disables pacing). */
   appleMusicPaceInput?: boolean;
   /** When true, register all zones as players up front; otherwise register on-demand. */

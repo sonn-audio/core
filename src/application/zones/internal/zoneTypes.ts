@@ -16,6 +16,7 @@ export type QueueAuthority =
   | 'applemusic'
   | 'deezer'
   | 'tidal'
+  | 'amazonmusic'
   | 'ytmusic'
   | 'youtube'
   | 'soundcloud'

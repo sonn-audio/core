@@ -19,7 +19,7 @@ type ProviderChecks = {
  * services" still names a slightly different set. Kept as-is here; unifying those sets is a
  * behaviour decision, not a mechanical one.
  */
-const NORMALIZED_PARENT_PROVIDERS = ['applemusic', 'deezer', 'tidal', 'soundcloud'];
+const NORMALIZED_PARENT_PROVIDERS = ['applemusic', 'deezer', 'tidal', 'amazonmusic', 'soundcloud'];
 
 export function parseParentContext(raw: string): ParentContext | null;
 export function parseParentContext(raw: string, providers?: ProviderChecks): ParentContext | null;

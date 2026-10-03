@@ -203,7 +203,7 @@ async function audioServicePlay(
         if (
           rest.startsWith('spotify:') &&
           maybeUser &&
-          (/applemusic/i.test(maybeUser) || /deezer/i.test(maybeUser) || /tidal/i.test(maybeUser) || /musicassistant/i.test(maybeUser) || /^bridge-/i.test(maybeUser))
+          (/applemusic/i.test(maybeUser) || /deezer/i.test(maybeUser) || /tidal/i.test(maybeUser) || /amazonmusic/i.test(maybeUser) || /musicassistant/i.test(maybeUser) || /^bridge-/i.test(maybeUser))
         ) {
           return `spotify@${maybeUser}:${rest.replace(/^spotify:/i, '')}`;
         }
@@ -217,8 +217,8 @@ async function audioServicePlay(
       // resolution for album/playlist/artist container playback).
       if (
         maybeUser &&
-        /^(?:bridge-)?(?:applemusic|deezer|tidal|soundcloud|ytmusic|youtube|musicassistant)\b/i.test(maybeUser) &&
-        /^(?:applemusic|deezer|tidal|soundcloud|ytmusic|youtube|musicassistant):/i.test(rest)
+        /^(?:bridge-)?(?:applemusic|deezer|tidal|amazonmusic|soundcloud|ytmusic|youtube|musicassistant)\b/i.test(maybeUser) &&
+        /^(?:applemusic|deezer|tidal|amazonmusic|soundcloud|ytmusic|youtube|musicassistant):/i.test(rest)
       ) {
         // Strip the service prefix from the native rest so the envelope carries
         // the kind:id tail, matching the legacy `spotify@<account>:kind:id` shape.

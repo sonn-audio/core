@@ -53,7 +53,7 @@ const RECENT_TYPE_ITEM = 2;
  *
  * All of them are reported to the client as `spotify` — that is the disguise
  * the Loxone app understands — so the only thing that differs per service is
- * which word in the path means "this is a container". Three look for an album;
+ * which word in the path means "this is a container". Four look for an album;
  * SoundCloud has no albums and uses playlists and artists instead.
  *
  * `ytmusic` and `youtube` are absent, as they were before this became a table:
@@ -63,6 +63,7 @@ const BRIDGE_RECENT_TYPES: ReadonlyArray<{ service: string; container: RegExp }>
   { service: 'applemusic', container: /album/ },
   { service: 'deezer', container: /album/ },
   { service: 'tidal', container: /album/ },
+  { service: 'amazonmusic', container: /album/ },
   { service: 'soundcloud', container: /playlist|artist/ },
 ];
 

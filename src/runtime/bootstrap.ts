@@ -29,6 +29,7 @@ import { outputDiscovery } from '@/adapters/outputs/outputDiscovery';
 import { ytMusicAdmin } from '@/adapters/content/providers/ytmusic/ytmusicAdmin';
 import { soloistAdmin } from '@/adapters/inputs/spotify/soloist/soloistAdmin';
 import { appleMusicAdmin } from '@/adapters/content/providers/applemusic/appleMusicAdmin';
+import { amazonMusicAdmin } from '@/adapters/content/providers/amazonmusic/amazonMusicAdmin';
 import { validateTuneInUsername } from '@/adapters/content/providers/tunein/tuneinAdmin';
 import { radioAdmin } from '@/adapters/content/providers/radiobrowser/radioAdmin';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
@@ -723,6 +724,7 @@ export function createRuntime(): Runtime {
       ytMusicAdmin,
       soloistAdmin,
       appleMusicAdmin,
+      amazonMusicAdmin,
       validateTuneInUsername,
       radioAdmin,
       onReinitialize: handleReinitialize,

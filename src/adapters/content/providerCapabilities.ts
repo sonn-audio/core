@@ -26,6 +26,7 @@ const CAPABILITIES: Record<string, ProviderCapabilities> = {
   applemusic: { browse: true, search: MUSIC, catalogueExceedsLibrary: true },
   deezer: { browse: true, search: MUSIC, catalogueExceedsLibrary: true },
   tidal: { browse: true, search: MUSIC, catalogueExceedsLibrary: true },
+  amazonmusic: { browse: true, search: MUSIC, catalogueExceedsLibrary: true },
   // No album search: the provider's own search assigns tracks, artists and playlists only.
   soundcloud: {
     browse: true,
