@@ -146,6 +146,7 @@ import './alertHandlers.playeventfile.test';
 import './alertHandlers.zoneRoutes.test';
 import './alertStartAlignment.test';
 import './alertsCoordinator.test';
+import './alertStreamTail.test';
 import './playbackErrorOrigin.test';
 import './alertsManager.volume.test';
 import './ttsProviders.test';

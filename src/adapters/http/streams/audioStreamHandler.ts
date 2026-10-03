@@ -17,6 +17,7 @@ import {
   type AudioOutputSettings,
 } from '@/ports/types/audioFormat';
 import type { StreamEvents } from '@/adapters/http/streams/streamEvents';
+import { resolveSessionPreDelayMs } from '@/application/playback/playbackPreDelay';
 
 /**
  * Serves `/streams/:zone/:id` endpoints backed by the audio manager sessions.
@@ -364,14 +365,25 @@ export class AudioStreamHandler {
     return dotIndex > 0 ? value.slice(0, dotIndex) : value;
   }
 
+  /**
+   * How long the stream we serve lasts, which is not how long the track lasts: the engine
+   * prepends the amp's wake-up silence to the body, and a Content-Length sized from the track
+   * alone ends the response that much before the music does. On a DLNA renderer that was the
+   * last second of every announcement on a cold zone, closed off by us mid-word (#387).
+   *
+   * The longer of the two durations wins. The engine's is whole seconds and can round a clip
+   * down; an alert's metadata carries its stop margin. Too long costs only zero padding at the
+   * tail (see `pipeWithContentLength`); too short costs audio.
+   */
   private resolveDurationSeconds(session: PlaybackSession): number | null {
-    if (session?.duration && session.duration > 0) {
-      return session.duration;
+    const trackSeconds = Math.max(
+      session?.duration && session.duration > 0 ? session.duration : 0,
+      session?.metadata?.duration && session.metadata.duration > 0 ? session.metadata.duration : 0,
+    );
+    if (trackSeconds <= 0) {
+      return null;
     }
-    if (session?.metadata?.duration && session.metadata.duration > 0) {
-      return session.metadata.duration;
-    }
-    return null;
+    return trackSeconds + resolveSessionPreDelayMs(session) / 1000;
   }
 
   private shouldUseChunked(profile: HttpProfile): boolean {

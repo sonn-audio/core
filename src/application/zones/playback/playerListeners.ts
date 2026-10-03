@@ -372,6 +372,13 @@ function onPlayerEnded(coordinator: PlayerListenerCoordinator, zoneId: number): 
     return;
   }
   if (ctx.alert) {
+    // An armed stop window already knows when the room finishes hearing the alert; the clock
+    // only knows when the server finished sending it, and ending there cut the tail off every
+    // announcement on a renderer that holds a second or more (#387). Without a window, the
+    // clock is all there is.
+    if (ctx.alert.stopTimer) {
+      return;
+    }
     void coordinator.stopAlert(zoneId);
     return;
   }
