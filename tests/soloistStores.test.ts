@@ -9,6 +9,7 @@ import {
   applyPreferences,
   hasStoredSession,
   promotePairedStore,
+  signedInSpotifyId,
   zoneStore,
 } from '../src/adapters/inputs/spotify/soloist/soloistProcess';
 
@@ -120,6 +121,21 @@ test('a store is only signed in once an account is actually in it', async () => 
 
   await fsp.mkdir(path.join(store.data, 'settings', 'Users', 'someone'), { recursive: true });
   assert.equal(await hasStoredSession(store), true);
+});
+
+test('a store is signed in as the Spotify id itself, not as its directory name', async () => {
+  // Soloist percent-encodes the id it names the directory after. Read as it stands, an account
+  // with an umlaut in it was turned away at pairing for being signed in as somebody else (#399).
+  const store = await tempStore();
+  assert.equal(await signedInSpotifyId(store), undefined);
+
+  const users = path.join(store.data, 'settings', 'Users');
+  await fsp.mkdir(path.join(users, 'xxxx_d%C3%BCthxxx-user'), { recursive: true });
+  assert.equal(await signedInSpotifyId(store), 'xxxx_d\u00fcthxxx');
+
+  await fsp.rm(users, { recursive: true });
+  await fsp.mkdir(path.join(users, 'plain_100%-user'), { recursive: true });
+  assert.equal(await signedInSpotifyId(store), 'plain_100%', 'a bare % is kept, not thrown on');
 });
 
 test('a cleared token store is not signed in, however signed in it looks', async () => {

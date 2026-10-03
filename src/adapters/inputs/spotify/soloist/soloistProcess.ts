@@ -171,11 +171,31 @@ export async function hasStoredSession(store: SoloistStore): Promise<boolean> {
 }
 
 /** Which account a store is signed in as, as Spotify spells it. Empty when nobody is. */
-export async function storedAccounts(store: SoloistStore): Promise<string[]> {
+async function storedAccounts(store: SoloistStore): Promise<string[]> {
   try {
     return await fsp.readdir(path.join(store.data, 'settings', 'Users'));
   } catch {
     return [];
+  }
+}
+
+/**
+ * The Spotify user id a store is signed in as, spelled the way Spotify spells it.
+ *
+ * Soloist names the directory after the id with `-user` appended, percent-encoded: `düth` lands on
+ * disk as `d%C3%BCth`. Compared as it stands, the right account reads as somebody else.
+ */
+export async function signedInSpotifyId(store: SoloistStore): Promise<string | undefined> {
+  const [dir] = await storedAccounts(store);
+  if (!dir) {
+    return undefined;
+  }
+  const encoded = dir.replace(/-user$/, '');
+  try {
+    return decodeURIComponent(encoded).normalize('NFC');
+  } catch {
+    // Not valid percent-encoding, so not encoded at all — a name with a bare `%` in it.
+    return encoded.normalize('NFC');
   }
 }
 

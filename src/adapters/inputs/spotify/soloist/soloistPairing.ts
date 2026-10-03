@@ -6,8 +6,8 @@ import {
   accountPairingStore,
   hasStoredSession,
   promotePairedStore,
+  signedInSpotifyId,
   startPairing,
-  storedAccounts,
 } from '@/adapters/inputs/spotify/soloist/soloistProcess';
 
 const log = createLogger('Content', 'SoloistPairing');
@@ -120,11 +120,9 @@ export async function startAccountPairing(params: {
     // The exit code is not the answer — a run told to stop exits the same way a paired one does.
     // What settles it is whether a session is there now, which is the thing being asked for.
     if (await hasStoredSession(store)) {
-      const [username] = await storedAccounts(store);
-      // Soloist names the directory after the Spotify user id with `-user` appended.
-      const signedIn = (username ?? '').replace(/-user$/, '');
+      const signedIn = (await signedInSpotifyId(store)) ?? '';
       const expected = params.expectedSpotifyId;
-      if (expected && signedIn && signedIn.toLowerCase() !== expected.toLowerCase()) {
+      if (expected && signedIn && !sameSpotifyUser(signedIn, expected)) {
         settle(entry, 'failed');
         entry.username = signedIn;
         entry.error = 'wrong_account';
@@ -161,6 +159,11 @@ export async function startAccountPairing(params: {
   });
 
   return pairingSnapshot(accountId) as SoloistPairingState;
+}
+
+/** Spotify ids are matched without regard to case, and `ü` is `ü` however it was composed. */
+function sameSpotifyUser(a: string, b: string): boolean {
+  return a.normalize('NFC').toLowerCase() === b.normalize('NFC').toLowerCase();
 }
 
 /** Give up on a pairing nobody is going to complete, so the device stops being offered. */
