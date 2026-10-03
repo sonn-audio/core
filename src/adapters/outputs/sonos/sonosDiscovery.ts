@@ -157,7 +157,14 @@ type TopologyHostInfo = {
   coordinatorHost?: string;
 };
 
-function parseTopology(xml: string): { hosts: Map<string, TopologyHostInfo> } {
+/**
+ * Who plays and who only follows, from a GetZoneGroupState document.
+ *
+ * The passive half of a stereo pair is a <ZoneGroupMember Invisible="1">; a home theatre's Sub and
+ * surrounds are <Satellite> elements nested inside the soundbar's member. Both are passive: they
+ * take no commands of their own, and everything sent to them belongs to the group's coordinator.
+ */
+export function parseTopology(xml: string): { hosts: Map<string, TopologyHostInfo> } {
   const hosts = new Map<string, TopologyHostInfo>();
 
   const groupRe = /<ZoneGroup\b([^>]*)>([\s\S]*?)<\/ZoneGroup>/gi;
@@ -174,10 +181,11 @@ function parseTopology(xml: string): { hosts: Map<string, TopologyHostInfo> } {
       passiveSatellite: boolean;
     }> = [];
 
-    const memberRe = /<ZoneGroupMember\b([^>]*?)(?:\/>|>)/gi;
+    const memberRe = /<(ZoneGroupMember|Satellite)\b([^>]*?)(?:\/>|>)/gi;
     let memberMatch: RegExpExecArray | null;
     while ((memberMatch = memberRe.exec(body))) {
-      const attrs = parseXmlAttrs(memberMatch[1] ?? '');
+      const isSatellite = memberMatch[1]!.toLowerCase() === 'satellite';
+      const attrs = parseXmlAttrs(memberMatch[2] ?? '');
       const location = attrs.Location ?? attrs.location ?? '';
       const host = normalizeHost(extractHost(location) || '');
       if (!host) continue;
@@ -187,7 +195,8 @@ function parseTopology(xml: string): { hosts: Map<string, TopologyHostInfo> } {
       const zoneName = (attrs.ZoneName ?? attrs.zonename ?? attrs.zoneName ?? '').trim() || undefined;
       const invisible = String(attrs.Invisible ?? attrs.invisible ?? '').trim().toLowerCase();
       const satellite = String(attrs.Satellite ?? attrs.satellite ?? '').trim().toLowerCase();
-      const isPassive = invisible === '1' || invisible === 'true' || satellite === '1' || satellite === 'true';
+      const isPassive =
+        isSatellite || invisible === '1' || invisible === 'true' || satellite === '1' || satellite === 'true';
       members.push({ host, udn: udn ?? undefined, zoneName, passiveSatellite: isPassive });
     }
 
@@ -215,7 +224,7 @@ function parseXmlAttrs(fragment: string): Record<string, string> {
   const re = /([A-Za-z0-9:_-]+)\s*=\s*"([^"]*)"/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(fragment))) {
-    out[match[1]!] = match[2] ?? '';
+    out[match[1]!] = decodeXmlEntities(match[2] ?? '');
   }
   return out;
 }
@@ -226,17 +235,38 @@ function normalizeUdn(value: string | null | undefined): string | null {
   return normalized || null;
 }
 
+const ZONE_GROUP_STATE_REQUEST = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
+  s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetZoneGroupState xmlns:u="urn:schemas-upnp-org:service:ZoneGroupTopology:1"/>
+  </s:Body>
+</s:Envelope>`;
+
+/**
+ * The household's topology, as the GetZoneGroupState document. This used to read
+ * /status/topology, which S2 firmware no longer serves and which never had the shape
+ * parseTopology reads anyway, so satellites were never hidden and never mapped.
+ */
 async function fetchTopology(host: string, timeoutMs: number): Promise<string | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(300, timeoutMs));
   timeout.unref();
   try {
-    const url = `http://${host}:1400/status/topology`;
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(`http://${host}:1400/ZoneGroupTopology/Control`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml; charset="utf-8"',
+        SOAPAction: '"urn:schemas-upnp-org:service:ZoneGroupTopology:1#GetZoneGroupState"',
+      },
+      body: ZONE_GROUP_STATE_REQUEST,
+      signal: controller.signal,
+    });
     if (!response.ok) {
       return null;
     }
-    return await response.text();
+    // The document arrives escaped inside <ZoneGroupState>; matchTag unescapes it once.
+    return matchTag(await response.text(), 'ZoneGroupState');
   } catch {
     return null;
   } finally {
