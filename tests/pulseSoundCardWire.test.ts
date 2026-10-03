@@ -352,6 +352,23 @@ test('deleting a stream forgets its format, so the next one is waited for', asyn
   });
 });
 
+test('a card knows whether a player reached it since the last track, stream or not', async () => {
+  // A player that never connects and one that connects without opening a stream both leave the
+  // room silent, and only the card can tell them apart.
+  await withCard(async (card, socketPath) => {
+    assert.equal(card.heardFrom(1), false);
+
+    const player = await WirePlayer.connect(socketPath);
+    await player.handshake();
+    assert.equal(card.heardFrom(1), true);
+    assert.equal(card.specFor(1), null);
+
+    card.forgetSpec(1);
+    assert.equal(card.heardFrom(1), false);
+    player.close();
+  });
+});
+
 test('the latency reported is the audio actually held, counted in the player\'s own bytes', async () => {
   // It used to divide a buffer measured in what is handed on by a rate measured in what arrives,
   // so a full second of float came back as 750 ms. The player believed its audio was a quarter of

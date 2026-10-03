@@ -1227,7 +1227,16 @@ export class SoloistPlaybackService {
     const stream = this.audio.takeStream(zoneId);
     const spec = this.audio.specFor(zoneId);
     if (!stream || !spec) {
-      this.log.warn('no audio stream for this zone yet', { zoneId });
+      if (this.audio.heardFrom(zoneId)) {
+        this.log.warn('no audio stream for this zone yet', { zoneId });
+      } else {
+        // Soloist's only other driver discards the audio and still reports the track as playing,
+        // and it picks that one silently whenever libpulse cannot be loaded or our socket reached.
+        // Without saying so here, this looks exactly like a stream that was merely slow.
+        this.log.warn('soloist never reached this zone\'s sound card; is libpulse (libpulse0) installed?', {
+          zoneId,
+        });
+      }
       return null;
     }
     return {

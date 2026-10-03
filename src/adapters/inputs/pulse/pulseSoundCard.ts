@@ -174,6 +174,18 @@ export class PulseSoundCard {
     this.cards.get(id)?.forgetSpec();
   }
 
+  /**
+   * Whether any player has spoken to this card since its format was last forgotten.
+   *
+   * The difference between the two ways a track can arrive without audio. A player that connected
+   * and never opened a stream is something to look for here; one that never connected at all is
+   * playing somewhere else — Soloist falls back to a driver that discards everything when it
+   * cannot load libpulse, and still says it is playing.
+   */
+  public heardFrom(id: number): boolean {
+    return this.cards.get(id)?.heardFrom ?? false;
+  }
+
   public async remove(id: number): Promise<void> {
     const card = this.cards.get(id);
     if (!card) {
@@ -413,6 +425,8 @@ class CardSocket {
   private muted = false;
   private specWaiters: Array<(spec: SampleSpec | null) => void> = [];
   public spec: SampleSpec | null = null;
+  /** Whether a player has introduced itself since `forgetSpec`; see `PulseSoundCard.heardFrom`. */
+  public heardFrom = false;
 
   constructor(
     private readonly id: number,
@@ -457,6 +471,7 @@ class CardSocket {
 
   public forgetSpec(): void {
     this.spec = null;
+    this.heardFrom = false;
   }
 
   public takeStream(): Readable {
@@ -742,6 +757,7 @@ class CardSocket {
       case PA.AUTH: {
         const remote = reader.next() as number;
         const negotiated = Math.min(PA_PROTOCOL_VERSION, remote & 0xffff);
+        this.heardFrom = true;
         this.log.debug('audio client connected', { id: this.id, clientVersion: remote & 0xffff });
         // No flags in the answer: no shared memory, no memfd, so the audio comes over the socket.
         reply(tag, new TagWriter().u32(negotiated));
