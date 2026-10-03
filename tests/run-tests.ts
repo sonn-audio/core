@@ -138,6 +138,7 @@ import './configClear.test';
 import './mdnsService.test';
 import './sonnClientClaim.test';
 import './configHandlers.volume.test';
+import './contentManagerConfigIdentity.test';
 import './configHandlers.system.test';
 import './equalizer.test';
 import './zoneHandlers.serviceplay.test';

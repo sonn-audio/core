@@ -169,12 +169,22 @@ export class ContentManager {
 
   /**
    * Ensures the manager is wired to the persisted configuration before use.
+   *
+   * Reads the configuration that is already loaded rather than loading it again. A load swaps
+   * the whole config object, and the zones registered just before this hold the old one: every
+   * later volume change from the Miniserver then landed on a copy no zone reads, so a new
+   * Vbuzzer was saved and logged and the wake-up still climbed to the old level (#392).
    */
   public async initialize(): Promise<void> {
     if (this.initialized) {
       return;
     }
-    await this.getConfigPort().load();
+    const configPort = this.getConfigPort();
+    try {
+      configPort.getConfig();
+    } catch {
+      await configPort.load();
+    }
     this.refreshFromConfig();
     await this.library.initialize();
     this.initialized = true;
