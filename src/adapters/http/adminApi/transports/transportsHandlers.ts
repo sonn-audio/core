@@ -203,6 +203,7 @@ async function handleSonosDiscovery(
       host: device.host,
       name: device.name ?? device.roomName,
       roomName: device.roomName,
+      model: device.model,
       householdId: device.householdId,
       active: activeHost ? device.host === activeHost : undefined,
     }));

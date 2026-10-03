@@ -54,6 +54,8 @@ export interface SonosDiscoveredDevice {
   host: string;
   name?: string;
   roomName?: string;
+  /** Model from the UPnP device description, e.g. "Sonos Beam". */
+  model?: string;
   udn?: string;
   householdId?: string;
   /**

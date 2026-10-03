@@ -306,14 +306,17 @@ async function resolveDeviceFromLocation(
     if (!host) {
       return null;
     }
-    const name = matchTag(xml, 'friendlyName');
-    const udn = matchTag(xml, 'UDN')?.replace(/^uuid:/i, '');
+    const description = readSonosDescription(xml);
     const status = await fetchStatus(host, householdId);
+    const roomName = description.roomName ?? status?.roomName;
     return {
       host,
-      name: name ?? status?.roomName ?? undefined,
-      roomName: status?.roomName,
-      udn,
+      // friendlyName is "<ip> - <model>": it names the box, not the room, so it only stands in
+      // when the speaker tells us nothing better.
+      name: roomName ?? description.friendlyName,
+      roomName,
+      model: description.model,
+      udn: description.udn,
       householdId: status?.householdId,
     };
   } finally {
@@ -334,15 +337,11 @@ async function fetchStatus(
     if (!response.ok) {
       return null;
     }
-    const xml = await response.text();
-    const household = matchTag(xml, 'HouseholdControlID');
-    if (householdId && household && householdId !== household) {
+    const status = readSonosStatus(await response.text());
+    if (householdId && status.householdId && householdId !== status.householdId) {
       return null;
     }
-    return {
-      roomName: matchTag(xml, 'RoomName') ?? matchTag(xml, 'ZoneName') ?? undefined,
-      householdId: household ?? undefined,
-    };
+    return status;
   } catch {
     return null;
   } finally {
@@ -454,9 +453,57 @@ function buildSearchRequest(mx: number, target: string): Buffer {
   return Buffer.from(payload);
 }
 
+/**
+ * What a speaker's UPnP device description says about itself. The first match of each tag is
+ * the root device's; the embedded MediaRenderer/MediaServer devices come after it.
+ */
+export function readSonosDescription(xml: string): {
+  friendlyName?: string;
+  roomName?: string;
+  model?: string;
+  udn?: string;
+} {
+  return {
+    friendlyName: matchTag(xml, 'friendlyName') ?? undefined,
+    // The room name as the user set it in the Sonos app — on S1 and S2 alike.
+    roomName: matchTag(xml, 'roomName') ?? undefined,
+    model: matchTag(xml, 'modelName') ?? undefined,
+    udn: matchTag(xml, 'UDN')?.replace(/^uuid:/i, '') || undefined,
+  };
+}
+
+/**
+ * What /status/zp says. S2 firmware dropped <RoomName> there; its <ZoneName> is the room name
+ * with the speaker's channels appended — "Living Room (LF,RF)" for a stereo pair.
+ */
+export function readSonosStatus(xml: string): { roomName?: string; householdId?: string } {
+  return {
+    roomName: matchTag(xml, 'RoomName') ?? stripChannelSuffix(matchTag(xml, 'ZoneName')) ?? undefined,
+    householdId: matchTag(xml, 'HouseholdControlID') ?? undefined,
+  };
+}
+
+// Only Sonos channel codes, so a room the user named "Office (AV)" keeps its name.
+const CHANNEL_SUFFIX = /\s*\((?:LF|RF|SW\d?|LR|RR)(?:,(?:LF|RF|SW\d?|LR|RR))*\)$/;
+
+function stripChannelSuffix(value: string | null): string | null {
+  if (!value) return null;
+  return value.replace(CHANNEL_SUFFIX, '').trim() || null;
+}
+
 function matchTag(xml: string, tag: string): string | null {
   const match = xml.match(new RegExp(`<${tag}>([^<]+)</${tag}>`, 'i'));
-  return match?.[1]?.trim() ?? null;
+  const value = match?.[1] ? decodeXmlEntities(match[1]).trim() : '';
+  return value || null;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos));/gi, (whole, dec, hex, named) => {
+    if (dec) return String.fromCodePoint(Number(dec));
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    const map: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+    return map[String(named).toLowerCase()] ?? whole;
+  });
 }
 
 function extractHost(location: string): string {

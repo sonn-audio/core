@@ -114,6 +114,7 @@ import './runtimeShutdown.test';
 import './sourceResolver.test';
 import './beolinkStateController.test';
 import './sonosEndpointResolution.test';
+import './sonosDiscoveryNaming.test';
 import './sonosTransportResilience.test';
 import './externalStateRouter.test';
 import './equalizerRestartScheduler.test';
