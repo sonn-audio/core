@@ -71,6 +71,7 @@ import './appleMusicStreamHelpers.test';
 import './audioServersAndBearer.test';
 import './outputFactory.airplay.test';
 import './outputFactory.sendspin.test';
+import './sendspinVisualizer.test';
 import './outputFactory.streamFormat.test';
 import './airplayPcmStream.test';
 import './airplayVolumeAssert.test';

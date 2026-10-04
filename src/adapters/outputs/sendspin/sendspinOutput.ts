@@ -214,8 +214,13 @@ export class SendspinOutput implements ZoneOutput {
   private readonly unwatchResolvedClient: (() => void) | null;
   private currentStream: NodeJS.ReadableStream | null = null;
   private currentCoverUrl: string | null = null;
-  /** Subscription to the shared audio-analysis service for visualizer@v1. */
-  private unsubscribeAnalysis: (() => void) | null = null;
+  /**
+   * Subscriptions to the shared audio-analysis service for visualizer@v1, one per client (primary
+   * or satellite) that asked for frames, keyed by the sender's configured client id.
+   */
+  private readonly analysisSubscriptions = new Map<string, () => void>();
+  /** PCM format the visualizer taps for the current stream, or null when there is nothing to tap. */
+  private visualizerFormat: { sampleRate: number; channels: number; bitDepth: number } | null = null;
   private lastProgressPayload: SendspinMetadataProgress | null = null;
   private playbackState: 'playing' | 'paused' | 'stopped' = 'stopped';
   private lastSentPlaybackState: 'playing' | 'paused' | 'stopped' | null = null;
@@ -566,6 +571,8 @@ export class SendspinOutput implements ZoneOutput {
         currentStreamFormat: () => this.currentStreamStartParams(),
         futureFrames: () => this.getFutureFrames(),
         currentVolume: () => this.lastKnownVolume,
+        joined: () => this.startVisualizerFor(sender),
+        left: () => this.stopVisualizerFor(sender),
       });
       this.log.info('Sendspin satellite registered', {
         zoneId: this.zoneId,
@@ -2000,8 +2007,7 @@ export class SendspinOutput implements ZoneOutput {
     // No stream, no timing: the alternative is reporting the last frame of a finished stream as
     // if it were the current state of one.
     this.streamTiming = null;
-    this.unsubscribeAnalysis?.();
-    this.unsubscribeAnalysis = null;
+    this.stopVisualizers();
     if (!preserveAnchor) {
       this.playStartUs = null;
       this.wallClockAnchorUs = null;
@@ -2454,14 +2460,44 @@ export class SendspinOutput implements ZoneOutput {
    * (option A: tap the frames already flowing, no extra decode) and only for
    * the types the client negotiated that we can compute from the audio
    * (loudness, spectrum, f_peak, peak, pitch — beat has no source, so skipped).
+   *
+   * Every client is asked, not only the primary: a satellite is where a device that only lights
+   * up to the music lives, and the primary is usually a speaker that never asks for frames.
    */
   private setupVisualizer(isPcm: boolean, sampleRate: number, channels: number, bitDepth: number): void {
-    this.unsubscribeAnalysis?.();
-    this.unsubscribeAnalysis = null;
+    this.stopVisualizers();
     if (!isPcm) {
       return;
     }
-    const clientId = this.activeClientId();
+    this.visualizerFormat = { sampleRate, channels, bitDepth };
+    this.startVisualizerFor(this.primary);
+    this.forEachConnectedSatellite((satellite) => this.startVisualizerFor(satellite));
+  }
+
+  private stopVisualizers(): void {
+    this.visualizerFormat = null;
+    for (const unsubscribe of this.analysisSubscriptions.values()) {
+      unsubscribe();
+    }
+    this.analysisSubscriptions.clear();
+  }
+
+  private stopVisualizerFor(sender: SendspinClientSender): void {
+    this.analysisSubscriptions.get(sender.clientId)?.();
+    this.analysisSubscriptions.delete(sender.clientId);
+  }
+
+  /**
+   * Start visualizer@v1 for one client, if the current stream can feed it and the client asked.
+   * Each client gets its own analyzer because each negotiates its own rate and spectrum shape.
+   */
+  private startVisualizerFor(sender: SendspinClientSender): void {
+    this.stopVisualizerFor(sender);
+    const format = this.visualizerFormat;
+    if (!format) {
+      return;
+    }
+    const clientId = sender.activeClientId();
     const support = sendspinCore.getVisualizerSupport(clientId);
     if (!support) {
       return;
@@ -2487,10 +2523,10 @@ export class SendspinOutput implements ZoneOutput {
       spectrum: spectrumSupport,
     });
 
-    this.unsubscribeAnalysis = this.ports.audioAnalysis.subscribe(this.zoneId, {
-      sampleRate,
-      channels,
-      bitDepth,
+    const unsubscribe = this.ports.audioAnalysis.subscribe(this.zoneId, {
+      sampleRate: format.sampleRate,
+      channels: format.channels,
+      bitDepth: format.bitDepth,
       rateMax: support.rate_max,
       feed: 'scheduled-output',
       loudness: wantLoudness,
@@ -2524,6 +2560,7 @@ export class SendspinOutput implements ZoneOutput {
           break;
       }
     });
+    this.analysisSubscriptions.set(sender.clientId, unsubscribe);
     this.log.debug('Sendspin visualizer@v1 active', {
       zoneId: this.zoneId,
       clientId,

@@ -23,6 +23,10 @@ export interface SatelliteHandlers {
   futureFrames(): PcmFrame[];
   /** The zone's current volume, pushed so the satellite joins at the right level. */
   currentVolume(): number;
+  /** The satellite joined a running stream; start whatever else it asked for (visualizer@v1). */
+  joined(): void;
+  /** The satellite went away; stop producing anything for it. */
+  left(): void;
 }
 
 /** Context for a single frame delivery, supplied by the per-zone pipeline. */
@@ -125,6 +129,7 @@ export class SendspinClientSender {
             for (const frame of handlers.futureFrames()) {
               sendspinCore.sendPcmFrameToClient(this.activeClientId(), frame);
             }
+            handlers.joined();
           }
         }
         this.log.info('Sendspin satellite connected', {
@@ -138,6 +143,7 @@ export class SendspinClientSender {
         }
         this.connected = false;
         this.session = null;
+        handlers.left();
         ports.sendspinConnector.markInboundDisconnected(this.activeClientId());
         this.log.info('Sendspin satellite disconnected', {
           zoneId: this.zoneId,
