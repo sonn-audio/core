@@ -54,6 +54,17 @@ const ACTIVATION_VOLUME_LATCH_MS = 4000;
  */
 const STORE_WAIT_MS = 1500;
 
+/**
+ * How long a track run gets to open its stream once it says it is playing.
+ *
+ * "Playing" is what the engine intends, not what it is doing: it is reported in the same
+ * millisecond the run becomes the active device, and the audio follows only once the track has
+ * been fetched and started. A third of a second on a quick host; a slow one took longer than the
+ * five seconds this used to be, and every track was given up on before it could sound (#394). A
+ * slow start is still a start. The run exiting ends the wait early.
+ */
+const STREAM_WAIT_MS = 20_000;
+
 /** Everything that has to be true before an account can play, named so the UI can say which is not. */
 export type SoloistReadiness =
   | { ready: true }
@@ -1097,7 +1108,15 @@ export class SoloistPlaybackService {
 
     // The player opens its stream a moment after it starts sounding, and every track brings a new
     // one, so this waits on every track rather than only the first of a session.
-    await this.audio.waitForSpec(zoneId);
+    await Promise.race([
+      this.audio.waitForSpec(zoneId, STREAM_WAIT_MS),
+      started.run.gone,
+    ]);
+    if (this.trackRunFor(zoneId) !== started.run) {
+      // Another track was asked for while this one was still loading. Its stream is not ours to
+      // take, and this run has already been put down by whoever replaced it.
+      return null;
+    }
     const opened = this.openAudio(zoneId);
     if (!opened) {
       started.run.stop();
@@ -1230,12 +1249,11 @@ export class SoloistPlaybackService {
       if (this.audio.heardFrom(zoneId)) {
         this.log.warn('no audio stream for this zone yet', { zoneId });
       } else {
-        // Soloist's only other driver discards the audio and still reports the track as playing,
-        // and it picks that one silently whenever libpulse cannot be loaded or our socket reached.
-        // Without saying so here, this looks exactly like a stream that was merely slow.
-        this.log.warn('soloist never reached this zone\'s sound card; is libpulse (libpulse0) installed?', {
-          zoneId,
-        });
+        // Nothing connected at all. Soloist opens the card only once a track is actually sounding,
+        // so this is an engine that never got the track going in time — or one playing into its
+        // other driver, which discards everything and still reports the track as playing. It
+        // picks that one whenever libpulse cannot be loaded.
+        this.log.warn('soloist did not start sounding this track in time', { zoneId });
       }
       return null;
     }

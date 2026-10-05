@@ -225,6 +225,11 @@ export class SoloistTrackRun {
     return this.exited();
   }
 
+  /** Resolves when the process exits, however long that takes. */
+  public get gone(): Promise<void> {
+    return this.handle.done.then(() => undefined);
+  }
+
   /** Resolves once the process is gone, so its store can be used again. */
   public exited(): Promise<void> {
     return Promise.race([
