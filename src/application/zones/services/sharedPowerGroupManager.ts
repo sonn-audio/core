@@ -7,6 +7,7 @@ import {
   type PowerSignal,
   SystemPowerManagerExecutor,
   isPowerOnMode,
+  normalizePlaybackPreDelayMs,
   normalizePowerManagerConfig,
 } from '@/application/zones/services/powerManager';
 
@@ -14,6 +15,8 @@ type GroupRuntime = {
   id: string;
   name: string;
   config: NormalizedPowerConfig;
+  /** Silence a member zone prepends while the group's amp is still waking up. */
+  wakeUpMs: number;
   desiredSignal: PowerSignal;
   currentSignal: PowerSignal | null;
   offTimer: ReturnType<typeof setTimeout> | null;
@@ -48,6 +51,7 @@ export class SharedPowerGroupManager {
         id,
         name: group.name?.trim() || id,
         config: normalizePowerManagerConfig(group.powerManager ?? null),
+        wakeUpMs: normalizePlaybackPreDelayMs(group.powerManager?.playbackPreDelayMs) ?? 0,
         desiredSignal: 0,
         currentSignal: null,
         offTimer: null,
@@ -109,6 +113,17 @@ export class SharedPowerGroupManager {
     this.setDesired(runtime, desiredSignal);
   }
 
+  /** Whether the zone's group amp is switched on, or null when the zone is in no group. */
+  public isZoneGroupOn(zoneId: number): boolean | null {
+    const runtime = this.getZoneGroup(zoneId);
+    return runtime ? runtime.currentSignal === 1 : null;
+  }
+
+  /** The wake-up delay of the zone's group, 0 when it has none or the zone is in no group. */
+  public getZoneWakeUpMs(zoneId: number): number {
+    return this.getZoneGroup(zoneId)?.wakeUpMs ?? 0;
+  }
+
   public clearAll(): void {
     for (const runtime of this.groups.values()) {
       if (runtime.offTimer) {
@@ -118,6 +133,11 @@ export class SharedPowerGroupManager {
     }
     this.groups.clear();
     this.zoneBindings.clear();
+  }
+
+  private getZoneGroup(zoneId: number): GroupRuntime | null {
+    const binding = this.zoneBindings.get(zoneId);
+    return binding ? (this.groups.get(binding.groupId) ?? null) : null;
   }
 
   private setDesired(runtime: GroupRuntime, desiredSignal: PowerSignal): void {

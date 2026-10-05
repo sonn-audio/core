@@ -295,3 +295,47 @@ test('a group whose last zone returns mid-switch does not leave the relay stuck 
 
   assert.deepEqual(calls, [{ signal: 1 }, { signal: 0 }, { signal: 1 }]);
 });
+
+test('a shared power group carries its wake-up delay and tells members when its amp is on (#402)', async () => {
+  const executor = new FakeExecutor();
+  const manager = new SharedPowerGroupManager(noopLogger, executor);
+  const zone = (id: number, powerGroupId?: string) =>
+    ({
+      id,
+      name: `Zone ${id}`,
+      sourceMac: `00:00:00:00:00:0${id}`,
+      volumes: {} as any,
+      powerManager: powerGroupId ? { powerGroupId } : undefined,
+    }) as any;
+  manager.configure(
+    [
+      {
+        id: 'amp',
+        powerManager: {
+          playbackPreDelayMs: 1500,
+          offDelayMs: 50,
+          crelay: { enabled: true, relay: '1' },
+        },
+      },
+    ],
+    [zone(1, 'amp'), zone(2, 'amp'), zone(3)],
+  );
+
+  assert.equal(manager.getZoneWakeUpMs(1), 1500);
+  assert.equal(manager.getZoneWakeUpMs(3), 0);
+  assert.equal(manager.isZoneGroupOn(3), null);
+  assert.equal(manager.isZoneGroupOn(2), false);
+
+  manager.onStatePatch(1, { mode: 'play' } as any, { ...baseState, mode: 'play' } as any);
+  await wait(10);
+  // Zone 2 starting now finds the amp already on and need not wait for it.
+  assert.equal(manager.isZoneGroupOn(2), true);
+
+  manager.onStatePatch(1, { mode: 'stop' } as any, { ...baseState, mode: 'stop' } as any);
+  await wait(10);
+  // Still on through the standby timeout...
+  assert.equal(manager.isZoneGroupOn(2), true);
+  await wait(80);
+  // ...and cold again once it has switched off.
+  assert.equal(manager.isZoneGroupOn(2), false);
+});

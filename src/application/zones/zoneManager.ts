@@ -41,6 +41,8 @@ import type { AlertMediaResource } from '@/application/alerts/types';
 import {
   PowerManager,
   SystemPowerManagerExecutor,
+  normalizePlaybackPreDelayMs,
+  normalizePowerManagerConfig,
   type PowerSignal,
 } from '@/application/zones/services/powerManager';
 import { SharedPowerGroupManager } from '@/application/zones/services/sharedPowerGroupManager';
@@ -160,6 +162,9 @@ export class ZoneManager {
   // input config; without this fallback they would pass null and disable global
   // inputs like AirPlay/Spotify, tearing down every receiver.
   private lastInputs: InputConfig | null = null;
+  // Same for the group config: without it a browser zone registering dropped every
+  // shared power group, and with them the amps they were holding on.
+  private lastGroups: GroupConfig | null = null;
 
   /** Read-only snapshot of the current zone state for external consumers (e.g. outputs). */
   public getZoneState(zoneId: number): ZoneState | null {
@@ -217,7 +222,7 @@ export class ZoneManager {
       }
     });
     this.sharedPowerGroupManager = new SharedPowerGroupManager(this.log, powerExecutor);
-    this.zoneAudioPrefs.setZonePowerStateResolver((zoneId) => this.powerManager.isSignalOn(zoneId));
+    this.zoneAudioPrefs.setZonePowerStateResolver((zoneId) => this.isZoneAmpWarm(zoneId));
     this.zoneAudioPrefs.setZoneEqualizerResolver((zoneId) => this.resolveBuiltinEqualizerBands(zoneId));
     this.audioHelpers = createZoneAudioHelpers(contentPort, configPort);
     const audioHelpers = this.audioHelpers;
@@ -380,6 +385,7 @@ export class ZoneManager {
     groups?: GroupConfig | null,
   ): Promise<void> {
     this.lastInputs = inputs ?? null;
+    this.lastGroups = groups ?? null;
     this.powerManager.clearAll();
     this.sharedPowerGroupManager.clearAll();
     this.disposeAllOutputs();
@@ -387,6 +393,7 @@ export class ZoneManager {
     clearPlayers();
     zoneConfigs.forEach((cfg) => this.registerZone(cfg));
     this.sharedPowerGroupManager.configure(groups?.powerGroups, zoneConfigs);
+    this.applyWakeUpDelays();
     this.inputConfigurator.configure();
     const inputsPort = this.inputsPort;
     inputsPort.syncAirplayZones(zoneConfigs);
@@ -437,7 +444,10 @@ export class ZoneManager {
 
     // Refresh input services using the full current set.
     const allZones = this.zoneRepo.list().map((ctx) => ctx.config);
-    this.sharedPowerGroupManager.configure(groups?.powerGroups, allZones);
+    const effectiveGroups = groups ?? this.lastGroups;
+    this.lastGroups = effectiveGroups;
+    this.sharedPowerGroupManager.configure(effectiveGroups?.powerGroups, allZones);
+    this.applyWakeUpDelays();
     this.inputConfigurator.configure();
     // Partial re-syncs (e.g. dynamic browser zone registration) call this without
     // the input config; fall back to the last full one so Spotify keeps its accounts.
@@ -780,7 +790,7 @@ export class ZoneManager {
       if (!ctx) {
         continue;
       }
-      const rawWakeUp = this.powerManager.isSignalOn(zoneId)
+      const rawWakeUp = this.isZoneAmpWarm(zoneId)
         ? 0
         : (this.zoneAudioPrefs.getPlaybackPreDelayMs(zoneId) ?? 0);
       const rawLatency = this.playbackCoordinator.getRoomLagMs(ctx);
@@ -925,7 +935,7 @@ export class ZoneManager {
   private registerZone(config: ZoneConfig): void {
     this.zoneAudioPrefs.setPlaybackPreDelayMs(
       config.id,
-      normalizeZonePlaybackPreDelayMs(config.powerManager?.playbackPreDelayMs),
+      normalizePlaybackPreDelayMs(config.powerManager?.playbackPreDelayMs),
     );
     const outputs = this.outputsPort.buildOutputs(config);
     const requiresPcm = this.outputsRequirePcm(outputs);
@@ -997,6 +1007,37 @@ export class ZoneManager {
     this.stateStore.setInitial(config.id, context.state);
   }
 
+  /**
+   * A zone in a shared power group waits for the group's amp, so it takes the group's wake-up
+   * delay — or its own, when that is longer. Before, a group had no wake-up delay at all (#402).
+   */
+  private applyWakeUpDelays(): void {
+    for (const ctx of this.zoneRepo.list()) {
+      const own = normalizePlaybackPreDelayMs(ctx.config.powerManager?.playbackPreDelayMs) ?? 0;
+      const group = this.sharedPowerGroupManager.getZoneWakeUpMs(ctx.id);
+      this.zoneAudioPrefs.setPlaybackPreDelayMs(ctx.id, Math.max(own, group) || null);
+    }
+  }
+
+  /**
+   * Whether every amp the zone plays through is already on, so it needs no wake-up silence.
+   * A zone in a shared group plays through the group's amp, not through its own power state,
+   * which without switching actions of its own only mirrors whether the zone itself is playing:
+   * the second room to start on an amp that was already on used to wait for it anyway.
+   */
+  private isZoneAmpWarm(zoneId: number): boolean {
+    const groupOn = this.sharedPowerGroupManager.isZoneGroupOn(zoneId);
+    if (groupOn === null) {
+      return this.powerManager.isSignalOn(zoneId);
+    }
+    if (!groupOn) {
+      return false;
+    }
+    const config = this.zoneRepo.get(zoneId)?.config.powerManager ?? null;
+    const hasOwnAmp = normalizePowerManagerConfig(config).actions.length > 0;
+    return hasOwnAmp ? this.powerManager.isSignalOn(zoneId) : true;
+  }
+
   private disposeAllOutputs(): void {
     this.outputRouter.disposeAllOutputs(this.zoneRepo);
   }
@@ -1029,10 +1070,3 @@ export class ZoneManager {
 
 }
 
-function normalizeZonePlaybackPreDelayMs(value: number | undefined): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-  const normalized = Math.max(0, Math.round(value));
-  return normalized > 0 ? normalized : null;
-}

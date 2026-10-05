@@ -713,6 +713,12 @@ function normalizeCrelay(raw: ZoneCrelayPowerConfig | null): NormalizedCrelayCon
   };
 }
 
+/** A configured amp wake-up delay (`playbackPreDelayMs`), or null when there is none. */
+export function normalizePlaybackPreDelayMs(value: number | undefined): number | null {
+  const normalized = toDelay(value);
+  return normalized > 0 ? normalized : null;
+}
+
 function toDelay(value: number | undefined, fallback = 0): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback;
