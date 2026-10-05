@@ -32,16 +32,58 @@ function appleHarness(admin: AppleMusicAdminPort) {
     appleMusicAdmin: admin,
     readBinaryBody: async () => null,
     sendJson: (_res: ServerResponse, status: number, body: unknown) => sent.push({ status, body }),
-    sendHtml: () => {},
+    sendHtml: (_res: ServerResponse, status: number, body: string) => sent.push({ status, body }),
   } as unknown as AppleMusicHandlerDeps;
   return { routes: buildAppleMusicRoutes(deps), sent };
 }
+
+// Without a configured token the sign-in page used to run a scrape of its own, which went stale
+// when Apple reordered the JWT header and the provider's copy was fixed (#401). It now asks the
+// same scrape the provider uses.
+test('sign-in falls back to the scraped token when none is configured', async () => {
+  const h = appleHarness({
+    configuredDeveloperToken: () => null,
+    scrapedDeveloperToken: async () => 'eyJ0.scraped.token',
+    verifyWidevineArtifacts: async () => ({ ok: true }),
+  });
+  await call(h.routes, 'GET', '/applemusic/auth');
+  assert.equal(h.sent[0]!.status, 200);
+  assert.match(h.sent[0]!.body, /eyJ0\.scraped\.token/);
+});
+
+test('sign-in prefers the configured token and does not scrape', async () => {
+  let scraped = false;
+  const h = appleHarness({
+    configuredDeveloperToken: () => 'eyJ0.configured.token',
+    scrapedDeveloperToken: async () => {
+      scraped = true;
+      return null;
+    },
+    verifyWidevineArtifacts: async () => ({ ok: true }),
+  });
+  await call(h.routes, 'GET', '/applemusic/auth');
+  assert.equal(h.sent[0]!.status, 200);
+  assert.match(h.sent[0]!.body, /eyJ0\.configured\.token/);
+  assert.equal(scraped, false);
+});
+
+test('sign-in without any token says so', async () => {
+  const h = appleHarness({
+    configuredDeveloperToken: () => null,
+    scrapedDeveloperToken: async () => null,
+    verifyWidevineArtifacts: async () => ({ ok: true }),
+  });
+  await call(h.routes, 'GET', '/applemusic/auth');
+  assert.equal(h.sent[0]!.status, 500);
+  assert.match(h.sent[0]!.body, /token unavailable/);
+});
 
 // The CDM check used to be untestable twice over: it reads files off disk, and a bad set was
 // signalled by a provider error class the route caught with `instanceof`.
 test('a usable CDM set reports valid', async () => {
   const h = appleHarness({
     configuredDeveloperToken: () => null,
+    scrapedDeveloperToken: async () => null,
     verifyWidevineArtifacts: async () => ({ ok: true }),
   });
   await call(h.routes, 'GET', '/applemusic/widevine/status');
@@ -55,6 +97,7 @@ test('a usable CDM set reports valid', async () => {
 test('an unusable CDM set answers 200 with the code and the details', async () => {
   const h = appleHarness({
     configuredDeveloperToken: () => null,
+    scrapedDeveloperToken: async () => null,
     verifyWidevineArtifacts: async () => ({
       ok: false,
       code: 'invalid',
@@ -73,6 +116,7 @@ test('an unusable CDM set answers 200 with the code and the details', async () =
 test('a failure that is not about the files is reported as an error, not a verdict', async () => {
   const h = appleHarness({
     configuredDeveloperToken: () => null,
+    scrapedDeveloperToken: async () => null,
     verifyWidevineArtifacts: async () => {
       throw new Error('EACCES: permission denied');
     },

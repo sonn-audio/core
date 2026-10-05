@@ -20,6 +20,8 @@ export type WidevineVerification =
 export interface AppleMusicAdminPort {
   /** The developer token from config, or null when the install relies on a scraped one. */
   configuredDeveloperToken(): string | null;
+  /** A token lifted from Apple's web player, for installs without one in config; null when none is found. */
+  scrapedDeveloperToken(): Promise<string | null>;
   /** Re-reads the CDM files, ignoring any cached set, and reports what they are worth. */
   verifyWidevineArtifacts(): Promise<WidevineVerification>;
 }

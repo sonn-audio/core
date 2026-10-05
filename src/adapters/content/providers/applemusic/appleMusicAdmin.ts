@@ -1,10 +1,18 @@
-import { getConfiguredDeveloperToken } from '@/adapters/content/providers/applemusic/appleMusicAuth';
+import {
+  buildBaseHeaders,
+  describeFetchError,
+  getConfiguredDeveloperToken,
+  scrapeBearerToken,
+} from '@/adapters/content/providers/applemusic/appleMusicAuth';
 import {
   invalidateWidevineArtifactsCache,
   loadWidevineArtifacts,
   WidevineArtifactsError,
 } from '@/adapters/content/providers/applemusic/widevine';
 import type { AppleMusicAdminPort, WidevineVerification } from '@/ports/AppleMusicAdminPort';
+import { createLogger } from '@/shared/logging/logger';
+
+const log = createLogger('Content', 'AppleMusic');
 
 /**
  * Apple Music's management operations, gathered where they are implemented.
@@ -14,6 +22,18 @@ import type { AppleMusicAdminPort, WidevineVerification } from '@/ports/AppleMus
  */
 export const appleMusicAdmin: AppleMusicAdminPort = {
   configuredDeveloperToken: () => getConfiguredDeveloperToken(),
+
+  // The same scrape the provider uses, so a change to Apple's bundle is fixed in one place.
+  scrapedDeveloperToken: async () => {
+    try {
+      const token = await scrapeBearerToken(buildBaseHeaders());
+      if (!token) log.warn('apple music sign-in: bearer token not found');
+      return token;
+    } catch (err) {
+      log.warn('apple music sign-in: token fetch failed', { message: describeFetchError(err) });
+      return null;
+    }
+  },
 
   verifyWidevineArtifacts: async (): Promise<WidevineVerification> => {
     invalidateWidevineArtifactsCache();

@@ -156,6 +156,7 @@ function createHandler(): AdminApiHandler {
     soloistAdmin: makeSoloistAdminFake(),
     appleMusicAdmin: {
       configuredDeveloperToken: () => null,
+      scrapedDeveloperToken: async () => null,
       verifyWidevineArtifacts: async () => ({ ok: false, code: 'missing', details: [] }),
     },
     validateTuneInUsername: async () => ({ found: false }),

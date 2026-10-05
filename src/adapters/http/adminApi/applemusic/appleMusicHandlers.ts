@@ -56,7 +56,7 @@ async function handleAppleMusicAuth(
   try {
     // Prefer the configured developer token (works with authorize() from any origin); fall back to
     // the scraped web-player token only if it's missing.
-    const developerToken = deps.appleMusicAdmin.configuredDeveloperToken() || (await fetchAppleMusicDeveloperToken(deps.log));
+    const developerToken = deps.appleMusicAdmin.configuredDeveloperToken() || (await deps.appleMusicAdmin.scrapedDeveloperToken());
     if (!developerToken) {
       deps.sendHtml(res, 500, renderAppleMusicAuthError('Apple Music token unavailable. Try again.'));
       return;
@@ -149,37 +149,6 @@ async function readWidevineFileStatus(): Promise<{
   return { privateKey, clientId };
 }
 
-async function fetchAppleMusicDeveloperToken(log: ComponentLogger): Promise<string | null> {
-  const headers = {
-    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US',
-    'Accept-Encoding': 'utf-8',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:95.0) Gecko/20100101 Firefox/95.0',
-  };
-  try {
-    const homeRes = await fetch('https://music.apple.com', { headers });
-    const homeText = await homeRes.text();
-    const match = homeText.match(/\/(assets\/index-legacy[~-][^/"]+\.js)/i);
-    if (!match) {
-      log.warn('apple music auth: index js not found');
-      return null;
-    }
-    const jsRes = await fetch(`https://music.apple.com/${match[1]}`, { headers });
-    const jsText = await jsRes.text();
-    const tokenMatch = jsText.match(/eyJh[^"]+/);
-    if (!tokenMatch) {
-      log.warn('apple music auth: bearer token not found');
-      return null;
-    }
-    return tokenMatch[0];
-  } catch (err) {
-    log.warn('apple music auth: token fetch failed', {
-      message: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
-
 function renderAppleMusicAuthError(message: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -227,16 +196,17 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
       button.primary:hover:not(:disabled) { background: #86EFAC; border-color: #86EFAC; }
       button:disabled { opacity: .4; cursor: not-allowed; }
       .status { margin-top: 18px; font-size: 13px; color: #9CA3AF; }
+      .status:empty { display: none; }
     </style>
     <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components async></script>
   </head>
   <body>
-    <p>Sign in with Apple to fetch your Media User Token for the Apple Music bridge.</p>
+    <p>Apple handles the sign-in in a window of its own. Sign in there with your Apple ID; the token is filled in here once you're done.</p>
     <div class="actions">
-      <button id="signin" class="primary" disabled>Sign in</button>
+      <button id="signin" class="primary" disabled>Open Apple sign-in</button>
       <button id="close">Close</button>
     </div>
-    <div id="status" class="status">Loading MusicKit…</div>
+    <div id="status" class="status">Preparing…</div>
     <script>
       const developerToken = ${developerToken};
       const appName = ${appName};
@@ -244,6 +214,8 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
       const signInBtn = document.getElementById('signin');
       const closeBtn = document.getElementById('close');
       let musicInstance = null;
+      // The user token as the sign-in popup handed it over; see the musickitloaded handler.
+      let popupToken = null;
 
       function setStatus(text) {
         statusEl.textContent = text;
@@ -287,6 +259,8 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
         }
       }
 
+      // Inside the portal's modal its ✕ closes; a second close button only doubles it.
+      if (window.parent && window.parent !== window) closeBtn.hidden = true;
       closeBtn.addEventListener('click', () => {
         postToParent({ type: 'applemusic-auth-close' });
         window.close();
@@ -294,7 +268,8 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
       signInBtn.addEventListener('click', async () => {
         if (!musicInstance) return;
         signInBtn.disabled = true;
-        setStatus('Opening Apple Music sign-in…');
+        popupToken = null;
+        setStatus('Waiting for the Apple window — finish signing in there.');
         try {
           const token = await musicInstance.authorize();
           if (!token) {
@@ -302,10 +277,17 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
             signInBtn.disabled = false;
             return;
           }
-          setStatus('Token received. You can close this window.');
+          setStatus('Signed in. The token has been filled in.');
           sendToken(token);
           setTimeout(() => window.close(), 500);
         } catch (err) {
+          // The popup succeeded and only the storefront lookup after it failed: the token is good.
+          if (popupToken) {
+            setStatus('Signed in. The token has been filled in.');
+            sendToken(popupToken);
+            setTimeout(() => window.close(), 500);
+            return;
+          }
           // Surface the real MusicKit error. With the scraped web-player developer token Apple
           // typically rejects authorize() here ("Unauthorized"); a proper developer token is needed.
           console.error('Apple Music sign-in failed', err);
@@ -327,8 +309,16 @@ function renderAppleMusicAuthPage(payload: { developerToken: string; appName: st
             app: { name: appName, build: '0.0.0' },
           });
           musicInstance = MusicKit.getInstance();
+          // After the popup returns a user token, authorize() looks up the storefront on
+          // api.music.apple.com. With the scraped web-player token that lookup is refused from any
+          // origin but apple.com ("Storefront Country Code error") and authorize() rejects. The
+          // provider never needs that lookup — it asks amp-api itself — so keep the token as the
+          // popup hands it over and use it when only the lookup failed.
+          musicInstance.addEventListener('userTokenDidChange', (event) => {
+            if (event && event.userToken) popupToken = event.userToken;
+          });
           signInBtn.disabled = false;
-          setStatus(musicInstance.isAuthorized ? 'Already signed in. Click sign in to refresh.' : 'Ready to sign in.');
+          setStatus(musicInstance.isAuthorized ? 'This browser is already signed in with Apple; opening the sign-in again only fetches the token.' : '');
         } catch (err) {
           console.error('MusicKit init failed', err);
           setStatus('Unable to initialize MusicKit: ' + describeError(err));
