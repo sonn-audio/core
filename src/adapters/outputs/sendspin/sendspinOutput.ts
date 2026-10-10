@@ -599,10 +599,17 @@ export class SendspinOutput implements ZoneOutput {
     };
   }
 
-  /** Run `fn` for each connected satellite, isolating per-satellite send failures. */
-  private forEachConnectedSatellite(fn: (satellite: SendspinClientSender) => void): void {
+  /**
+   * Run `fn` for each connected satellite, isolating per-satellite send failures. Player traffic
+   * (stream start, PCM, volume) passes `playersOnly`: a satellite that never declared player@v1
+   * is there for something else, such as visualizer frames, and has no output to feed.
+   */
+  private forEachConnectedSatellite(
+    fn: (satellite: SendspinClientSender) => void,
+    { playersOnly = false }: { playersOnly?: boolean } = {},
+  ): void {
     for (const satellite of this.satellites) {
-      if (!satellite.isConnected()) {
+      if (!satellite.isConnected() || (playersOnly && !satellite.isPlayer())) {
         continue;
       }
       try {
@@ -857,7 +864,7 @@ export class SendspinOutput implements ZoneOutput {
       }
     }
     // Keep connected satellites (e.g. a subwoofer) in step with the zone volume.
-    this.forEachConnectedSatellite((satellite) => satellite.pushVolume(vol));
+    this.forEachConnectedSatellite((satellite) => satellite.pushVolume(vol), { playersOnly: true });
   }
 
   /** Start playback for this zone on the Sendspin client. */
@@ -919,10 +926,7 @@ export class SendspinOutput implements ZoneOutput {
   private endClientStreams(): void {
     sendspinCore.sendStreamEnd(this.activeClientId());
     sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
-    this.forEachConnectedSatellite((satellite) => {
-      sendspinCore.sendStreamEnd(satellite.activeClientId());
-      sendspinCore.sendStreamClear(satellite.activeClientId(), [STREAM_PLAYER_ROLE]);
-    });
+    this.forEachConnectedSatellite((satellite) => satellite.endStream());
   }
 
   /** Resume playback; if a session is provided, restart as play. */
@@ -1408,7 +1412,9 @@ export class SendspinOutput implements ZoneOutput {
         };
         this.primary.sendStreamStart(reuseStreamParams);
         this.ports.sendspinGroup.notifyStreamStart(this.zoneId, reuseStreamParams);
-        this.forEachConnectedSatellite((satellite) => satellite.sendStreamStart(reuseStreamParams));
+        this.forEachConnectedSatellite((satellite) => satellite.sendStreamStart(reuseStreamParams), {
+          playersOnly: true,
+        });
         // Reaffirm playback state to the client when reusing a stream.
         this.pushPlaybackState(this.playbackState);
         this.sendCurrentSnapshot();
@@ -1642,6 +1648,7 @@ export class SendspinOutput implements ZoneOutput {
             targetLeadUs,
             bufferedBytes: this.bufferedBytes,
           }),
+          { playersOnly: true },
         );
 
         this.bufferedChunks.push(frame);
@@ -1741,7 +1748,9 @@ export class SendspinOutput implements ZoneOutput {
           this.primary.sendStreamStart(streamParams);
         }
         this.ports.sendspinGroup.notifyStreamStart(this.zoneId, streamParams);
-        this.forEachConnectedSatellite((satellite) => satellite.sendStreamStart(streamParams));
+        this.forEachConnectedSatellite((satellite) => satellite.sendStreamStart(streamParams), {
+          playersOnly: true,
+        });
         streamStartSent = true;
         this.lastStreamStartSentAtMs = Date.now();
       };

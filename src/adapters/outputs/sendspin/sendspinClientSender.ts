@@ -1,6 +1,7 @@
 import { createLogger } from '@/shared/logging/logger';
 import {
   PlayerCommand,
+  Roles,
   sendspinCore,
   type SendspinSession,
   type SendspinSessionHooks,
@@ -101,10 +102,22 @@ export class SendspinClientSender {
   }
 
   /**
+   * Whether the live session declared player@v1. Audio, volume and the static delay are player
+   * traffic: a client that only declared e.g. visualizer@v1 has no output to feed or delay.
+   */
+  public isPlayer(): boolean {
+    const session =
+      this.session ?? sendspinCore.getSessionByClientId?.(this.activeClientId()) ?? null;
+    return session?.getRoles().includes(Roles.PLAYER) ?? false;
+  }
+
+  /**
    * Run this sender as a listen-only satellite: watch its client, track the live session, and
    * on (re)connect push the static delay and — if the zone is already playing — announce the
-   * stream and replay the still-future buffered frames for a synced late join. The satellite
-   * never feeds back transport/volume/group commands and never gates the zone's pacing.
+   * stream and replay the still-future buffered frames for a synced late join. All of that is
+   * player traffic, so a satellite that never declared player@v1 skips it and is only offered
+   * what else it asked for (visualizer@v1). The satellite never feeds back
+   * transport/volume/group commands and never gates the zone's pacing.
    */
   public startSatellite(
     ports: OutputPorts,
@@ -120,14 +133,19 @@ export class SendspinClientSender {
         ports.sendspinConnector.markInboundConnected(this.activeClientId());
         this.session = session;
         this.connected = true;
-        this.sendStaticDelay();
-        this.pushVolume(handlers.currentVolume());
+        const player = this.isPlayer();
+        if (player) {
+          this.sendStaticDelay();
+          this.pushVolume(handlers.currentVolume());
+        }
         if (handlers.isPlaying()) {
           const format = handlers.currentStreamFormat();
           if (format) {
-            this.sendStreamStart(format);
-            for (const frame of handlers.futureFrames()) {
-              sendspinCore.sendPcmFrameToClient(this.activeClientId(), frame);
+            if (player) {
+              this.sendStreamStart(format);
+              for (const frame of handlers.futureFrames()) {
+                sendspinCore.sendPcmFrameToClient(this.activeClientId(), frame);
+              }
             }
             handlers.joined();
           }
@@ -135,6 +153,7 @@ export class SendspinClientSender {
         this.log.info('Sendspin satellite connected', {
           zoneId: this.zoneId,
           clientId: this.activeClientId(),
+          roles: session.getRoles(),
         });
       },
       onDisconnected: (session: SendspinSession) => {
@@ -194,13 +213,21 @@ export class SendspinClientSender {
   /**
    * Push the configured client-side static delay to the connected client. Not gated by
    * ownership — the static delay is benign per-client config that should reflect the latest
-   * configured value regardless of which zone currently "owns" the client.
+   * configured value regardless of which zone currently "owns" the client. It is gated by role:
+   * a client without player@v1 has no playback to delay.
    */
   public sendStaticDelay(): void {
     const session =
       this.session ?? sendspinCore.getSessionByClientId?.(this.activeClientId()) ?? null;
     if (!session) {
       this.log.debug('Sendspin set_static_delay skipped; no live session', {
+        zoneId: this.zoneId,
+        clientId: this.activeClientId(),
+      });
+      return;
+    }
+    if (!session.getRoles().includes(Roles.PLAYER)) {
+      this.log.debug('Sendspin set_static_delay skipped; client is not a player', {
         zoneId: this.zoneId,
         clientId: this.activeClientId(),
       });
@@ -243,10 +270,15 @@ export class SendspinClientSender {
     sendspinCore.sendStreamStart(this.activeClientId(), format);
   }
 
-  /** End and clear this client's player stream. */
+  /**
+   * End this client's streams, and clear its player buffer when it has one. A visualizer-only
+   * client still needs the end; it has no player buffer to clear.
+   */
   public endStream(): void {
     sendspinCore.sendStreamEnd(this.activeClientId());
-    sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
+    if (this.isPlayer()) {
+      sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
+    }
   }
 
   /**
