@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { createPrivateKey } from 'node:crypto';
-import Widevine from 'widevine';
+import { Widevine } from 'widevine';
 import protobuf from 'protobufjs';
 import { ensureDir, readFileBuffer, resolveDataDir } from '@/shared/utils/file';
 

@@ -17,7 +17,7 @@ import {
   resolvePaceInput,
   sanitizeProxyHeaders,
 } from '@/adapters/content/providers/applemusic/appleMusicStreamHelpers';
-import Widevine, { LicenseType as WvLicenseType } from 'widevine';
+import { LicenseType as WvLicenseType, Widevine } from 'widevine';
 import {
   loadWidevineArtifacts,
   WidevineArtifactsError,
