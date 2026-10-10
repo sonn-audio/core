@@ -1,12 +1,6 @@
-// Load-bearing, despite what the lint rule says: `npm run watch` runs ts-node,
-// which only compiles what it can reach from the entry point instead of the
-// whole tsconfig `include`. Without this reference node-forge has no types
-// there and the dev server refuses to start (TS7016).
-// eslint-disable-next-line @typescript-eslint/triple-slash-reference
-/// <reference path="../../../types/node-forge.d.ts" />
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import * as forge from 'node-forge';
+import { generate } from 'selfsigned';
 import { createLogger } from '@/shared/logging/logger';
 import { ensureDir, resolveDataDir } from '@/shared/utils/file';
 
@@ -49,26 +43,16 @@ export async function loadOrGenerateSelfSignedTls(): Promise<TlsContext | null> 
 
   try {
     await ensureDir(dir);
-    const { privateKey, publicKey } = forge.pki.rsa.generateKeyPair({
-      bits: 2048,
-      e: 0x10001,
-    });
-    const cert = forge.pki.createCertificate();
-    cert.publicKey = publicKey;
-    cert.serialNumber = Date.now().toString(16);
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10);
-    const attrs = [
-      { name: 'commonName', value: 'sonn-core' },
-      { name: 'organizationName', value: 'sonn-core' },
-    ];
-    cert.setSubject(attrs);
-    cert.setIssuer(attrs);
-    cert.sign(privateKey, forge.md.sha256.create());
-
-    const pemCert = forge.pki.certificateToPem(cert);
-    const pemKey = forge.pki.privateKeyToPem(privateKey);
+    const notBeforeDate = new Date();
+    const notAfterDate = new Date(notBeforeDate);
+    notAfterDate.setFullYear(notBeforeDate.getFullYear() + 10);
+    const { cert: pemCert, private: pemKey } = await generate(
+      [
+        { name: 'commonName', value: 'sonn-core' },
+        { name: 'organizationName', value: 'sonn-core' },
+      ],
+      { keySize: 2048, algorithm: 'sha256', notBeforeDate, notAfterDate },
+    );
     await Promise.all([
       fs.writeFile(certPath, pemCert, { encoding: 'utf-8', mode: 0o600 }),
       fs.writeFile(keyPath, pemKey, { encoding: 'utf-8', mode: 0o600 }),
