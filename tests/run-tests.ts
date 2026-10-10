@@ -72,6 +72,7 @@ import './audioServersAndBearer.test';
 import './outputFactory.airplay.test';
 import './outputFactory.sendspin.test';
 import './sendspinVisualizer.test';
+import './sendspinClientConnector.test';
 import './outputFactory.streamFormat.test';
 import './airplayPcmStream.test';
 import './airplayVolumeAssert.test';

@@ -163,7 +163,10 @@ export class SendspinClientSender {
         this.connected = false;
         this.session = null;
         handlers.left();
-        ports.sendspinConnector.markInboundDisconnected(this.activeClientId());
+        ports.sendspinConnector.markInboundDisconnected(
+          this.activeClientId(),
+          session.getLastGoodbyeReason(),
+        );
         this.log.info('Sendspin satellite disconnected', {
           zoneId: this.zoneId,
           clientId: this.activeClientId(),

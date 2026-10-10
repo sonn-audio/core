@@ -584,12 +584,55 @@ export class SendspinClientConnector {
     this.inboundClients.add(normalized);
   }
 
-  public markInboundDisconnected(clientId: string): void {
+  /**
+   * The client's live session ended. Dial it again unless it said not to.
+   *
+   * Nothing else would: when our own socket to it closes, that close is handled while the
+   * session still counts as connected, so `scheduleRetry` stands down, and mDNS stays quiet
+   * when the client comes back with an unchanged record. A client that restarted mid-playback
+   * was then only reached again after a server restart.
+   */
+  public markInboundDisconnected(clientId: string, goodbyeReason?: string | null): void {
     const normalized = clientId.trim();
     if (!normalized) {
       return;
     }
     this.inboundClients.delete(normalized);
+    if (this.shouldSuppressRetry(goodbyeReason ?? null)) {
+      return;
+    }
+    this.redial(normalized);
+  }
+
+  /** Dial every endpoint known for a watched client now, past the attempt interval. */
+  private redial(clientId: string): void {
+    const ids = new Set<string>();
+    if (this.desiredClientIds.has(clientId)) {
+      ids.add(clientId);
+    }
+    for (const [configuredId, resolvedId] of this.resolvedClientIds.entries()) {
+      if (resolvedId === clientId && this.desiredClientIds.has(configuredId)) {
+        ids.add(configuredId);
+      }
+    }
+    const endpoints = new Map<string, Endpoint>();
+    for (const id of ids) {
+      const direct = this.shouldUseDirectDial(id) ? this.buildDirectEndpoint(id) : null;
+      if (direct) {
+        this.directEndpoints.set(id, direct.url);
+        endpoints.set(direct.url, direct);
+      }
+      for (const service of this.knownServices.values()) {
+        const endpoint = this.serviceMatches(service, id) ? this.toEndpoint(service, id) : null;
+        if (endpoint && !endpoints.has(endpoint.url)) {
+          endpoints.set(endpoint.url, endpoint);
+        }
+      }
+    }
+    for (const endpoint of endpoints.values()) {
+      this.lastAttempts.delete(endpoint.url);
+      this.connect(endpoint);
+    }
   }
 
   private parseGoodbyeReason(reason: string): string | null {

@@ -117,6 +117,7 @@ function build(): Harness {
       session = {
         getClientId: () => clientId,
         getRoles: () => roles,
+        getLastGoodbyeReason: () => null,
         sendServerCommand: (command: unknown) => commands.push([clientId, command]),
       } as unknown as SendspinSession;
       sessions.set(clientId, session);
