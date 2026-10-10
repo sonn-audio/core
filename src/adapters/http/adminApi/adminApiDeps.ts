@@ -16,6 +16,7 @@ import type { GroupManagerReadPort, GroupManagerWritePort } from '@/application/
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { AlertFilesPort } from '@/ports/AlertFilesPort';
 import type { SendspinLineInService } from '@/adapters/inputs/linein/sendspinLineInService';
+import type { DlnaLineInService } from '@/adapters/inputs/linein/dlnaLineInService';
 import type { MusicAssistantStreamService } from '@/adapters/inputs/musicassistant/musicAssistantStreamService';
 import type { SpotifyInputService } from '@/adapters/inputs/spotify/spotifyInputService';
 import type { SnapcastCore } from '@/adapters/outputs/snapcast/snapcastCore';
@@ -69,6 +70,7 @@ export type AdminSurfaceDeps = {
     onSoftRestart?: () => Promise<boolean>;
     recentsManager: RecentsManager;
     sendspinLineInService: SendspinLineInService;
+    dlnaLineInService?: DlnaLineInService;
     snapcastCore: SnapcastCore;
     sonnCorePeers: SonnCorePeerRegistry;
     spotifyInputService: SpotifyInputService;
@@ -108,6 +110,7 @@ export function createAdminApiDeps(
     configPort: deps.configPort,
     spotifyInputService: deps.spotifyInputService,
     sendspinLineInService: deps.sendspinLineInService,
+    dlnaLineInService: deps.dlnaLineInService,
     // Start/stop the DLNA advertisement to match its enabled flag, so the Access
     // toggle takes effect at runtime instead of only on the next boot.
     syncMediaServer: async () => {

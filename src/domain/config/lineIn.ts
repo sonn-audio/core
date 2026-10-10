@@ -1,4 +1,4 @@
-import type { LineInInputConfig } from '@/domain/config/types';
+import type { AudioServerConfig, LineInInputConfig } from '@/domain/config/types';
 
 /**
  * Line-in facts that are pure config reads, kept in the domain so both the
@@ -7,6 +7,36 @@ import type { LineInInputConfig } from '@/domain/config/types';
  */
 
 export const LINEIN_SAMPLE_RATE = 44100;
+
+/** First id handed to a line-in that has none of its own: `<macId>#1000001`, `#1000002`, … */
+export const LINEIN_ID_START = 1000001;
+
+export type LineInEntry = { id: string; name: string; record: LineInInputConfig };
+
+/**
+ * Every configured line-in with the id and name it is known by. An entry without an
+ * id gets one from its position, so reordering the list renames it — the same rule
+ * the Loxone side was built on, which is why it cannot change here.
+ */
+export function resolveLineInEntries(config: AudioServerConfig): LineInEntry[] {
+  const entries = Array.isArray(config.inputs?.lineIn?.inputs) ? config.inputs!.lineIn!.inputs! : [];
+  const macId = (config.system?.audioserver?.macId ?? '').trim().toUpperCase() || 'UNKNOWN';
+  return entries.map((entry, index) => {
+    const record = entry && typeof entry === 'object' ? (entry as LineInInputConfig) : {};
+    const id = typeof record.id === 'string' && record.id.trim()
+      ? record.id.trim()
+      : `${macId}#${LINEIN_ID_START + index}`;
+    const name = typeof record.name === 'string' && record.name.trim()
+      ? record.name.trim()
+      : `LineIn${index + 1}`;
+    return { id, name, record };
+  });
+}
+
+/** The `source` block of a line-in entry, when it has one. */
+export function lineInSource(record: LineInInputConfig | null | undefined): Record<string, unknown> | null {
+  return record?.source && typeof record.source === 'object' ? (record.source as Record<string, unknown>) : null;
+}
 
 export function resolveLineInSampleRate(entry?: LineInInputConfig | null): number {
   const source = entry?.source && typeof entry.source === 'object' ? (entry.source as Record<string, unknown>) : null;

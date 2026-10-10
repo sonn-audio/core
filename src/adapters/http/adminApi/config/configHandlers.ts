@@ -4,6 +4,7 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import type { SendspinLineInService } from '@/adapters/inputs/linein/sendspinLineInService';
+import type { DlnaLineInService } from '@/adapters/inputs/linein/dlnaLineInService';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
 import type {
   AudioServerConfig,
@@ -23,6 +24,7 @@ export type ConfigHandlerDeps = {
   contentManager: ContentManager;
   loxoneNotifier: LoxoneWsNotifier;
   sendspinLineInService: SendspinLineInService;
+  dlnaLineInService?: DlnaLineInService;
   zoneManager: ZoneManagerFacade;
   /** Start/stop the DLNA MediaServer advertisement to match its current enabled
    *  flag, so a runtime toggle takes effect without a server restart. */
@@ -373,6 +375,7 @@ async function handleInputsUpdate(
   if (lineInUpdated) {
     deps.loxoneNotifier.notifyLineInChanged();
     deps.sendspinLineInService.refresh();
+    deps.dlnaLineInService?.refresh();
   }
   await reloadZones(deps);
   deps.sendJson(res, 204, {});

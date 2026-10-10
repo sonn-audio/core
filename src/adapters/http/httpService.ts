@@ -37,6 +37,7 @@ import type { MediaServer } from '@/adapters/mediaserver/mediaServer';
 import type { SubsonicApi } from '@/adapters/subsonic/subsonicApi';
 import type { WebdavServer } from '@/adapters/webdav/webdavServer';
 import type { DlnaInputService } from '@/adapters/inputs/dlna/dlnaInputService';
+import type { DlnaLineInService } from '@/adapters/inputs/linein/dlnaLineInService';
 
 /**
  * What the streaming and websocket transports need: the engine, the ingest registries and the
@@ -52,6 +53,7 @@ export type TransportSurfaceDeps = {
     browserZoneRegistry: BrowserZoneRegistry;
     connectionRegistry: ConnectionRegistry;
     dlnaInput?: DlnaInputService;
+    dlnaLineIn?: DlnaLineInService;
     engine: EnginePort;
     lineInActivation: LineInActivationRegistry;
     lineInRegistry: LineInIngestRegistry;
@@ -78,6 +80,7 @@ export class HttpService {
   private readonly subsonic?: SubsonicApi;
   private readonly webdav?: WebdavServer;
   private readonly dlnaInput?: DlnaInputService;
+  private readonly dlnaLineIn?: DlnaLineInService;
   private readonly streamProxyRoutes: StreamProxyRoute[];
   private readonly lineInIngestWs: LineInIngestWebSocket;
   private readonly sonnClientApi: SonnClientApiHandler;
@@ -154,6 +157,7 @@ export class HttpService {
     this.subsonic = options.subsonic;
     this.webdav = options.webdav;
     this.dlnaInput = options.dlnaInput;
+    this.dlnaLineIn = options.dlnaLineIn;
     this.streamProxyRoutes = options.streamProxyRoutes;
     this.lineInIngestWs = new LineInIngestWebSocket(options.lineInRegistry);
     this.sendspin = new SendspinGateway(options.browserZoneRegistry);
@@ -402,6 +406,11 @@ export class HttpService {
     // /dlna-renderer/:zoneId/*. LAN-reachable by design (apps cast to it).
     if (this.dlnaInput?.matches(pathname)) {
       await this.dlnaInput.handle(req, res, pathname);
+      return;
+    }
+    // DLNA line-in renderers, same idea under /dlna-linein/:input/*.
+    if (this.dlnaLineIn?.matches(pathname)) {
+      await this.dlnaLineIn.handle(req, res, pathname);
       return;
     }
 

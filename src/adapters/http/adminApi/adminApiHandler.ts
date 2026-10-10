@@ -13,6 +13,7 @@ import type { SpotifyInputService } from '@/adapters/inputs/spotify/spotifyInput
 import type { ZoneTransportConfig } from '@/domain/config/types';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import type { SendspinLineInService } from '@/adapters/inputs/linein/sendspinLineInService';
+import type { DlnaLineInService } from '@/adapters/inputs/linein/dlnaLineInService';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { MusicAssistantStreamService } from '@/adapters/inputs/musicassistant/musicAssistantStreamService';
 import type { WebdavServer } from '@/adapters/webdav/webdavServer';
@@ -55,6 +56,7 @@ export type AdminApiOptions = {
   configPort: ConfigPort;
   spotifyInputService: SpotifyInputService;
   sendspinLineInService: SendspinLineInService;
+  dlnaLineInService?: DlnaLineInService;
   syncMediaServer?: () => Promise<void>;
   /** Drives /mqtt/status and applies a saved broker change without a restart. */
   mqttPublisher?: MqttPublisher;
@@ -198,6 +200,7 @@ export class AdminApiHandler {
   private readonly validateTuneInUsername: AdminApiOptions['validateTuneInUsername'];
   private readonly spotifyInputService: SpotifyInputService;
   private readonly sendspinLineInService: SendspinLineInService;
+  private readonly dlnaLineInService?: DlnaLineInService;
   private readonly syncMediaServer?: () => Promise<void>;
   private readonly mqttPublisher?: MqttPublisher;
   private readonly musicAssistantStreamService: MusicAssistantStreamService;
@@ -239,6 +242,7 @@ export class AdminApiHandler {
     this.radioAdmin = options.radioAdmin;
     this.spotifyInputService = options.spotifyInputService;
     this.sendspinLineInService = options.sendspinLineInService;
+    this.dlnaLineInService = options.dlnaLineInService;
     this.syncMediaServer = options.syncMediaServer;
     this.mqttPublisher = options.mqttPublisher;
     this.musicAssistantStreamService = options.musicAssistantStreamService;
@@ -384,6 +388,7 @@ export class AdminApiHandler {
         contentManager: this.contentManager,
         loxoneNotifier: this.loxoneNotifier,
         sendspinLineInService: this.sendspinLineInService,
+        dlnaLineInService: this.dlnaLineInService,
         zoneManager: this.zoneManager,
         syncMediaServer: this.syncMediaServer,
         readJsonBody: (req, res, max) => readJsonBody(req, res, max),

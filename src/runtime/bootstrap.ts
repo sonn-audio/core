@@ -47,6 +47,7 @@ import { PlaybackService } from '@/application/playback/PlaybackService';
 import { AirplayInputService } from '@/adapters/inputs/airplay/airplayInputService';
 import { LineInMetadataService } from '@/adapters/inputs/linein/lineInMetadataService';
 import { SendspinLineInService } from '@/adapters/inputs/linein/sendspinLineInService';
+import { DlnaLineInService } from '@/adapters/inputs/linein/dlnaLineInService';
 import { MusicAssistantStreamService } from '@/adapters/inputs/musicassistant/musicAssistantStreamService';
 import { MusicAssistantInputService } from '@/adapters/inputs/musicassistant/musicAssistantInputService';
 import { SpotifyInputService } from '@/adapters/inputs/spotify/spotifyInputService';
@@ -293,6 +294,7 @@ export function createRuntime(): Runtime {
   const serverHeartbeat = new ServerHeartbeat(connectionRegistry);
   const sendspinHookRegistry = new SendspinHookRegistry();
   const sendspinLineInService = new SendspinLineInService(lineInRegistry, sendspinHookRegistry, configPort);
+  const dlnaLineInService = new DlnaLineInService(lineInRegistry, configPort, ssdpAdvertiser, dlnaHttpPort);
   const lineInActivation = new LineInActivationRegistry();
   // One long-lived owner of zone→line-in state, shared by every adapter that can
   // select a source. It must outlive the Loxone processor, which is rebuilt on each
@@ -569,6 +571,7 @@ export function createRuntime(): Runtime {
 
     lineInMetadataService.start();
     sendspinLineInService.start();
+    dlnaLineInService.start();
     await squeezeliteCore.start();
     await squeezeliteCli.start();
 
@@ -747,6 +750,7 @@ export function createRuntime(): Runtime {
       lineInActivationService,
       bluetoothInput: bluetoothInputService,
       sendspinLineInService,
+      dlnaLineInService,
       musicAssistantStreamService,
       spotifyInputService,
       snapcastCore,
@@ -783,6 +787,7 @@ export function createRuntime(): Runtime {
       subsonic: subsonicApi,
       webdav: webdavServer,
       dlnaInput: dlnaInputService,
+      dlnaLineIn: dlnaLineInService,
     });
     networkService = new NetworkService({
       lineInRegistry,
@@ -887,6 +892,7 @@ export function createRuntime(): Runtime {
       name: 'dlna-input',
       stop: async () => {
         dlnaInputService.shutdown();
+        dlnaLineInService.stop();
         await ssdpAdvertiser.stop();
       },
     });
