@@ -20,6 +20,7 @@ export type InputSourceConfiguratorDeps = {
     | 'configureBluetooth'
     | 'configureSpotify'
     | 'setAirplayPlayerResolver'
+    | 'stopAirplaySession'
   >;
   zoneRepo: Pick<ZoneRepository, 'get'>;
   playback: Pick<
@@ -118,14 +119,13 @@ export class InputSourceConfigurator {
         if (!ctx) {
           return;
         }
-        // Spotify Connect may take over from any input except AirPlay (which has
-        // its own exclusivity). Regular Spotify callbacks only proceed when spotify
-        // is already the active input (prevents Connect stealing an AirPlay session).
-        if (label === 'spotify-connect') {
-          if (ctx.activeInput === 'airplay') {
-            return;
-          }
-        } else if (ctx.activeInput && ctx.activeInput !== 'spotify') {
+        // Spotify Connect may take over from any active input. Regular Spotify
+        // callbacks only proceed when Spotify already owns the zone.
+        if (
+          label !== 'spotify-connect' &&
+          ctx.activeInput &&
+          ctx.activeInput !== 'spotify'
+        ) {
           return;
         }
         // Spotify Connect sessions use a dedicated label. Mark the zone as Connect-
@@ -134,6 +134,16 @@ export class InputSourceConfigurator {
         // Also set activeInput/inputMode so subsequent metadata callbacks are not
         // blocked by the ctx.activeInput !== 'spotify' guards.
         if (label === 'spotify-connect') {
+          // Spotify Connect is the newly selected source. If AirPlay still owns
+          // the zone, stop and restart its receiver so the sender is disconnected
+          // and falls back to its local audio output.
+          if (ctx.activeInput === 'airplay') {
+            this.deps.inputsPort.stopAirplaySession(
+              zoneId,
+              'switch_to_spotify-connect',
+            );
+          }
+
           ctx.queue.authority = 'spotify';
           playback.setInputMode(ctx, 'spotify');
           // Sync zone volume to the Connect device immediately so it does not
