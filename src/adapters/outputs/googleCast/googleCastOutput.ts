@@ -310,13 +310,16 @@ export class GoogleCastOutput implements ZoneOutput {
       castDevice.on('volumeChanged', (volume) => this.handleVolume(volume));
     })();
 
-    this.connectPromise = pending.finally(() => {
-      if (this.connectPromise === pending) {
+    // Compare against the wrapper actually stored: a settled attempt, failed or not, must never be
+    // handed out again, or one EHOSTUNREACH while the speaker was off fails every later play (#424).
+    const tracked: Promise<void> = pending.finally(() => {
+      if (this.connectPromise === tracked) {
         this.connectPromise = undefined;
       }
     });
+    this.connectPromise = tracked;
 
-    return this.connectPromise;
+    return tracked;
   }
 
   private disconnect(): void {
@@ -440,12 +443,13 @@ export class GoogleCastOutput implements ZoneOutput {
     try {
       const startedAt = Date.now();
       const pending = this.castDevice.launchApp(DEFAULT_MEDIA_RECEIVER_APP_ID).then(() => undefined);
-      this.receiverPromise = pending.finally(() => {
-        if (this.receiverPromise === pending) {
+      const tracked: Promise<void> = pending.finally(() => {
+        if (this.receiverPromise === tracked) {
           this.receiverPromise = undefined;
         }
       });
-      await this.receiverPromise;
+      this.receiverPromise = tracked;
+      await tracked;
       const durationMs = Math.max(0, Date.now() - startedAt);
       this.log.debug('Google Cast receiver ready', { zoneId: this.zoneId, durationMs });
     } catch (err: unknown) {

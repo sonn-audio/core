@@ -766,13 +766,14 @@ export class SonosOutput implements ZoneOutput {
       }
     })();
 
-    this.s2ClientPromise = pending.finally(() => {
-      if (this.s2ClientPromise === pending) {
+    const tracked: Promise<SonosClient | null> = pending.finally(() => {
+      if (this.s2ClientPromise === tracked) {
         this.s2ClientPromise = undefined;
       }
     });
+    this.s2ClientPromise = tracked;
 
-    return this.s2ClientPromise;
+    return tracked;
   }
 
   private async playViaS2(uri: string, session: PlaybackSession): Promise<boolean> {
