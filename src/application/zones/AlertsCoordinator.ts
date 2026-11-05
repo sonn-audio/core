@@ -12,6 +12,7 @@ import { resolveSessionPreDelayMs } from '@/application/playback/playbackPreDela
 import { buildBaseUrl } from '@/shared/streamUrl';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
 import { PlaybackCoordinator } from '@/application/zones/PlaybackCoordinator';
+import { isQueueDrivenInput } from '@/application/zones/playback/guards';
 import { ZoneRepository } from '@/application/zones/ZoneRepository';
 
 const MIN_ALERT_DURATION_MS = 20000;
@@ -540,52 +541,18 @@ export class AlertsCoordinator {
     });
 
     if (activeAlert.snapshot.mode === 'play') {
-      const current = ctx.queueController.current();
-      let resumed = false;
-      if (current) {
-        const resumeAtSecRaw = Number(activeAlert.snapshot.statePatch.time ?? 0);
-        const resumeAtSec =
-          Number.isFinite(resumeAtSecRaw) && resumeAtSecRaw > 0 ? Math.round(resumeAtSecRaw) : undefined;
-        const session = await this.playbackCoordinator.startQueuePlayback(ctx, current.audiopath, {
-          title: current.title,
-          artist: current.artist,
-          album: current.album,
-          coverurl: current.coverurl,
-          audiopath: current.audiopath,
-          duration: current.duration,
-          station: current.station,
-          isRadio: this.audioHelpers.isRadioAudiopath(current.audiopath, current.audiotype),
-        }, {
-          startAtSec: resumeAtSec,
-        });
-        if (session) {
-          resumed = true;
-          const resumedAudiotype = this.audioHelpers.getStateAudiotype(ctx, current);
-          const sourceName = this.audioHelpers.resolveSourceName(resumedAudiotype, ctx, current);
-          this.applyPatch(zoneId, {
-            title: current.title,
-            artist: current.artist,
-            album: current.album,
-            coverurl: current.coverurl,
-            audiopath: current.audiopath,
-            station: current.station,
-            qindex: ctx.queueController.currentIndex(),
-            qid: current.unique_id,
-            mode: 'play',
-            clientState: 'on',
-            power: 'on',
-            ...(resumedAudiotype != null ? { audiotype: resumedAudiotype } : {}),
-            type: this.audioHelpers.getStateFileType(),
-            ...(sourceName ? { sourceName } : {}),
-          });
-        }
-      }
+      const resumed = await this.resumeAfterAlert(ctx, activeAlert.snapshot);
       if (!resumed) {
-        // Could not actually resume playback (empty queue or failed start).
+        // Could not actually resume playback (nothing to play or a failed start).
         // Leaving the zone in the optimistic 'play' restored above would keep a
         // shared power-group relay energized with nothing playing (#293), so
         // fall back to a stopped state that releases the relay.
-        this.log.debug('alert restore could not resume playback; settling to stop', { zoneId });
+        this.log.debug('alert restore could not resume playback; settling to stop', {
+          zoneId,
+          queueSize: ctx.queue.items.length,
+          inputMode: activeAlert.snapshot.inputMode,
+          audiopath: activeAlert.snapshot.statePatch.audiopath || undefined,
+        });
         this.applyPatch(zoneId, { mode: 'stop', clientState: 'on', power: 'on' });
       }
     } else if (activeAlert.snapshot.mode === 'pause') {
@@ -593,6 +560,87 @@ export class AlertsCoordinator {
     } else if (activeAlert.snapshot.mode === 'stop') {
       this.applyPatch(zoneId, { mode: 'stop', clientState: 'on', power: 'on' });
     }
+  }
+
+  /**
+   * Start again what the zone was playing when the alert came in.
+   *
+   * The queue's current entry is the first choice. A zone can be playing with no queue entry
+   * behind it, though, and Play in the app restarts such a zone from the audiopath it shows;
+   * the restore gave up on it instead, so a doorbell stopped the radio for good where a press
+   * of Play brought it straight back (#425). It now falls back to what Play does. Live radio
+   * is restarted live, as Play restarts it: it has no position to return to.
+   */
+  private async resumeAfterAlert(ctx: ZoneContext, snapshot: AlertSnapshot): Promise<boolean> {
+    const current = ctx.queueController.current();
+    const patch = snapshot.statePatch;
+    const fallbackAudiopath =
+      !current && isQueueDrivenInput(snapshot.inputMode) && typeof patch.audiopath === 'string'
+        ? patch.audiopath.trim()
+        : '';
+    const audiopath = current?.audiopath || fallbackAudiopath;
+    if (!audiopath) {
+      return false;
+    }
+    const isRadio = current
+      ? this.audioHelpers.isRadioAudiopath(current.audiopath, current.audiotype)
+      : this.audioHelpers.isRadioAudiopath(audiopath, patch.audiotype);
+    const resumeAtSecRaw = Number(patch.time ?? 0);
+    const resumeAtSec =
+      !isRadio && Number.isFinite(resumeAtSecRaw) && resumeAtSecRaw > 0
+        ? Math.round(resumeAtSecRaw)
+        : undefined;
+    const metadata: PlaybackMetadata = current
+      ? {
+          title: current.title,
+          artist: current.artist,
+          album: current.album,
+          coverurl: current.coverurl,
+          audiopath: current.audiopath,
+          duration: current.duration,
+          station: current.station,
+          isRadio,
+        }
+      : {
+          title: patch.title ?? '',
+          artist: patch.artist ?? '',
+          album: patch.album ?? '',
+          coverurl: patch.coverurl,
+          audiopath,
+          duration: patch.duration,
+          station: patch.station,
+          isRadio,
+        };
+    const session = await this.playbackCoordinator.startQueuePlayback(ctx, audiopath, metadata, {
+      startAtSec: resumeAtSec,
+    });
+    if (!session) {
+      return false;
+    }
+    if (!current) {
+      // The restored state patch already describes it; only the mode was provisional.
+      this.applyPatch(ctx.id, { mode: 'play', clientState: 'on', power: 'on' });
+      return true;
+    }
+    const resumedAudiotype = this.audioHelpers.getStateAudiotype(ctx, current);
+    const sourceName = this.audioHelpers.resolveSourceName(resumedAudiotype, ctx, current);
+    this.applyPatch(ctx.id, {
+      title: current.title,
+      artist: current.artist,
+      album: current.album,
+      coverurl: current.coverurl,
+      audiopath: current.audiopath,
+      station: current.station,
+      qindex: ctx.queueController.currentIndex(),
+      qid: current.unique_id,
+      mode: 'play',
+      clientState: 'on',
+      power: 'on',
+      ...(resumedAudiotype != null ? { audiotype: resumedAudiotype } : {}),
+      type: this.audioHelpers.getStateFileType(),
+      ...(sourceName ? { sourceName } : {}),
+    });
+    return true;
   }
 
   private createAlertSnapshot(ctx: ZoneContext): AlertSnapshot {

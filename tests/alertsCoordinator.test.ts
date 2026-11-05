@@ -471,6 +471,100 @@ test('alert restore settles to stop when playback cannot resume (releases power-
   assert.equal(patches[patches.length - 1]?.mode, 'stop');
 });
 
+test('alert restore brings back a station that had no queue entry, as Play would (#425)', async () => {
+  const zone: ZoneConfig = {
+    id: 2,
+    name: 'Kitchen',
+    sourceMac: '00:00:00:00:00:02',
+    volumes: {
+      default: 20, alarm: 20, fire: 20, bell: 55, buzzer: 20, tts: 20, volstep: 1, fading: 0, maxVolume: 100,
+    },
+  };
+  const zoneRepo = new ZoneRepository();
+  const started: Array<{ audiopath: string; metadata: Record<string, unknown>; startAtSec?: number }> = [];
+  // The zone shows a live station, but nothing in the queue stands behind it.
+  const ctx = {
+    id: zone.id,
+    name: zone.name,
+    sourceMac: zone.sourceMac,
+    config: zone,
+    state: {
+      ...buildInitialState(zone),
+      mode: 'play',
+      audiopath: 'http://radio.example/paradise',
+      station: 'Radio Paradise',
+      title: 'Hold On',
+      audiotype: 1,
+      time: 37,
+    },
+    queue: { items: [], shuffle: false, repeat: 0, currentIndex: 0, authority: 'local' },
+    queueController: { setItems: () => {}, currentIndex: () => 0, current: () => null },
+    inputAdapter: {},
+    spotifyAdapter: {},
+    metadata: {},
+    outputs: [],
+    player: { setVolume: () => {}, playUri: () => ({}) as any, stop: () => {} },
+    outputTimingActive: false,
+    lastOutputTimingAt: 0,
+    lastZoneBroadcastAt: 0,
+    lastPositionUpdateAt: 0,
+    lastPositionValue: 0,
+    lastPlaybackErrorAt: 0,
+    activeOutputTypes: new Set<string>(),
+    activeOutput: 'googleCast',
+    activeInput: null,
+    lastMetadataDispatchAt: 0,
+    inputMode: 'queue',
+  } as unknown as ZoneContext;
+  zoneRepo.set(zone.id, ctx);
+
+  const coordinator = new AlertsCoordinator({
+    zones: zoneRepo,
+    configPort: alertConfigPort,
+    playbackCoordinator: {
+      setInputMode: (_ctx: ZoneContext, mode: ZoneContext['inputMode']) => {
+        _ctx.inputMode = mode;
+      },
+      alignOutputFormat: () => {},
+      applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
+      startQueuePlayback: async (
+        _ctx: ZoneContext,
+        audiopath: string,
+        metadata: Record<string, unknown>,
+        options?: { startAtSec?: number },
+      ) => {
+        started.push({ audiopath, metadata, startAtSec: options?.startAtSec });
+        return {} as any;
+      },
+    } as any,
+    applyPatch: (_zoneId, patch) => {
+      ctx.state = { ...ctx.state, ...(patch as Record<string, unknown>) };
+    },
+    log: { warn: () => {}, debug: () => {} } as any,
+    audioHelpers: {
+      resolveAlertEventType: () => 0,
+      isRadioAudiopath: (audiopath: string) => audiopath.startsWith('http://radio.'),
+    } as any,
+    zoneAudioPrefs: { setTransientGainDb: () => {}, setAlertPreDelayFloorMs: () => {} } as any,
+  });
+
+  await coordinator.startAlert(
+    zone.id,
+    'bell',
+    { title: 'bell', url: 'alerts://bell.mp3', relativePath: 'bell.mp3', duration: 4 },
+    55,
+  );
+  await coordinator.stopAlert(zone.id);
+
+  assert.equal(started.length, 1, 'the station is started again');
+  assert.equal(started[0]?.audiopath, 'http://radio.example/paradise');
+  assert.equal(started[0]?.metadata.isRadio, true);
+  assert.equal(started[0]?.startAtSec, undefined, 'live radio comes back live, not at a stale offset');
+  assert.equal(ctx.state.mode, 'play');
+  assert.equal(ctx.state.audiopath, 'http://radio.example/paradise');
+});
+
 test('the announcement volume waits for the alert to be audible (#359)', async () => {
   // Zone plays music through an output holding a 600 ms buffer, and the engine leads
   // the alert with 400 ms of amp wake-up silence. Raising the room on the spot would
