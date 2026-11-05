@@ -79,6 +79,7 @@ import './sendspinVisualizer.test';
 import './sendspinClientConnector.test';
 import './sendspinHookRegistry.test';
 import './sendspinRc1Output.test';
+import './sendspinCapacity.test';
 import './outputFactory.streamFormat.test';
 import './airplayPcmStream.test';
 import './airplayVolumeAssert.test';

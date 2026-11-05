@@ -50,7 +50,7 @@ export type SendspinGroupCoordinator = {
   notifyStreamEnd: (leaderZoneId: number) => void;
   /** The leader paused: end the members' playback streams, keeping their artwork. */
   notifyStreamPause: (leaderZoneId: number) => void;
-  broadcastFrame: (leaderZoneId: number, frame: { data: Buffer; timestampUs: number }) => void;
+  broadcastFrame: (leaderZoneId: number, frame: { data: Buffer; timestampUs: number; durationUs?: number }) => void;
   broadcastMetadata: (leaderZoneId: number, payload: MetadataPayload) => void;
   broadcastControllerState: (leaderZoneId: number, payload: ControllerPayload) => void;
   broadcastPlaybackState: (
@@ -177,7 +177,7 @@ class SendspinGroupController {
 
   public broadcastFrame(
     leaderZoneId: number,
-    frame: { data: Buffer; timestampUs: number },
+    frame: { data: Buffer; timestampUs: number; durationUs?: number },
   ): void {
     this.forEachMemberOutput(leaderZoneId, (output) => {
       sendspinCore.sendPcmFrameToClient(output.getClientId(), frame);

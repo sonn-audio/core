@@ -1705,7 +1705,7 @@ export class SendspinOutput implements ZoneOutput {
           targetLeadUs,
           bufferedBytes: this.bufferedBytes,
         });
-        this.ports.sendspinGroup.broadcastFrame(this.zoneId, frame);
+        this.ports.sendspinGroup.broadcastFrame(this.zoneId, { ...frame, durationUs });
         this.forEachConnectedSatellite((satellite) =>
           satellite.deliverFrame(frame, durationUs, {
             canSend: true,

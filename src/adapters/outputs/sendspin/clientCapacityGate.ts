@@ -11,7 +11,10 @@ import { serverNowUs } from '@sonn-audio/node-sendspin';
  * synchronisation is carried by the shared frame timestamps, not by this pacing.
  *
  * Extracted verbatim from the single-client send loop in `SendspinOutput.startStream`; the
- * math is unchanged.
+ * math is unchanged. It counts payload bytes only and ignores the player's output delay, so for
+ * a connected player that declared a `buffer_capacity` the sender asks node-sendspin instead,
+ * which keeps the count rc1 defines; this remains the fallback (see
+ * `SendspinClientSender.waitForCapacity`).
  */
 export class ClientCapacityGate {
   private readonly buffered: Array<{ endUs: number; byteCount: number }> = [];
@@ -50,20 +53,6 @@ export class ClientCapacityGate {
       virtualBytes = Math.max(0, virtualBytes - chunk.byteCount);
     }
     return waitUs;
-  }
-
-  /** Block until `bytesNeeded` more bytes fit within the client's buffer capacity. */
-  public async waitForCapacity(bytesNeeded: number): Promise<void> {
-    if (this.capacityBytes <= 0 || bytesNeeded <= 0) {
-      return;
-    }
-    while (true) {
-      const waitUs = this.timeUntilCapacityUs(bytesNeeded);
-      if (waitUs <= 0) {
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.ceil(waitUs / 1000))));
-    }
   }
 
   /** Record a frame as in flight: `byteCount` bytes that drain by `endUs` (server time). */

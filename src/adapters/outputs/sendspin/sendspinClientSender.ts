@@ -256,11 +256,44 @@ export class SendspinClientSender {
     this.capacityGate?.register(endUs, byteCount);
   }
 
-  /** Block until `bytesNeeded` more bytes fit within this client's buffer capacity. */
+  /** Block until a chunk of `bytesNeeded` payload bytes fits within this client's buffer capacity. */
   public async waitForCapacity(bytesNeeded: number): Promise<void> {
-    if (this.capacityGate) {
-      await this.capacityGate.waitForCapacity(bytesNeeded);
+    if (bytesNeeded <= 0) {
+      return;
     }
+    while (true) {
+      const waitUs = this.timeUntilCapacityUs(bytesNeeded);
+      if (waitUs <= 0) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.ceil(waitUs / 1000))));
+    }
+  }
+
+  /**
+   * How long until a chunk of `bytesNeeded` payload bytes fits in the player's buffer.
+   *
+   * rc1 makes `buffer_capacity` a hard cap counted over whole audio messages, header included,
+   * held until each chunk's end time minus the player's output delay, and emptied by a player
+   * `stream/clear` or `stream/end`; a server must not send a chunk that does not fit. node-sendspin
+   * keeps exactly that count for a connected player that declared a capacity, so it decides here.
+   * The local gate, which counts payload bytes and ignores the output delay, overran a
+   * small-buffer rc1 player by the 13-byte header on every chunk; it remains the fallback for a
+   * client with no live session or no declared capacity (sized from our own prebuffer then).
+   *
+   * A chunk larger than the whole buffer never fits. It is sent anyway, as it always was, rather
+   * than stalling the stream for good.
+   */
+  private timeUntilCapacityUs(bytesNeeded: number): number {
+    const clientId = this.activeClientId();
+    if (sendspinCore.getPlayerBufferCapacity(clientId)) {
+      const headerBytes = sendspinCore.getAudioHeaderSize(clientId) ?? 0;
+      const waitUs = sendspinCore.timeUntilPlayerCapacityUs(clientId, bytesNeeded + headerBytes);
+      if (waitUs !== null) {
+        return Number.isFinite(waitUs) ? waitUs : 0;
+      }
+    }
+    return this.capacityGate?.timeUntilCapacityUs(bytesNeeded) ?? 0;
   }
 
   /** Shift in-flight capacity bookkeeping when the playback timeline re-anchors. */
@@ -308,7 +341,9 @@ export class SendspinClientSender {
         targetLeadUs: ctx.targetLeadUs,
         bufferedBytes: ctx.bufferedBytes,
       });
-      sendspinCore.sendPcmFrameToClient(this.activeClientId(), frame);
+      // The duration lets node-sendspin count an encoded (FLAC, Opus) chunk against the
+      // player's buffer too; a PCM one it can work out from the format.
+      sendspinCore.sendPcmFrameToClient(this.activeClientId(), { ...frame, durationUs });
     }
     this.registerCapacity(frame.timestampUs + durationUs, frame.data.length);
   }
