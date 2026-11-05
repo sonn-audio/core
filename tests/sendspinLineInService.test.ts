@@ -201,3 +201,49 @@ test('SendspinLineInService getControlSupport filters unknown control values', (
     (sendspinCore as any).sendServerCommand = originalSendCommand;
   }
 });
+
+test('SendspinLineInService starts a wanted rc1 source again when it reports its signal present', () => {
+  const originalGetSession = sendspinCore.getSessionByClientId;
+  const originalSendCommand = sendspinCore.sendServerCommand;
+  const sent: unknown[] = [];
+  try {
+    (sendspinCore as any).getSessionByClientId = () => ({
+      getSourceStreamFormat: () => null,
+      getSourceSupport: () => ({}),
+    });
+    (sendspinCore as any).sendServerCommand = (_clientId: string, payload: unknown) => sent.push(payload);
+
+    const hooks = new FakeHookRegistry();
+    const service = new SendspinLineInService(
+      new FakeLineInRegistry() as any,
+      hooks as any,
+      new FakeConfigPort(createConfig()),
+    );
+    service.start();
+    const clientHooks = hooks.byClientId.get('client-1');
+    assert.ok(clientHooks, 'missing sendspin hooks');
+
+    // Not wanted: a source with signal is not started just because it has some.
+    clientHooks.onSourceSignalChanged?.({} as any, 'present');
+    assert.deepEqual(sent, []);
+
+    service.requestStart('linein-1');
+    sent.length = 0;
+    // A reconnected source reports its signal afresh; its new session never got the start.
+    clientHooks.onSourceSignalChanged?.({} as any, 'present');
+    assert.deepEqual(sent, [{ source: { command: 'start' } }]);
+
+    // Absent ends nothing; the source closes its own stream.
+    sent.length = 0;
+    clientHooks.onSourceSignalChanged?.({} as any, 'absent');
+    assert.deepEqual(sent, []);
+
+    service.requestStop('linein-1');
+    sent.length = 0;
+    clientHooks.onSourceSignalChanged?.({} as any, 'present');
+    assert.deepEqual(sent, [], 'a deselected input is not started again');
+  } finally {
+    (sendspinCore as any).getSessionByClientId = originalGetSession;
+    (sendspinCore as any).sendServerCommand = originalSendCommand;
+  }
+});

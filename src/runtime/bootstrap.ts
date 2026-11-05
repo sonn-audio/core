@@ -835,6 +835,10 @@ export function createRuntime(): Runtime {
     sendspinCore.configureServer({
       name: systemConfig?.name?.trim() || 'Sonn Audio Server',
       serverId: (systemConfig?.macId ?? '').trim().toUpperCase() || 'server',
+      // Name the codecs a source (line-in) may send in the hello, as rc1 has the server do.
+      // node-sendspin always lists flac and pcm; nothing more is offered, since the line-in
+      // ingest decodes PCM alone (a source announcing anything else is warned about there).
+      sourceCodecs: [],
     });
     sendspinCore.enableEncryption(loadSendspinIdentity());
     log.info('sendspin server identity', { serverId: sendspinCore.getServerId() });

@@ -49,6 +49,8 @@ export class SendspinLineInService {
   private readonly activeSources = new Map<string, ActiveSource>();
   private readonly lastAudioLog = new Map<string, number>();
   private readonly hookStops = new Map<string, () => void>();
+  /** Clients whose input was asked to start and not since to stop. */
+  private readonly wanted = new Set<string>();
   private started = false;
   private readonly configPort: ConfigPort;
 
@@ -79,6 +81,7 @@ export class SendspinLineInService {
     }
     this.hookStops.clear();
     this.mappings.clear();
+    this.wanted.clear();
     this.lastAudioLog.clear();
     for (const [clientId, active] of this.activeSources.entries()) {
       this.registry.stop(active.inputId, 'sendspin-disconnected');
@@ -127,6 +130,7 @@ export class SendspinLineInService {
       return;
     }
     this.log.debug('sendspin line-in start requested', { inputId, clientId: mapping.clientId });
+    this.wanted.add(mapping.clientId);
     this.sendSourceControl(mapping.clientId, 'activate');
     const sent = this.sendSourceSettings(mapping.clientId, inputId, SourceCommand.START);
     if (!sent) {
@@ -141,6 +145,7 @@ export class SendspinLineInService {
       return;
     }
     this.log.debug('sendspin line-in stop requested', { inputId, clientId: mapping.clientId });
+    this.wanted.delete(mapping.clientId);
     this.sendSourceCommand(mapping.clientId, SourceCommand.STOP);
     this.sendSourceControl(mapping.clientId, 'deactivate');
   }
@@ -187,8 +192,28 @@ export class SendspinLineInService {
           state: state.state,
           signal: state.signal,
         });
+        // Pre-rc1 sources only: rc1 dropped `state`, and an rc1 source's stream ends with
+        // `client-stream/end` (onSourceStreamEnd below).
         if (state.state && state.state !== 'streaming') {
           this.stopActiveSource(clientId, `sendspin-${state.state}`);
+        }
+      },
+      /*
+       * An rc1 source reports `signal` instead, its own say on whether it has audio to offer,
+       * and the spec makes a change to `present` the server's cue to send `start`. A source
+       * that reconnects, or comes back available, reports its signal afresh — and a new
+       * session never heard the `start` the old one got, so a wanted input that is not
+       * streaming is started again here. `absent` ends nothing: the source closes its own
+       * stream when it stops sending, and the input stays selected until someone deselects it.
+       */
+      onSourceSignalChanged: (_session, signal) => {
+        const mapping = this.mappings.get(clientId);
+        this.log.info('sendspin line-in signal changed', { clientId, inputId: mapping?.inputId, signal });
+        if (signal !== 'present' || !mapping || !this.wanted.has(clientId) || this.activeSources.has(clientId)) {
+          return;
+        }
+        if (!this.sendSourceSettings(clientId, mapping.inputId, SourceCommand.START)) {
+          this.sendSourceCommand(clientId, SourceCommand.START);
         }
       },
       /*
@@ -199,6 +224,14 @@ export class SendspinLineInService {
        */
       onSourceStreamStart: (_session, format) => {
         this.log.info('sendspin line-in stream announced', { clientId, format });
+        if (!this.isPcmCodec(format.codec)) {
+          // The server hello names flac and pcm as acceptable, as rc1 requires, but the
+          // ingest takes PCM only; say so rather than feed it encoded bytes in silence.
+          this.log.warn('sendspin line-in source announced a codec the ingest cannot decode', {
+            clientId,
+            codec: format.codec,
+          });
+        }
         this.stopActiveSource(clientId, 'sendspin-format-announced');
         const mapping = this.mappings.get(clientId);
         if (mapping) {

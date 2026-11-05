@@ -217,7 +217,8 @@ test('noise: the server greets first on an encrypted connection', async () => {
     {},
     {},
     { identity, pskProvider: () => SENTINEL_RESOLVED },
-    { serverId: 'ignored-under-encryption', name: 'Greeting Server' },
+    // As runtime/bootstrap.ts configures it: sonn accepts source streams.
+    { serverId: 'ignored-under-encryption', name: 'Greeting Server', sourceCodecs: [] },
   );
 
   const client = Identity.generate();
@@ -262,8 +263,12 @@ test('noise: the server greets first on an encrypted connection', async () => {
   assert.equal(decoded?.kind, 'text');
   const hello = JSON.parse(decoded?.kind === 'text' ? decoded.data : '{}');
   assert.equal(hello.type, 'server/hello');
-  // Identity was settled by the handshake, so the hello shrinks to just the name.
-  assert.deepEqual(hello.payload, { name: 'Greeting Server' });
+  // Identity was settled by the handshake, so the hello shrinks to the name and, since rc1,
+  // the codecs a source may send us (flac and pcm, always both).
+  assert.deepEqual(hello.payload, {
+    name: 'Greeting Server',
+    'source@v1_support': { supported_codecs: ['pcm', 'flac'] },
+  });
 });
 
 test('noise: client and server bring each other up over a real socket', async () => {
