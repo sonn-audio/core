@@ -925,11 +925,21 @@ export class SendspinOutput implements ZoneOutput {
     }
   }
 
-  /** Tell the primary client (and satellites) to end + clear the current stream. */
+  /**
+   * Pause the primary client, its satellites and the group's members: end their player and
+   * visualizer streams, and leave the artwork stream up.
+   *
+   * A role-less `stream/end` ends every stream, and on the artwork one a client must clear its
+   * image, so a paused rc1 display went blank and stayed blank until the cover changed — the
+   * cover is only re-sent then. Pausing is ending playback only (spec main #346). The
+   * `stream/clear` that follows is what a pre-rc1 client always got here; node-sendspin drops it
+   * for an rc1 client, whose player stream is already gone.
+   */
   private endClientStreams(): void {
-    sendspinCore.sendStreamEnd(this.activeClientId());
+    sendspinCore.endPlaybackStreams(this.activeClientId());
     sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
-    this.forEachConnectedSatellite((satellite) => satellite.endStream());
+    this.forEachConnectedSatellite((satellite) => satellite.pauseStream());
+    this.ports.sendspinGroup.notifyStreamPause(this.zoneId);
   }
 
   /** Resume playback; if a session is provided, restart as play. */

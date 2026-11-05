@@ -19,6 +19,7 @@ const CORE_METHODS = [
   'sendVisualizerLoudness',
   'sendStreamStart',
   'sendStreamEnd',
+  'endPlaybackStreams',
   'sendStreamClear',
   'sendPcmFrameToClient',
 ] as const;
@@ -232,7 +233,8 @@ test('a satellite that only declared visualizer@v1 gets frames but no audio, vol
       core.calls.filter(([name, id]) => id === 'sauna-licht' && PLAYER_TRAFFIC.includes(name)),
       [],
     );
-    assert.ok(core.calls.some(([name, id]) => name === 'sendStreamEnd' && id === 'sauna-licht'));
+    // Paused, it is told to end its visualizer stream (and only its playback streams).
+    assert.ok(core.calls.some(([name, id]) => name === 'endPlaybackStreams' && id === 'sauna-licht'));
     assert.deepEqual(commands, []);
     output.teardown();
   } finally {

@@ -33,6 +33,7 @@ type Timeline = Array<[string, ...unknown[]]>;
 const CORE_METHODS = [
   'sendStreamStart',
   'sendStreamEnd',
+  'endPlaybackStreams',
   'sendStreamClear',
   'sendPcmFrameToClient',
   'setClientMetadata',
@@ -242,6 +243,29 @@ test('the end of a stream is forgotten, so a later joiner is not started on a de
       0,
       'there is no live format to hand out once the stream has ended',
     );
+  } finally {
+    rec.restore();
+    cleanup();
+  }
+});
+
+test('a paused leader ends its members\' playback but leaves their artwork up', async () => {
+  const rec = recordCore();
+  try {
+    group([MEMBER_A]);
+    sendspinGroupController.register(LEADER, participant('leader'));
+    sendspinGroupController.register(MEMBER_A, participant('a'));
+    await settle();
+    rec.timeline.length = 0;
+
+    sendspinGroupController.notifyStreamPause(LEADER);
+
+    // A role-less stream/end would end the artwork stream too, and an rc1 display clears its
+    // image when that ends; the cover is only re-sent when it changes.
+    assert.deepEqual(rec.timeline, [
+      ['endPlaybackStreams', 'a'],
+      ['sendStreamClear', 'a', ['player']],
+    ]);
   } finally {
     rec.restore();
     cleanup();

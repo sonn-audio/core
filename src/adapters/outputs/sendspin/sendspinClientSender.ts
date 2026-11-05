@@ -285,6 +285,17 @@ export class SendspinClientSender {
   }
 
   /**
+   * Pause this client: end its player and visualizer streams but not its artwork, so a display
+   * keeps the cover up (see `SendspinOutput.endClientStreams`).
+   */
+  public pauseStream(): void {
+    sendspinCore.endPlaybackStreams(this.activeClientId());
+    if (this.isPlayer()) {
+      sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
+    }
+  }
+
+  /**
    * Deliver one timestamped frame: push it to the client when allowed, and always account
    * it against this client's send-ahead capacity. Synchronisation rides on the frame's
    * timestamp, so a non-owning/disconnected client simply skips the send while staying

@@ -130,6 +130,9 @@ export const noopSendspinGroupController: SendspinGroupCoordinator = {
   notifyStreamStart: () => {
     /* noop */
   },
+  notifyStreamPause: () => {
+    /* noop */
+  },
   notifyStreamEnd: () => {
     /* noop */
   },

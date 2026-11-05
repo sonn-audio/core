@@ -48,6 +48,8 @@ export type SendspinGroupCoordinator = {
   getMemberDeclaredFormats: (leaderZoneId: number) => SendspinDeclaredFormat[][];
   notifyStreamStart: (leaderZoneId: number, format: PlayerStreamFormat) => void;
   notifyStreamEnd: (leaderZoneId: number) => void;
+  /** The leader paused: end the members' playback streams, keeping their artwork. */
+  notifyStreamPause: (leaderZoneId: number) => void;
   broadcastFrame: (leaderZoneId: number, frame: { data: Buffer; timestampUs: number }) => void;
   broadcastMetadata: (leaderZoneId: number, payload: MetadataPayload) => void;
   broadcastControllerState: (leaderZoneId: number, payload: ControllerPayload) => void;
@@ -153,6 +155,22 @@ class SendspinGroupController {
     this.forEachMemberOutput(leaderZoneId, (output) => {
       const clientId = output.getClientId();
       sendspinCore.sendStreamEnd(clientId);
+      sendspinCore.sendStreamClear(clientId, [STREAM_PLAYER_ROLE]);
+    });
+  }
+
+  /**
+   * The leader paused, so its members pause with it.
+   *
+   * A paused group's members must have their player and visualizer streams ended, not merely
+   * starved (spec main #346): a member left with an open stream and no audio is a device holding
+   * its output open on nothing. The artwork stream stays, so a display keeps the cover. The
+   * leader's resume re-announces the stream through `notifyStreamStart`.
+   */
+  public notifyStreamPause(leaderZoneId: number): void {
+    this.forEachMemberOutput(leaderZoneId, (output) => {
+      const clientId = output.getClientId();
+      sendspinCore.endPlaybackStreams(clientId);
       sendspinCore.sendStreamClear(clientId, [STREAM_PLAYER_ROLE]);
     });
   }
