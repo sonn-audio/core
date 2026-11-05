@@ -276,3 +276,31 @@ test('sendspin rc1: a leave from a session that is no longer the live one is ign
     core.restore();
   }
 });
+
+test('sendspin rc1: new artwork channels get the cover encoded again for them', () => {
+  const core = stubCore();
+  try {
+    const { output, hooks, session } = build({ clientId: 'kitchen' }, (ports) => {
+      ports.audioManager = {
+        ...ports.audioManager,
+        getSession: () => ({ metadata: { coverurl: 'http://covers/1.jpg' }, stream: null }) as never,
+      };
+    });
+    const fetched: unknown[] = [];
+    output.fetchAndSendArtwork = async (current: unknown) => {
+      fetched.push(current);
+    };
+    const live = session('kitchen');
+    hooks.get('kitchen')?.onIdentified?.(live, null);
+    const channels = [{ source: 'album' as const, format: 'png' as const, width: 480, height: 480 }];
+
+    hooks.get('kitchen')?.onArtworkChannelsChanged?.(live, channels);
+    assert.deepEqual(fetched, [], 'a zone that does not drive the client leaves its artwork alone');
+
+    output.isOwner = () => true;
+    hooks.get('kitchen')?.onArtworkChannelsChanged?.(live, channels);
+    assert.deepEqual(fetched, [{ metadata: { coverurl: 'http://covers/1.jpg' }, stream: null }]);
+  } finally {
+    core.restore();
+  }
+});

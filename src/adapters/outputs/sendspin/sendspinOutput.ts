@@ -482,6 +482,22 @@ export class SendspinOutput implements ZoneOutput {
       },
       onPlayerState: (_session: SendspinSession, update: SendspinPlayerStateUpdate) => this.handleClientState(update),
       onLeave: (sendspinSession: SendspinSession) => this.handleClientLeave(sendspinSession),
+      /*
+       * An rc1 display changed its artwork channels mid-stream (another size, another
+       * format, a channel switched off). node-sendspin has re-sent `stream/start` with them,
+       * but the images it holds were encoded for the old ones, so encode the current cover
+       * again for what the client now asks.
+       */
+      onArtworkChannelsChanged: (sendspinSession: SendspinSession) => {
+        if (this.activeSession !== sendspinSession || !this.isOwner()) {
+          return;
+        }
+        const current = this.ports.audioManager.getSession(this.zoneId);
+        if (!current) {
+          return;
+        }
+        void this.fetchAndSendArtwork({ metadata: current.metadata, stream: current.stream });
+      },
       onPairingRequired: (_session: SendspinSession, reason: SendspinPairingRequiredReason) => {
         this.ports.sendspinConnector.notePairingRequired(this.activeClientId(), reason);
       },
