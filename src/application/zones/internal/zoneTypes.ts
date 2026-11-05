@@ -156,8 +156,8 @@ export interface ZoneContext {
   /**
    * Start the next playback at the level the zone already carries, not at the zone default.
    *
-   * Set when a volume step is what started the zone: the listener pressed a volume button, so
-   * discarding that press and snapping to the default is the one thing the start must not do.
+   * Set by a gentle wake (#392): the fade-in already owns the level, and a start that put the
+   * zone default on the outputs would be the one loud second the fade exists to avoid.
    * One-shot -- `onPlayerStarted` consumes it -- so it cannot leak into the next cold start.
    */
   startAtCurrentVolume?: boolean;

@@ -152,8 +152,8 @@ function onPlayerStarted(
   if (ctx) {
     // During an alert, the alert flow has already set state.volume to the
     // per-event volume (e.g. the TTS slider value). Don't replace it.
-    // A volume step that started the zone carries the listener's own choice of level. Honouring the
-    // default there would throw away the very press that started the music.
+    // A gentle wake has already decided the level and is ramping it; the default would cut across
+    // the fade (#392).
     const startAtCurrentVolume = ctx.startAtCurrentVolume === true;
     ctx.startAtCurrentVolume = undefined;
     const isFreshStart =

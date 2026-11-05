@@ -355,7 +355,6 @@ function handleVolume(
     payload: volume.rawPayload,
     target,
   });
-  applyVolumeLevel(coordinator, ctx, zoneId, mode, target);
 
   // A volume step on a zone that is not playing also starts it. That is not our invention: a real
   // Loxone Audioserver does exactly this, verified against a Loxone test server, and it is what both
@@ -371,10 +370,22 @@ function handleVolume(
   // not pressing a button. And only the client-facing `volume` command, never `volume_set` — that is
   // what the fade controller ramps with, and a fade-in that restarted the zone it is fading would
   // never end.
-  if (volume.command === 'volume' && volume.isRelative && ctx.state.mode !== 'play' && ctx.state.audiopath) {
-    coordinator.log.debug('volume step starts idle zone', { zoneId, volume: target, mode: ctx.state.mode });
-    // The level the listener just asked for is the level it starts at -- see ZoneContext.
-    ctx.startAtCurrentVolume = true;
+  //
+  // Which level it starts at depends on where it starts from. A paused zone picks up where it was,
+  // so the step moves that level as it would during playback. A stopped zone is a cold start and
+  // takes the zone's start volume like any other cold start: the step is only the switch. Carrying
+  // the step over instead made every stop and press of a T5 start the room one step louder than
+  // the time before (#413).
+  const startsIdleZone =
+    volume.command === 'volume' && volume.isRelative && ctx.state.mode !== 'play' && !!ctx.state.audiopath;
+  if (startsIdleZone && ctx.state.mode === 'stop') {
+    coordinator.log.debug('volume step starts stopped zone at its start volume', { zoneId });
+    handlePlayResume(coordinator, ctx, zoneId, mode);
+    return;
+  }
+  applyVolumeLevel(coordinator, ctx, zoneId, mode, target);
+  if (startsIdleZone) {
+    coordinator.log.debug('volume step resumes idle zone', { zoneId, volume: target, mode: ctx.state.mode });
     handlePlayResume(coordinator, ctx, zoneId, mode);
   }
 }

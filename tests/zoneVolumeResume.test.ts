@@ -123,18 +123,28 @@ test('a volume step starts a stopped zone that has a favourite loaded', () => {
 
   h.send('volume', '+1');
 
-  assert.equal(h.ctx.state.volume, 41);
   assert.equal(h.resumes, 1);
 });
 
-test('a stopped zone starts at the level just asked for, not at the zone default', () => {
+test('a stopped zone started by a volume step takes its start volume, not the step', () => {
+  // Starting from stop is a cold start. The step is only the switch: applying it, and keeping the
+  // level through the start, made every stop and T5 press start the room one step louder (#413).
   const h = harness({ volume: 40, mode: 'stop' });
 
   h.send('volume', '+1');
 
-  // onPlayerStarted reads this and skips the cold-start default, which would otherwise discard
-  // the very press that started the music.
-  assert.equal(h.ctx.startAtCurrentVolume, true);
+  assert.equal(h.ctx.state.volume, 40);
+  // Nothing tells onPlayerStarted to skip the cold-start default; only a gentle wake does (#392).
+  assert.equal(h.ctx.startAtCurrentVolume, undefined);
+});
+
+test('a paused zone resumed by a volume step keeps its level and takes the step', () => {
+  const h = harness({ volume: 40, mode: 'pause' });
+
+  h.send('volume', '+1');
+
+  assert.equal(h.ctx.state.volume, 41);
+  assert.equal(h.ctx.startAtCurrentVolume, undefined);
 });
 
 test('a volume step on an empty stopped zone has nothing to start', () => {
