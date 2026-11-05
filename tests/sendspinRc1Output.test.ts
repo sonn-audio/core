@@ -156,3 +156,29 @@ test('sendspin rc1: a stop withdraws the playback activity, a pause keeps it', a
     core.restore();
   }
 });
+
+test('sendspin rc1: a client held idle for pairing is reported, and cleared once it may play', () => {
+  const core = stubCore();
+  try {
+    const noted: Array<[string, unknown]> = [];
+    const { hooks, session } = build({ clientId: 'kitchen' }, (ports) => {
+      ports.sendspinConnector = {
+        ...ports.sendspinConnector,
+        notePairingRequired: (clientId: string, reason: unknown) => noted.push([clientId, reason]),
+      } as never;
+    });
+    const idle = session('kitchen', { getPairingRequired: () => 'unpaired_access_disabled' });
+    hooks.get('kitchen')?.onPairingRequired?.(idle, 'unpaired_access_disabled');
+    hooks.get('kitchen')?.onIdentified?.(idle, null);
+    assert.deepEqual(noted, [
+      ['kitchen', 'unpaired_access_disabled'],
+      ['kitchen', 'unpaired_access_disabled'],
+    ], 'heard from the hook and again on identify, for an output that registered too late for the hook');
+
+    hooks.get('kitchen')?.onDisconnected?.(idle);
+    hooks.get('kitchen')?.onIdentified?.(session('kitchen#2', { getClientId: () => 'kitchen', getPairingRequired: () => null }), null);
+    assert.deepEqual(noted.at(-1), ['kitchen', null]);
+  } finally {
+    core.restore();
+  }
+});

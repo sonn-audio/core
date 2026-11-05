@@ -825,6 +825,11 @@ export function createRuntime(): Runtime {
      * turning it on here cannot break an existing client. Admission is by the
      * published Sentinel PSK, i.e. unpaired playback: confidential against a passive
      * listener, authenticating nothing. Pairing is not implemented.
+     *
+     * Every device is approved for unpaired playback (no `isApprovedUnpaired`), but an rc1
+     * device must also admit it itself: one with unpaired access switched off is held idle,
+     * connected and silent. The output warns about it and the admin API reports it as
+     * `pairingRequired`.
      */
     const systemConfig = configPort.getSystemConfig()?.audioserver;
     sendspinCore.configureServer({

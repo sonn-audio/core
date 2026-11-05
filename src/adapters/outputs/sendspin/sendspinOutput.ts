@@ -20,6 +20,7 @@ import {
   type PlayerFormat,
   type PlayerFormatWithBitDepth,
   type SendspinGroupCommand,
+  type SendspinPairingRequiredReason,
   type SendspinPlayerStateUpdate,
 } from '@sonn-audio/node-sendspin';
 import type {
@@ -416,6 +417,13 @@ export class SendspinOutput implements ZoneOutput {
         }
         this.resolvedClientId = sendspinSession.getClientId() ?? this.resolvedClientId;
         this.ports.sendspinConnector.markInboundConnected(this.activeClientId());
+        // A session held idle for pairing is reported here as well as through
+        // `onPairingRequired`: that hook fires during the hello, before an output that
+        // registered later is listening.
+        this.ports.sendspinConnector.notePairingRequired(
+          this.activeClientId(),
+          sendspinSession.getPairingRequired?.() ?? null,
+        );
         this.initialClientStateSkipped = false;
         this.lastClientStateSignature = null;
         this.lastLoggedClientState = null;
@@ -473,6 +481,9 @@ export class SendspinOutput implements ZoneOutput {
         this.pushPlaybackState(this.playbackState);
       },
       onPlayerState: (_session: SendspinSession, update: SendspinPlayerStateUpdate) => this.handleClientState(update),
+      onPairingRequired: (_session: SendspinSession, reason: SendspinPairingRequiredReason) => {
+        this.ports.sendspinConnector.notePairingRequired(this.activeClientId(), reason);
+      },
       onGroupCommand: (_session: SendspinSession, command: SendspinGroupCommand) => this.handleGroupCommand(command),
       /*
        * Say out loud what the session tolerated. These are things a conformant

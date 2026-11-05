@@ -3,7 +3,11 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { sendspinCore } from '@sonn-audio/node-sendspin';
 import { test } from './testHarness';
-import { describeDrop, SendspinClientConnector } from '../src/adapters/outputs/sendspin/sendspinClientConnector';
+import {
+  describeDrop,
+  describePairingRequired,
+  SendspinClientConnector,
+} from '../src/adapters/outputs/sendspin/sendspinClientConnector';
 import { logBuffer } from '../src/shared/logging/logBuffer';
 import type { MdnsPort } from '../src/ports/MdnsPort';
 
@@ -153,4 +157,29 @@ test('a socket the client never says hello on is described as such', () => {
     '',
   );
   assert.equal(refused, 'server closed it: initial state timeout');
+});
+
+test('a client held idle for pairing is warned about once, with what to do about it', () => {
+  const lines: string[] = [];
+  const unsubscribe = logBuffer.subscribe((entry) => lines.push(entry.line));
+  try {
+    const connector = new SendspinClientConnector({} as MdnsPort);
+    connector.notePairingRequired('kitchen', 'unpaired_access_disabled');
+    connector.notePairingRequired('kitchen', 'unpaired_access_disabled');
+    const warnings = lines.filter((line) => line.includes('will not play until it is paired'));
+    assert.equal(warnings.length, 1, 'said once, not on every reconnect');
+    assert.match(warnings[0]!, /enable unpaired access on the device/);
+    assert.equal(connector.getPairingRequired('kitchen'), 'unpaired_access_disabled');
+
+    connector.notePairingRequired('kitchen', null);
+    assert.equal(connector.getPairingRequired('kitchen'), null);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test('every reason a session is held idle reads as something the owner can act on', () => {
+  for (const reason of ['unpaired_access_disabled', 'not_approved', 'credential_mismatch'] as const) {
+    assert.doesNotMatch(describePairingRequired(reason), /pairing required \(/, reason);
+  }
 });

@@ -12,6 +12,7 @@ import {
   findMusicAssistantBridge,
 } from '@/shared/musicassistant/maBridgeResolver';
 import { sendspinCore } from '@sonn-audio/node-sendspin';
+import type { SendspinPairingRequiredReason } from '@sonn-audio/node-sendspin';
 import { bluetoothClientId } from '@/domain/inputs/bluetoothIdentity';
 import type { Route } from '@/adapters/http/adminApi/routeTypes';
 
@@ -358,6 +359,26 @@ async function handleTransportPing(
   }
 }
 
+/**
+ * Why a connected sendspin client cannot play, and the roles to list it under.
+ *
+ * A session held idle for pairing (the device does not admit unpaired playback) is open but has
+ * no active roles, so listing clients by their active roles hid exactly the device whose owner is
+ * wondering why it does not play. It is listed under the roles it offered instead, with
+ * `pairingRequired` saying why it is idle, so the UI can tell the owner what to switch on.
+ */
+function sendspinClientStatus(
+  clientId: string | null,
+  activeRoles: string[],
+): { listedRoles: string[]; pairingRequired: SendspinPairingRequiredReason | null } {
+  const pairingRequired = clientId ? sendspinCore.getPairingRequired(clientId) : null;
+  if (!pairingRequired || !clientId) {
+    return { listedRoles: activeRoles, pairingRequired: null };
+  }
+  const offered = sendspinCore.getSessionByClientId(clientId)?.getNegotiatedRoles() ?? [];
+  return { listedRoles: offered.map(String), pairingRequired };
+}
+
 async function handleSendspinDiscovery(
   req: IncomingMessage,
   res: ServerResponse,
@@ -372,10 +393,11 @@ async function handleSendspinDiscovery(
       .filter((value) => value.length > 0);
     const connected = sendspinCore
       .listClients()
-      .filter((client) => (roles.length ? roles.some((role) => client.roles.includes(role)) : true))
-      .filter((client) => typeof client.clientId === 'string' && client.clientId.trim().length > 0)
-      .filter((client) => !isBrowserClient(client.clientId))
-      .map((client) => {
+      .map((client) => ({ client, status: sendspinClientStatus(client.clientId, client.roles) }))
+      .filter(({ status }) => (roles.length ? roles.some((role) => status.listedRoles.includes(role)) : true))
+      .filter(({ client }) => typeof client.clientId === 'string' && client.clientId.trim().length > 0)
+      .filter(({ client }) => !isBrowserClient(client.clientId))
+      .map(({ client, status }) => {
         const clientId = client.clientId;
         const controls = clientId
           ? sendspinCore.getSessionByClientId(clientId)?.getSourceSupport()?.controls ?? null
@@ -393,6 +415,7 @@ async function handleSendspinDiscovery(
           sourceState: client.sourceState,
           sourceSignal: client.sourceSignal,
           controls,
+          pairingRequired: status.pairingRequired,
         };
       });
 
@@ -485,10 +508,11 @@ async function handleSendspinSourceDiscovery(
     );
     const clients = sendspinCore
       .listClients()
-      .filter((client) => client.roles.includes('source@v1'))
-      .filter((client) => !isBrowserClient(client.clientId))
-      .filter((client) => !(client.clientId && bluetoothClients.has(client.clientId)))
-      .map((client) => {
+      .map((client) => ({ client, status: sendspinClientStatus(client.clientId, client.roles) }))
+      .filter(({ status }) => status.listedRoles.includes('source@v1'))
+      .filter(({ client }) => !isBrowserClient(client.clientId))
+      .filter(({ client }) => !(client.clientId && bluetoothClients.has(client.clientId)))
+      .map(({ client, status }) => {
         const clientId = client.clientId;
         const controls = clientId
           ? sendspinCore.getSessionByClientId(clientId)?.getSourceSupport()?.controls ?? null
@@ -503,6 +527,7 @@ async function handleSendspinSourceDiscovery(
           sourceState: client.sourceState,
           sourceSignal: client.sourceSignal,
           controls,
+          pairingRequired: status.pairingRequired,
         };
       });
     deps.sendJson(res, 200, { clients });

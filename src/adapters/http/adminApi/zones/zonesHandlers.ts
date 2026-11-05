@@ -175,6 +175,9 @@ async function handleZoneStates(res: ServerResponse, deps: ZonesHandlerDeps): Pr
         sendspinClientId != null ? sendspinCore.getPlayerBufferCapacity(sendspinClientId) : null;
       const sendspinLead =
         sendspinClientId != null ? sendspinCore.getLeadStats(sendspinClientId) : null;
+      // Connected but held idle until the device is paired or admits unpaired playback.
+      const sendspinPairingRequired =
+        sendspinClientId != null ? sendspinCore.getPairingRequired(sendspinClientId) : null;
       const configuredTransports =
         Array.isArray(zone.transports) && zone.transports.length > 0
           ? zone.transports
@@ -240,6 +243,7 @@ async function handleZoneStates(res: ServerResponse, deps: ZonesHandlerDeps): Pr
               streams,
               streamStats,
               backpressure,
+              sendspinPairingRequired,
               sendspin: sendspinFormat
                 ? {
                     codec: sendspinFormat.codec,

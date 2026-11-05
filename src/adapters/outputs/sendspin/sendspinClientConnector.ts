@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import { createLogger } from '@/shared/logging/logger';
 import { ConnectionReason, sendspinCore, TERMINAL_GOODBYE_REASONS } from '@sonn-audio/node-sendspin';
+import type { SendspinPairingRequiredReason } from '@sonn-audio/node-sendspin';
 import type { MdnsBrowser, MdnsPort, MdnsRegistration, MdnsServiceRecord } from '@/ports/MdnsPort';
 
 interface Endpoint {
@@ -54,6 +55,25 @@ export function describeDrop(trace: Omit<SocketTrace, 'helloTimer' | 'openedAt'>
 }
 
 /**
+ * What the owner of a device held idle for pairing has to do about it.
+ *
+ * sonn admits every client with the published Sentinel PSK and cannot pair, so the way out is
+ * almost always the device's own unpaired-access switch, which sendspin-cpp ships turned off.
+ */
+export function describePairingRequired(reason: SendspinPairingRequiredReason): string {
+  switch (reason) {
+    case 'unpaired_access_disabled':
+      return 'the device only plays for servers it is paired with; enable unpaired access on the device (sonn cannot pair yet)';
+    case 'not_approved':
+      return 'the device is not approved for unpaired playback on this server';
+    case 'credential_mismatch':
+      return 'the device no longer holds the pairing this server knows it by; pair it again or enable unpaired access on it';
+    default:
+      return `pairing required (${String(reason)})`;
+  }
+}
+
+/**
  * Discovers Sendspin clients via mDNS and establishes outbound WebSocket connections
  * so playback can be pushed without manually starting the client with a URL.
  */
@@ -76,6 +96,7 @@ export class SendspinClientConnector {
   private readonly resolvedClientIds = new Map<string, string>();
   private readonly resolveListeners = new Map<string, Set<(resolvedClientId: string) => void>>();
   private readonly lastDrops = new Map<string, { why: string; repeats: number }>();
+  private readonly pairingRequired = new Map<string, SendspinPairingRequiredReason>();
   private browser: MdnsBrowser | null = null;
   private serverRegistration: MdnsRegistration | null = null;
 
@@ -695,6 +716,40 @@ export class SendspinClientConnector {
 
   private serviceKey(service: MdnsServiceRecord): string {
     return `${service.name || service.host || 'unknown'}:${service.port}`;
+  }
+
+  /**
+   * Record why a client's session is held idle, or that it no longer is (`null`).
+   *
+   * Such a session stays open and never plays: node-sendspin declares no activity and no role on
+   * it, so nothing drops and nothing in the dial log would say why the room is silent. Said once
+   * per client and reason, at warning level, since only the device's owner can fix it.
+   */
+  public notePairingRequired(clientId: string, reason: SendspinPairingRequiredReason | null): void {
+    const normalized = clientId.trim();
+    if (!normalized) {
+      return;
+    }
+    const previous = this.pairingRequired.get(normalized) ?? null;
+    if (previous === reason) {
+      return;
+    }
+    if (!reason) {
+      this.pairingRequired.delete(normalized);
+      this.log.info('Sendspin client admitted for playback', { clientId: normalized, previously: previous });
+      return;
+    }
+    this.pairingRequired.set(normalized, reason);
+    this.log.warn('Sendspin client connected but will not play until it is paired', {
+      clientId: normalized,
+      reason,
+      fix: describePairingRequired(reason),
+    });
+  }
+
+  /** Why the client's last session was held idle for pairing, or null when it was not. */
+  public getPairingRequired(clientId: string): SendspinPairingRequiredReason | null {
+    return this.pairingRequired.get(this.resolveClientId(clientId)) ?? this.pairingRequired.get(clientId.trim()) ?? null;
   }
 
   public markInboundConnected(clientId: string): void {
