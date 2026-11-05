@@ -21,6 +21,7 @@ type ConfiguratorFakes = {
   stateStorePatches: Array<{ zoneId: number; patch: Partial<ZoneState> }>;
   outputVolumeCalls: Array<{ zoneId: number; volume: number; outputTypes: string[] }>;
   spotifyAdapterEvents: string[];
+  airplayStops: Array<{ zoneId: number; reason?: string }>;
 };
 
 function buildConfigurator(opts: { activeInput?: ZoneContext['activeInput'] } = {}): {
@@ -54,6 +55,7 @@ function buildConfigurator(opts: { activeInput?: ZoneContext['activeInput'] } = 
     stateStorePatches: [],
     outputVolumeCalls: [],
     spotifyAdapterEvents: [],
+    airplayStops: [],
   };
 
   const inputsPort: Pick<
@@ -63,6 +65,7 @@ function buildConfigurator(opts: { activeInput?: ZoneContext['activeInput'] } = 
     | 'configureBluetooth'
     | 'configureSpotify'
     | 'setAirplayPlayerResolver'
+    | 'stopAirplaySession'
   > = {
     configureAirplay: (controller) => {
       fakes.airplay = controller;
@@ -78,6 +81,9 @@ function buildConfigurator(opts: { activeInput?: ZoneContext['activeInput'] } = 
     },
     setAirplayPlayerResolver: () => {
       fakes.airplayResolverSet += 1;
+    },
+    stopAirplaySession: (zoneId, reason) => {
+      fakes.airplayStops.push({ zoneId, reason });
     },
   };
 
@@ -148,12 +154,29 @@ test('AirPlay controller passes through to playback coordinator', () => {
   assert.deepEqual(fakes.playbackCalls, ['play:1:airplay', 'pause:1', 'resume:1', 'stop:1']);
 });
 
-test('Spotify Connect startPlayback is blocked when AirPlay owns the zone', () => {
+test('Spotify Connect takes a zone over from AirPlay and drops the AirPlay sender (#420)', () => {
   const { configurator, fakes } = buildConfigurator({ activeInput: 'airplay' });
   configurator.configure();
   fakes.spotify!.startPlayback(1, 'spotify-connect', { kind: 'pipe', path: 'x' } as never);
+  // A `switch_to_` reason is what makes the AirPlay receiver restart and let go of the phone.
+  assert.deepEqual(fakes.airplayStops, [{ zoneId: 1, reason: 'switch_to_spotify' }]);
+  assert.ok(fakes.playbackCalls.includes('setInputMode:spotify'));
+  assert.deepEqual(fakes.spotifyAdapterEvents, ['start:spotify-connect']);
+});
+
+test('Spotify Connect leaves AirPlay alone when AirPlay does not own the zone', () => {
+  const { configurator, fakes } = buildConfigurator();
+  configurator.configure();
+  fakes.spotify!.startPlayback(1, 'spotify-connect', { kind: 'pipe', path: 'x' } as never);
+  assert.deepEqual(fakes.airplayStops, []);
+});
+
+test('a regular Spotify start still cannot claim a zone AirPlay owns', () => {
+  const { configurator, fakes } = buildConfigurator({ activeInput: 'airplay' });
+  configurator.configure();
+  fakes.spotify!.startPlayback(1, 'spotify', { kind: 'pipe', path: 'x' } as never);
+  assert.deepEqual(fakes.airplayStops, []);
   assert.deepEqual(fakes.spotifyAdapterEvents, []);
-  assert.deepEqual(fakes.playbackCalls, []);
 });
 
 test('Spotify Connect startPlayback sets inputMode and dispatches initial volume', () => {

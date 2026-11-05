@@ -972,12 +972,11 @@ export class AirplayInstance {
     this.isPlaying = false;
     this.stopHttpStream();
     this.endPcmStream();
-    const player = this.playerRegistry.getPlayer(this.zoneId);
-    if (player) {
-      player.stop('airplay_stop');
-    } else {
-      this.controller.stopPlayback(this.zoneId);
-    }
+    // Through the zone, never straight to its player. The sender ending its session is AirPlay
+    // giving the room back, and only the zone can record that: stopping the player alone left the
+    // zone believing AirPlay still owned it, so a Spotify Connect takeover long after the phone had
+    // gone was refused as though it were stealing a live session (#420).
+    this.controller.stopPlayback(this.zoneId);
     this.resetMetadata(true);
   }
 

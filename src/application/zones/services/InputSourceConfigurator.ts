@@ -20,6 +20,7 @@ export type InputSourceConfiguratorDeps = {
     | 'configureBluetooth'
     | 'configureSpotify'
     | 'setAirplayPlayerResolver'
+    | 'stopAirplaySession'
   >;
   zoneRepo: Pick<ZoneRepository, 'get'>;
   playback: Pick<
@@ -47,8 +48,9 @@ export type InputSourceConfiguratorDeps = {
  * coordinator. Idempotent: configure() is a no-op after the first call.
  *
  * AirPlay is a straight pass-through to playback-coordinator input methods.
- * Spotify Connect has authority gates (e.g. AirPlay blocks Connect take-over)
- * and dedicated volume handling that avoids feedback loops with the input.
+ * Spotify Connect has authority gates (only a Connect takeover may claim a zone
+ * another input owns) and dedicated volume handling that avoids feedback loops
+ * with the input.
  */
 export class InputSourceConfigurator {
   private readonly deps: InputSourceConfiguratorDeps;
@@ -118,14 +120,11 @@ export class InputSourceConfigurator {
         if (!ctx) {
           return;
         }
-        // Spotify Connect may take over from any input except AirPlay (which has
-        // its own exclusivity). Regular Spotify callbacks only proceed when spotify
-        // is already the active input (prevents Connect stealing an AirPlay session).
-        if (label === 'spotify-connect') {
-          if (ctx.activeInput === 'airplay') {
-            return;
-          }
-        } else if (ctx.activeInput && ctx.activeInput !== 'spotify') {
+        // The source picked last wins. Somebody choosing this room in the Spotify app is as
+        // deliberate as somebody choosing it on their iPhone, and AirPlay already takes a zone
+        // over from Spotify (see playInputSource), so Connect takes it back the same way.
+        // Regular Spotify callbacks only proceed when spotify is already the active input.
+        if (label !== 'spotify-connect' && ctx.activeInput && ctx.activeInput !== 'spotify') {
           return;
         }
         // Spotify Connect sessions use a dedicated label. Mark the zone as Connect-
@@ -134,6 +133,12 @@ export class InputSourceConfigurator {
         // Also set activeInput/inputMode so subsequent metadata callbacks are not
         // blocked by the ctx.activeInput !== 'spotify' guards.
         if (label === 'spotify-connect') {
+          // A live AirPlay session is let go of the way any other handover lets go of it: a
+          // `switch_to_` stop restarts the receiver, which drops the sender, so the phone falls
+          // back to its own speaker instead of streaming on into a room that is not playing it.
+          if (ctx.activeInput === 'airplay') {
+            this.deps.inputsPort.stopAirplaySession(zoneId, 'switch_to_spotify');
+          }
           ctx.queue.authority = 'spotify';
           playback.setInputMode(ctx, 'spotify');
           // Sync zone volume to the Connect device immediately so it does not
