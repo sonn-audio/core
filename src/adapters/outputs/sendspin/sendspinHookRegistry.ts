@@ -34,6 +34,14 @@ export class SendspinHookRegistry implements SendspinHookRegistryPort {
     }
   }
 
+  /**
+   * The one set of hooks node-sendspin holds for this client, fanning out to every listener.
+   *
+   * A hook missing here is a hook nobody in core ever hears, however many listeners ask for it,
+   * so a new one in node-sendspin has to be added here too. `onLeave` is deliberately absent
+   * until something handles it: while the session sees no `onLeave`, it reports a leave the
+   * pre-rc1 way, as an `external_source` flap, which the outputs already react to.
+   */
   private buildCombined(clientId: string): SendspinSessionHooks {
     return {
       onPlayerState: (...args) => this.dispatch(clientId, 'onPlayerState', ...args),
@@ -43,6 +51,10 @@ export class SendspinHookRegistry implements SendspinHookRegistryPort {
       onSourceAudio: (...args) => this.dispatch(clientId, 'onSourceAudio', ...args),
       onSourceStreamStart: (...args) => this.dispatch(clientId, 'onSourceStreamStart', ...args),
       onSourceStreamEnd: (...args) => this.dispatch(clientId, 'onSourceStreamEnd', ...args),
+      onSourceSignalChanged: (...args) => this.dispatch(clientId, 'onSourceSignalChanged', ...args),
+      onVisualizerFormatChanged: (...args) => this.dispatch(clientId, 'onVisualizerFormatChanged', ...args),
+      onArtworkChannelsChanged: (...args) => this.dispatch(clientId, 'onArtworkChannelsChanged', ...args),
+      onPairingRequired: (...args) => this.dispatch(clientId, 'onPairingRequired', ...args),
       onIdentified: (...args) => this.dispatch(clientId, 'onIdentified', ...args),
       onDisconnected: (...args) => this.dispatch(clientId, 'onDisconnected', ...args),
       onFormatChanged: (...args) => this.dispatch(clientId, 'onFormatChanged', ...args),
