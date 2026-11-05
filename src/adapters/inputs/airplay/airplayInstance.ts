@@ -19,6 +19,22 @@ import {
 /** How long a sender may go quiet before we call it a pause. */
 const AUDIO_IDLE_PAUSE_MS = 1500;
 
+/**
+ * How long a sender may send nothing but silence before we call it a pause.
+ *
+ * A paused iPhone does not go quiet: it keeps the stream running on silent
+ * packets, so the idle watchdog never fires. Long enough that no track's own
+ * gap or hush is mistaken for one.
+ */
+const SILENCE_PAUSE_MS = 4000;
+
+/**
+ * The loudest sample (of 32767) that still counts as silence: about -78 dBFS,
+ * so only digital silence and the last bit of dither below it qualify. The
+ * quietest passage of real music is well above this.
+ */
+const SILENCE_SAMPLE_LIMIT = 4;
+
 /** How long to wait for the sender's remote-control service to answer. */
 const DACP_LOOKUP_TIMEOUT_MS = 2000;
 
@@ -73,6 +89,8 @@ export class AirplayInstance {
   private pcmBytesIn = 0;
   private pcmStatsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  /** Bytes of unbroken silence received, to tell a paused sender from a playing one. */
+  private silentBytes = 0;
   private pcmBytesTotal = 0;
   /**
    * Bumped on every track change so the audiopath we publish changes with it.
@@ -617,13 +635,24 @@ export class AirplayInstance {
     if (typeof channels === 'number' && channels > 0) {
       this.pcmChannels = channels;
     }
+    const silent = isNearSilence(payload);
+    this.silentBytes = silent ? this.silentBytes + payload.length : 0;
+    if (!this.sessionActive || !this.isPlaying) {
+      if (silent) {
+        // What a paused sender keeps sending to hold the session open. It is
+        // not playback, so it neither starts nor resumes the zone, and it is
+        // not buffered either: queued up, it would sit as a delay in front of
+        // the music when that comes back.
+        return;
+      }
+      if (!this.sessionActive) {
+        this.handlePlaybackStart();
+      } else {
+        this.handlePlaybackResume();
+      }
+    }
     if (!this.pcmStream) {
       this.pcmStream = new PassThrough({ highWaterMark: 512 * 1024 });
-    }
-    if (!this.sessionActive) {
-      this.handlePlaybackStart();
-    } else if (!this.isPlaying) {
-      this.handlePlaybackResume();
     }
     // A live stream sits at its buffer limit whenever the consumer reads in
     // larger blocks than the sender writes, which is the normal steady state
@@ -668,6 +697,11 @@ export class AirplayInstance {
       });
     }
     this.handlePcmTimingUpdate(payload.length);
+    const bytesPerSecond = this.pcmSampleRate * this.pcmChannels * 2;
+    if (silent && this.silentBytes >= (bytesPerSecond * SILENCE_PAUSE_MS) / 1000) {
+      this.log.debug('airplay audio is only silence; pausing', { zoneId: this.zoneId });
+      this.handlePlaybackPause();
+    }
   }
 
   private handleVolumeChange(raw: number): void {
@@ -900,7 +934,8 @@ export class AirplayInstance {
   /**
    * A sender does not announce a pause: it just stops sending audio (and its
    * RTSP session stays open, so nothing else tells us either). Treat a gap as
-   * the pause it is, and let the next packet resume.
+   * the pause it is, and let the next packet resume. A sender that pauses by
+   * sending silence instead is caught in {@link handlePcmFrame}.
    */
   private noteAudioActivity(): void {
     if (this.idleTimer) {
@@ -1062,6 +1097,20 @@ export class AirplayInstance {
     }
   }
 
+}
+
+/**
+ * Whether a block of s16le audio is silence: every sample within
+ * {@link SILENCE_SAMPLE_LIMIT} of zero. Music bails out on its first sample.
+ */
+export function isNearSilence(pcm: Buffer): boolean {
+  for (let offset = 0; offset + 1 < pcm.length; offset += 2) {
+    const sample = pcm.readInt16LE(offset);
+    if (sample > SILENCE_SAMPLE_LIMIT || sample < -SILENCE_SAMPLE_LIMIT) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** A port someone else already holds -- worth moving along for, unlike any other bind failure. */
