@@ -733,6 +733,7 @@ class PipeFanout {
       return;
     }
     this.members.delete(memberId);
+    this.lastDropAt.delete(memberId);
     stream.end();
     stream.destroy();
   }
@@ -751,6 +752,11 @@ class PipeFanout {
     }
   }
 
+  /** Piping and a paused session both keep a 'data' listener on the stream; only a dropped reader leaves none. */
+  private static hasReader(stream: PassThrough): boolean {
+    return stream.listenerCount('data') > 0 || stream.listenerCount('readable') > 0;
+  }
+
   private onData(chunk: Buffer): void {
     if (this.closed || this.members.size === 0) {
       return;
@@ -761,6 +767,18 @@ class PipeFanout {
         continue;
       }
       if (stream.writableLength > MAX_FANOUT_BUFFER_BYTES) {
+        // A full pipe nobody reads is not a slow member but a gone one: its session ended (an
+        // output that failed to play, a stop on the member) and the engine unpiped it without
+        // telling us. Kept, it stayed in the fanout for as long as the leader played, invisibly
+        // grouped and logging drops (#424). Let go of it; the next leader sync feeds it afresh.
+        if (!PipeFanout.hasReader(stream)) {
+          this.log.info('mixed group member dropped; nothing reads its pipe', {
+            leader: this.leaderId,
+            member: memberId,
+          });
+          this.removeMember(memberId);
+          continue;
+        }
         const now = Date.now();
         const last = this.lastDropAt.get(memberId) ?? 0;
         if (now - last > 2000) {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { PassThrough } from 'node:stream';
 import { test } from './testHarness';
 import { createMixedGroupController } from '../src/application/groups/mixedGroupController';
 import { removeGroupByLeader, upsertGroup } from '../src/application/groups/groupTracker';
@@ -123,4 +124,59 @@ test('in one group, only the members nothing else feeds', () => {
     { mixedEnabled: true },
   );
   assert.deepEqual(fed, [OTHER]);
+});
+
+test('a member whose session let go of its pipe is dropped, not fed forever (#424)', async () => {
+  // Zone 2's Cast speaker failed to play, its session ended and the engine unpiped the
+  // member stream. The fanout kept writing into it for as long as the leader played:
+  // an invisible group member, logging "slow member" drops. Nobody reading a full pipe
+  // means the member is gone, and the fanout has to let go of it.
+  const leaderPcm = new PassThrough();
+  const memberStreams = new Map<number, PassThrough>();
+  const configPort = { getConfig: () => ({ groups: { mixedGroupEnabled: false } }) } as unknown as ConfigPort;
+  const audioManager = {
+    getSession: (zoneId: number) =>
+      zoneId === LEADER
+        ? { playbackSource: { kind: 'url', url: 'http://x' }, profiles: ['pcm'], stream: { id: 's1' }, metadata: {} }
+        : undefined,
+    getOutputSettings: () => null,
+    createStream: () => leaderPcm,
+  } as unknown as AudioManager;
+  const leaderState = { id: LEADER, mode: 'play', audiopath: 'library://track/9' } as unknown as ZoneState;
+  const zoneManager = {
+    getState: (zoneId: number) => (zoneId === LEADER ? leaderState : ({ id: zoneId } as ZoneState)),
+    getTechnicalSnapshot: () => ({ activeOutput: 'googleCast', transports: ['googleCast'] }),
+    supportsNativeGrouping: () => false,
+    playContent: async () => undefined,
+    handleCommand: () => undefined,
+    inputs: {
+      playInputSource: (zoneId: number, _label: string, source: { stream: PassThrough }) => {
+        memberStreams.set(zoneId, source.stream);
+      },
+    },
+  } as unknown as ZoneManagerFacade;
+  const controller = createMixedGroupController(configPort, audioManager);
+  controller.initOnce({ zoneManager });
+  upsertGroup({
+    leader: LEADER,
+    members: [LEADER, MEMBER, OTHER],
+    backend: 'Unknown',
+    source: 'manual',
+    externalId: 'grp',
+  });
+  try {
+    const gone = memberStreams.get(MEMBER);
+    const reading = memberStreams.get(OTHER);
+    assert.ok(gone && reading, 'both members are fed');
+    // OTHER's session still holds its pipe, paused: slow, not gone. MEMBER has no reader at all.
+    reading.on('data', () => undefined);
+    reading.pause();
+    const chunk = Buffer.alloc(64 * 1024);
+    for (let i = 0; i < 40; i += 1) leaderPcm.write(chunk);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(gone.destroyed, true, 'the unread member pipe is let go');
+    assert.equal(reading.destroyed, false, 'a member that still reads is kept');
+  } finally {
+    removeGroupByLeader(LEADER);
+  }
 });
