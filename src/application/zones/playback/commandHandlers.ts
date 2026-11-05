@@ -36,6 +36,8 @@ type CommandCoordinator = {
     metadata?: PlaybackMetadata,
     options?: { skipExternalStop?: boolean; startAtSec?: number },
   ) => Promise<PlaybackSession | null>;
+  /** Drop a queue row nothing can ever play, so the zone is not stuck on it; see PlaybackCoordinator. */
+  dropUnplayableQueueItem: (ctx: ZoneContext, audiopath: string) => boolean;
   audioHelpers: ZoneAudioHelpers;
   remoteControl: (zoneId: number, command: AirplayRemoteCommand) => void;
   remoteVolume: (zoneId: number, volume: number) => void;
@@ -169,6 +171,9 @@ function handlePlayResume(
         });
         if (!restored) {
           coordinator.log.debug('resume fallback failed', { zoneId, audiopath: fallbackAudiopath });
+          if (current) {
+            coordinator.dropUnplayableQueueItem(ctx, current.audiopath);
+          }
         }
       })();
     }
@@ -522,7 +527,11 @@ function handleQueuePlayCurrent(
     stationIndex: ctx.queueController.currentIndex(),
     isRadio,
   };
-  void coordinator.startQueuePlayback(ctx, current.audiopath, metadata).catch((error) => {
+  void coordinator.startQueuePlayback(ctx, current.audiopath, metadata).then((session) => {
+    if (!session) {
+      coordinator.dropUnplayableQueueItem(ctx, current.audiopath);
+    }
+  }).catch((error) => {
     coordinator.log.warn('queue play-current failed', {
       zoneId,
       audiopath: current.audiopath,

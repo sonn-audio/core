@@ -16,6 +16,7 @@ import { computePreferredPlaybackSettings } from '@/application/playback/policie
 import { applyPreferredPlaybackSettings } from '@/application/playback/PlaybackSettingsApplier';
 import { buildPlaybackPlan } from '@/application/playback/buildPlaybackPlan';
 import { executePlaybackPlan } from '@/application/playback/executePlaybackPlan';
+import { resolvePlaybackSource } from '@/application/playback/sourceResolver';
 import type { ProviderKind } from '@/application/playback/types/PlaybackPlan';
 import { OutputRouter } from '@/application/zones/OutputRouter';
 import { QueueController as ZoneQueueController } from '@/application/zones/QueueController';
@@ -680,6 +681,53 @@ export class PlaybackCoordinator {
   }
 
   /**
+   * Take a queue row out of the queue when nothing will ever be able to play it.
+   *
+   * Only for a path no service claims, that is not radio or a line-in, and that the generic
+   * resolver turns down — a failure that is a property of the string, and so will repeat on every
+   * attempt. Left in place, such a row is what play, pause and stop all land on, and the zone is
+   * dead until somebody picks something else from the library (#417). A Spotify or provider row
+   * is never dropped here: those fail for reasons that pass (a service not signed in yet).
+   *
+   * The failed attempt has already been reported by the player; with the row gone, the next press
+   * finds an empty queue instead of failing the same way again.
+   */
+  public dropUnplayableQueueItem(ctx: ZoneContext, audiopath: string): boolean {
+    if (!audiopath) {
+      return false;
+    }
+    const { nextInput, provider } = this.classifyAudiopath(audiopath);
+    if (
+      nextInput !== 'queue' ||
+      provider ||
+      this.audioHelpers.isRadioAudiopath(audiopath) ||
+      this.audioHelpers.parseLineInInputId(audiopath) ||
+      this.radioParadise.isRadioParadiseAudiopath(audiopath) ||
+      resolvePlaybackSource(audiopath)
+    ) {
+      return false;
+    }
+    const items = ctx.queue.items ?? [];
+    const index = items.findIndex((item) => item.audiopath === audiopath);
+    if (index < 0) {
+      return false;
+    }
+    const remaining = items.filter((_, idx) => idx !== index);
+    const currentIndex = ctx.queueController.currentIndex();
+    ctx.queueController.setItems(
+      remaining,
+      currentIndex > index ? currentIndex - 1 : Math.min(currentIndex, Math.max(0, remaining.length - 1)),
+    );
+    this.log.warn('dropped a queue item nothing can play', {
+      zoneId: ctx.id,
+      audiopath,
+      remaining: remaining.length,
+    });
+    this.notifier.notifyQueueUpdated(ctx.id, remaining.length);
+    return true;
+  }
+
+  /**
    * Who owns this audiopath, and what that means for the zone's input mode.
    *
    * Spotify and Music Assistant are named because they *are* input modes; every
@@ -753,6 +801,7 @@ export class PlaybackCoordinator {
         stepQueue: this.queueStepDispatcher.stepQueue.bind(this.queueStepDispatcher),
         isLocalQueueAuthority: this.isLocalQueueAuthority.bind(this),
         startQueuePlayback: (...args) => this.startQueuePlayback(...args),
+        dropUnplayableQueueItem: (ctx, audiopath) => this.dropUnplayableQueueItem(ctx, audiopath),
         audioHelpers: this.audioHelpers,
         remoteControl: (id, cmd) => this.inputsPort.remoteControl(id, cmd),
         remoteVolume: (id, volume) => this.inputsPort.remoteVolume(id, volume),

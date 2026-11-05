@@ -1766,3 +1766,37 @@ test('a service with no reported failure of its own is left alone', async () => 
 
   assert.notEqual(ctx.lastPlaybackErrorReason, 'spotify stream unavailable');
 });
+
+test('a queue row nothing can play is dropped, so the zone is not stuck on it (#417)', () => {
+  const { coordinator, ctx, playbackQueue } = createHarness();
+  playbackQueue.setItems(
+    [
+      makeQueueItem({ title: 'Zone', audiopath: 'nothing:knows-this', unique_id: 'dead' }),
+      makeQueueItem({ title: 'Two', audiopath: 'library://track/two', unique_id: 'id-2' }),
+    ],
+    0,
+  );
+
+  assert.equal(coordinator.dropUnplayableQueueItem(ctx, 'nothing:knows-this'), true);
+  assert.deepEqual(ctx.queue.items.map((item) => item.unique_id), ['id-2']);
+  assert.equal(ctx.queueController.current()?.unique_id, 'id-2');
+
+  // The only row going leaves an empty queue rather than a dead one.
+  playbackQueue.setItems([makeQueueItem({ audiopath: 'nothing:knows-this', unique_id: 'dead' })], 0);
+  assert.equal(coordinator.dropUnplayableQueueItem(ctx, 'nothing:knows-this'), true);
+  assert.equal(ctx.queue.items.length, 0);
+});
+
+test('a row that can fail for reasons that pass is never dropped (#417)', () => {
+  const { coordinator, ctx, playbackQueue } = createHarness();
+  const paths = [
+    'spotify:track:11hcBLPtbMp4aQI6zGQLub',
+    'library://track/two',
+    'http://example.com/stream.mp3',
+  ];
+  playbackQueue.setItems(paths.map((audiopath, idx) => makeQueueItem({ audiopath, unique_id: `id-${idx}` })), 0);
+  for (const path of paths) {
+    assert.equal(coordinator.dropUnplayableQueueItem(ctx, path), false, path);
+  }
+  assert.equal(ctx.queue.items.length, paths.length);
+});
