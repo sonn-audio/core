@@ -94,7 +94,7 @@ type ServerUpdateResult = {
   release: string;
   distUrl: string;
   targetDir: string;
-  /** True when the lockfile changed and `npm ci` was run. */
+  /** True when the lockfile changed and node_modules was brought in line with it. */
   depsChanged?: boolean;
   /** New code is staged but only takes effect after a process restart. */
   restartRequired?: boolean;
@@ -1087,7 +1087,7 @@ async function resolveServerRelease(releaseOverride: string | undefined): Promis
 /**
  * Updates the server core in place: downloads server-dist.tgz (dist/ + manifests),
  * atomically swaps dist/, overwrites the package manifests, and — only when the
- * lockfile changed — runs `npm ci --omit=dev` to resync node_modules. On any
+ * lockfile changed — runs `npm install --omit=dev` to resync node_modules. On any
  * failure it rolls dist/ and the manifests back. The running process keeps its
  * in-memory code; the new code only loads after the restart signalled by the
  * caller. Mirrors the web-bundle swap (performWebBundleUpdate) but placement
@@ -1160,14 +1160,20 @@ async function performServerUpdate(
     const newLockHash = fileSha256(join(root, 'package-lock.json'));
     const depsChanged = !!newLockHash && newLockHash !== prevLockHash;
     if (depsChanged) {
-      deps.log.info('server update: lockfile changed, running npm ci', {});
+      // `npm install`, not `npm ci`: ci deletes node_modules and installs every
+      // package again, which rebuilds every native addon. The runtime image has
+      // no compiler, so an addon without a prebuild for the platform (utf-8-validate
+      // on arm64) fails the whole update, and a failure halfway leaves the server
+      // without the modules it is running on. install against the same lockfile
+      // only touches the packages that changed.
+      deps.log.info('server update: lockfile changed, running npm install', {});
       const { code, stderr } = await spawnForCompletion(
         'npm',
-        ['ci', '--omit=dev', '--no-audit', '--no-fund'],
+        ['install', '--omit=dev', '--no-audit', '--no-fund'],
         root,
       );
       if (code !== 0) {
-        throw new Error(stderr.trim() || `npm ci exited with code ${code}`);
+        throw new Error(stderr.trim() || `npm install exited with code ${code}`);
       }
     }
 
