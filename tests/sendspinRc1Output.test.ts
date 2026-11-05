@@ -210,3 +210,69 @@ test('sendspin rc1: the format a player states it prefers is the one advertised 
     core.restore();
   }
 });
+
+/** A harness whose zone sits in `group`, recording group upserts and zone commands. */
+function buildGrouped(group: { leader: number; members: number[] } | null) {
+  const upserts: unknown[] = [];
+  const commands: Array<[number, string]> = [];
+  const harness = build({ clientId: 'kitchen' }, (ports) => {
+    ports.groupTracker = {
+      ...ports.groupTracker,
+      getGroupByZone: () =>
+        group ? ({ ...group, backend: 'Unknown', source: 'manual', externalId: 'g1', updatedAt: 0 } as never) : undefined,
+      upsertGroup: (input: never) => {
+        upserts.push(input);
+        return { record: input, changed: true } as never;
+      },
+    };
+    ports.zoneManager = {
+      ...ports.zoneManager,
+      handleCommand: (zoneId: number, command: string) => {
+        commands.push([zoneId, command]);
+      },
+    } as never;
+  });
+  harness.output.isOwner = () => true;
+  const live = harness.session('kitchen');
+  harness.hooks.get('kitchen')?.onIdentified?.(live, null);
+  return { ...harness, live, upserts, commands };
+}
+
+test('sendspin rc1: a member that leaves its group from the device is taken out and stopped', () => {
+  const core = stubCore();
+  try {
+    const { hooks, live, upserts, commands } = buildGrouped({ leader: 3, members: [3, 7] });
+    core.calls.length = 0;
+    hooks.get('kitchen')?.onLeave?.(live);
+
+    assert.deepEqual((upserts[0] as { members: number[] }).members, [3], 'the rest of the group plays on');
+    assert.deepEqual(commands, [], 'the group is not stopped');
+    assert.ok(named(core.calls, 'sendStreamEnd').length === 1, 'the group stream is ended on the client');
+    assert.deepEqual(named(core.calls, 'setPlaybackActive'), [['setPlaybackActive', 'kitchen', false]]);
+  } finally {
+    core.restore();
+  }
+});
+
+test('sendspin rc1: a zone playing alone stops when its client leaves', () => {
+  const core = stubCore();
+  try {
+    const { hooks, live, upserts, commands } = buildGrouped(null);
+    hooks.get('kitchen')?.onLeave?.(live);
+    assert.deepEqual(upserts, []);
+    assert.deepEqual(commands, [[7, 'stop']]);
+  } finally {
+    core.restore();
+  }
+});
+
+test('sendspin rc1: a leave from a session that is no longer the live one is ignored', () => {
+  const core = stubCore();
+  try {
+    const { hooks, session, commands } = buildGrouped(null);
+    hooks.get('kitchen')?.onLeave?.(session('stale', { getClientId: () => 'kitchen' }));
+    assert.deepEqual(commands, []);
+  } finally {
+    core.restore();
+  }
+});

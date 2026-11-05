@@ -481,6 +481,7 @@ export class SendspinOutput implements ZoneOutput {
         this.pushPlaybackState(this.playbackState);
       },
       onPlayerState: (_session: SendspinSession, update: SendspinPlayerStateUpdate) => this.handleClientState(update),
+      onLeave: (sendspinSession: SendspinSession) => this.handleClientLeave(sendspinSession),
       onPairingRequired: (_session: SendspinSession, reason: SendspinPairingRequiredReason) => {
         this.ports.sendspinConnector.notePairingRequired(this.activeClientId(), reason);
       },
@@ -1262,10 +1263,59 @@ export class SendspinOutput implements ZoneOutput {
       this.log.debug('Sendspin switch ignored; zone is group leader', { zoneId: this.zoneId });
       return;
     }
-    // Clear stream on this client so it can operate solo.
-    sendspinCore.sendStreamEnd(this.activeClientId());
-    sendspinCore.sendStreamClear(this.activeClientId(), [STREAM_PLAYER_ROLE]);
-    this.pushPlaybackState('stopped');
+    this.stopAfterLeavingGroup();
+  }
+
+  /**
+   * A member just taken out of its group: clear the group's stream off its client and tell it
+   * that it is now alone and stopped.
+   *
+   * Said directly rather than through `pushPlaybackState`. The member's client heard the
+   * group's state from the leader, not through this zone, which need not own the client and
+   * whose own record can already read `stopped`, so that path dropped the news. It is a reply
+   * to the client that asked, so only a zone that another one owns the client of stays quiet.
+   */
+  private stopAfterLeavingGroup(): void {
+    if (this.ownedByAnotherZone()) {
+      return;
+    }
+    const clientId = this.activeClientId();
+    sendspinCore.sendStreamEnd(clientId);
+    sendspinCore.sendStreamClear(clientId, [STREAM_PLAYER_ROLE]);
+    const { groupId, groupName } = this.getGroupInfo();
+    this.playbackState = 'stopped';
+    this.lastSentPlaybackState = 'stopped';
+    sendspinCore.setClientPlaybackState(clientId, PlaybackStateType.STOPPED, groupId, groupName);
+    this.dropPlaybackActivity();
+  }
+
+  /**
+   * The client left its group from the device (rc1 `client/leave`), for instance to play
+   * something locally.
+   *
+   * The spec has it end up alone in a stopped group, back only when it asks to (`switch`) or is
+   * played again. A member is taken out of its group and stopped, as a `switch` does, and the
+   * rest of the group plays on. A zone playing on its own simply stops. A leader cannot hand its
+   * group over — the group's audio is its session — so its whole group stops with it.
+   *
+   * Without this, node-sendspin reports the leave as an `external_source` flap, which made
+   * core end the stream and at once start it again: the device that had just left kept playing.
+   */
+  private handleClientLeave(sendspinSession: SendspinSession): void {
+    if (this.activeSession !== sendspinSession || this.ownedByAnotherZone()) {
+      return;
+    }
+    const result = this.removeZoneFromGroup();
+    this.log.info('Sendspin client left its group', {
+      zoneId: this.zoneId,
+      clientId: this.activeClientId(),
+      as: result === 'removed' ? 'member' : result === 'leader' ? 'leader' : 'solo',
+    });
+    if (result === 'removed') {
+      this.stopAfterLeavingGroup();
+      return;
+    }
+    this.ports.zoneManager.handleCommand(this.zoneId, 'stop');
   }
 
   /** Stop playback and fully tear down the stream. */
@@ -2387,6 +2437,12 @@ export class SendspinOutput implements ZoneOutput {
 
   private isOwner(): boolean {
     return sendspinClientOwners.get(this.clientId) === this.zoneId;
+  }
+
+  /** Whether a different zone drives this client, so this one must not speak for it. */
+  private ownedByAnotherZone(): boolean {
+    const owner = sendspinClientOwners.get(this.clientId);
+    return typeof owner === 'number' && owner !== this.zoneId;
   }
 
   /**

@@ -35,6 +35,7 @@ test('sendspin hook registry: the rc1 session hooks reach their listeners', () =
       onSourceSignalChanged: (_s, signal) => heard.push(`signal:${signal}`),
       onVisualizerFormatChanged: () => heard.push('visualizer'),
       onArtworkChannelsChanged: (_s, channels) => heard.push(`artwork:${channels.length}`),
+      onLeave: () => heard.push('leave'),
     });
     const hooks = capture.combined();
     const session = {} as SendspinSession;
@@ -42,7 +43,8 @@ test('sendspin hook registry: the rc1 session hooks reach their listeners', () =
     hooks.onSourceSignalChanged?.(session, 'present' as never);
     hooks.onVisualizerFormatChanged?.(session, {} as never);
     hooks.onArtworkChannelsChanged?.(session, [{ source: 'album', format: 'jpeg', width: 300, height: 300 }]);
-    assert.deepEqual(heard, ['pairing:unpaired_access_disabled', 'signal:present', 'visualizer', 'artwork:1']);
+    hooks.onLeave?.(session);
+    assert.deepEqual(heard, ['pairing:unpaired_access_disabled', 'signal:present', 'visualizer', 'artwork:1', 'leave']);
   } finally {
     capture.restore();
   }
