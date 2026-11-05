@@ -83,3 +83,41 @@ export function amazonRegions(): AmazonRegion[] {
 export function musicApiBase(region: AmazonRegion): string {
   return `https://music.amazon.${region.tld}/${region.continent}/api/`;
 }
+
+/**
+ * Marketplaces the sign-in page accepts next to the app's association handle.
+ *
+ * `www.amazon.com/ap/signin` with `amzn_tiburon_na` serves the sign-in form for these and
+ * redirects to `/ap/404` — "Looking for something?" in the browser's language — for every other
+ * one: Italy, Spain, the Netherlands, Poland, Sweden, India and Australia among them (probed
+ * 2026-11). The storefronts' own domains (`www.amazon.de/ap/signin`, …) answer 404 for the
+ * handle outright, so `amazon.com` is the only host and the marketplace the only lever.
+ */
+const SIGN_IN_MARKETPLACES: ReadonlySet<string> = new Set([
+  US_MARKETPLACE,
+  'A2EUQ1WTGCTBG2', // CA
+  'A1AM78C64UM0Y8', // MX
+  'A2Q3Y263D00KWC', // BR
+  'A1F83G8C2ARO7P', // GB
+  'A1PA6795UKMFR9', // DE, AT
+  'A13V1IB3VIYZZH', // FR
+  'A1VC38T7YXB528', // JP
+]);
+
+/** The UK marketplace, which signs in against the European account pool. */
+const EU_SIGN_IN_MARKETPLACE = 'A1F83G8C2ARO7P';
+
+/**
+ * The `marketPlaceId` the sign-in URL names for a storefront, or null to leave it out.
+ *
+ * The marketplace picks the account pool Amazon looks the person up in. North America signs in
+ * without one. A European storefront whose own marketplace the sign-in rejects borrows the UK's,
+ * which shares the European pool; India and Australia/New Zealand go without, as the open-source
+ * clients already do for Australia.
+ */
+export function signInMarketplaceId(region: AmazonRegion): string | null {
+  if (region.continent === 'NA') return null;
+  if (SIGN_IN_MARKETPLACES.has(region.marketplaceId)) return region.marketplaceId;
+  if (region.continent === 'EU' && region.country !== 'IN') return EU_SIGN_IN_MARKETPLACE;
+  return null;
+}

@@ -56,13 +56,23 @@ test('the sign-in URL carries a PKCE challenge for the verifier it keeps', () =>
   assert.equal(params.get('openid.oa2.code_challenge'), expected);
   assert.equal(params.get('openid.oa2.client_id'), `device:${buildClientId(login.serial)}`);
   assert.equal(login.country, 'NL');
-  // Outside North America the marketplace is named…
-  assert.equal(params.get('marketPlaceId'), 'A1805IZSGTT6HS');
+  assert.equal(params.get('language'), 'nl_NL');
 });
 
-test('the US and Australian sign-ins leave the marketplace out', () => {
-  assert.equal(new URL(createLogin('US').url).searchParams.get('marketPlaceId'), null);
-  assert.equal(new URL(createLogin('AU').url).searchParams.get('marketPlaceId'), null);
+test('the sign-in names only a marketplace Amazon serves the sign-in form for (#398)', () => {
+  const marketplace = (country: string) => new URL(createLogin(country).url).searchParams.get('marketPlaceId');
+  // Accepted with the app's association handle: named as is.
+  assert.equal(marketplace('DE'), 'A1PA6795UKMFR9');
+  assert.equal(marketplace('AT'), 'A1PA6795UKMFR9');
+  assert.equal(marketplace('GB'), 'A1F83G8C2ARO7P');
+  assert.equal(marketplace('FR'), 'A13V1IB3VIYZZH');
+  assert.equal(marketplace('JP'), 'A1VC38T7YXB528');
+  // Rejected (Amazon's 404): a European storefront signs in through the UK's European pool…
+  for (const country of ['NL', 'IT', 'ES', 'PL', 'SE']) assert.equal(marketplace(country), 'A1F83G8C2ARO7P', country);
+  // …and the rest go without, as North America does.
+  for (const country of ['US', 'CA', 'AU', 'NZ', 'IN']) assert.equal(marketplace(country), null, country);
+  // Sign-in itself always runs on amazon.com: the storefronts' own hosts reject the handle.
+  assert.equal(new URL(createLogin('DE').url).host, 'www.amazon.com');
 });
 
 test('the client id is the hex of serial#deviceType', () => {

@@ -2,7 +2,7 @@ import { createHash, createPrivateKey, randomBytes, randomUUID, sign, type KeyOb
 import type { AmazonMusicCredentials } from '@/domain/config/types';
 import { createLogger } from '@/shared/logging/logger';
 import { safeReadText } from '@/shared/bestEffort';
-import { amazonRegion, musicApiBase, type AmazonRegion } from './amazonMusicRegions';
+import { amazonRegion, musicApiBase, signInMarketplaceId, type AmazonRegion } from './amazonMusicRegions';
 
 /**
  * The Amazon Music API as its Android app speaks it.
@@ -99,11 +99,10 @@ export function createLogin(country: string): PendingLogin {
     'openid.ns': 'http://specs.openid.net/auth/2.0',
     forceMobileLayout: 'true',
   });
-  // Outside North America the marketplace has to be named — except Australia, whose sign-in
-  // answers 404 when it is.
-  if (region.continent !== 'NA' && region.country !== 'AU') {
-    params.set('marketPlaceId', region.marketplaceId);
-  }
+  // Outside North America the marketplace is named, but only one the sign-in accepts: any other
+  // lands on Amazon's "page not found".
+  const marketplaceId = signInMarketplaceId(region);
+  if (marketplaceId) params.set('marketPlaceId', marketplaceId);
   return {
     url: `https://www.amazon.com/ap/signin?${params.toString()}`,
     codeVerifier,
