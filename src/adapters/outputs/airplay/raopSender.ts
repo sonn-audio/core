@@ -9,6 +9,7 @@ import {
   type RaopSession,
 } from '@sonn-audio/node-airplay';
 import { createLogger } from '@/shared/logging/logger';
+import { collapseRepeats } from '@/shared/logging/collapseRepeats';
 import type { AirplaySender } from '@/adapters/outputs/airplay/airplaySender';
 import { PcmRing } from '@/adapters/outputs/airplay/pcmRing';
 
@@ -308,7 +309,10 @@ export class RaopSender implements AirplaySender {
       this.streamer = new RaopStreamer({
         host: this.config.host,
         session,
-        onLog: (message) => this.log.debug('rtp', { ...this.context, message }),
+        // Called per packet when sends fail, so a repeat is collapsed.
+        onLog: collapseRepeats((message, repeats) =>
+          this.log.debug('rtp', { ...this.context, message, ...(repeats ? { repeats } : {}) }),
+        ),
       });
       const startNtp = this.groupStartNtp ?? ntpNow();
       this.anchorFrames = ntpToFrames(startNtp);

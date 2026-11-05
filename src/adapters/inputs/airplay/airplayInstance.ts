@@ -320,10 +320,10 @@ export class AirplayInstance {
 
   private handleRaopEvent(event: ReceiverEvent): void {
     // Everything except the audio itself: a line per packet is ~86 a second,
-    // and the log buffer rebuilds its whole 500 KB on every append, which
-    // stalls the event loop for seconds at a time and turns into audible
-    // stutter. The chunk line at spam level and the once-a-second input state
-    // cover the audio path.
+    // each one formatted, written out, buffered and pushed to any open log
+    // view. That is enough to hold up the event loop the audio runs on, and
+    // turns into audible stutter -- at spam level as much as at any other, so
+    // the audio path is logged only by the once-a-second input state.
     if (event.type !== 'pcm') {
       this.log.debug('airplay raop event', { zoneId: this.zoneId, type: event.type });
     }
@@ -667,12 +667,6 @@ export class AirplayInstance {
         bytes: payload.length,
       });
     }
-    this.log.spam?.('airplay pcm chunk', {
-      zoneId: this.zoneId,
-      bytes: payload.length,
-      sampleRate: this.pcmSampleRate,
-      channels: this.pcmChannels,
-    });
     this.handlePcmTimingUpdate(payload.length);
   }
 

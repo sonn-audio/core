@@ -80,6 +80,7 @@ import './airplayPcmStream.test';
 import './airplayVolumeAssert.test';
 import './airplayStreamSession.test';
 import './airplayHardwareAddress.test';
+import './airplayInputPcm.test';
 import './audioStreamHandlerIcy.test';
 import './audioProxyIcyStream.test';
 import './audioProxyPlaylist.test';

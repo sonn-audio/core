@@ -14,6 +14,7 @@ import {
 } from '@sonn-audio/node-airplay';
 import { ntpNow } from '@sonn-audio/node-airplay';
 import { createLogger } from '@/shared/logging/logger';
+import { collapseRepeats } from '@/shared/logging/collapseRepeats';
 import type { AirplaySender } from '@/adapters/outputs/airplay/airplaySender';
 import { PcmRing } from '@/adapters/outputs/airplay/pcmRing';
 
@@ -419,7 +420,10 @@ export class Ap2Sender implements AirplaySender {
           ptp: this.ptp,
           timing: this.timing,
           leadMs: LEAD_MS,
-          onLog: (message) => this.log.debug('rtp', { ...this.context, message }),
+          // Called per packet when sends fail, so a repeat is collapsed.
+          onLog: collapseRepeats((message, repeats) =>
+            this.log.debug('rtp', { ...this.context, message, ...(repeats ? { repeats } : {}) }),
+          ),
         },
         sockets.data,
         sockets.control,
