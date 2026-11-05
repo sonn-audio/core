@@ -2,8 +2,31 @@ import { inferAudiotype, parseServiceNativeAudiopath } from '@/domain/zones/audi
 import type { PlaybackMetadata } from '@/ports/types/playback';
 import type { ContentFolderItem } from '@/ports/ContentTypes';
 
+/**
+ * A Spotify id that has lost its `spotify:` scheme, e.g. `track:11hcBLPtbMp4aQI6zGQLub`.
+ *
+ * Spotify's ids are 22 base-62 characters, a shape no other service here uses (Deezer, Tidal,
+ * Apple Music and SoundCloud ids are numeric, Amazon's are 10-character ASINs, YouTube's are 11),
+ * so a bare `<kind>:<22 chars>` can only be Spotify's.
+ */
+const BARE_SPOTIFY_ID = /^(track|episode|album|playlist|artist|show):[A-Za-z0-9]{22}$/i;
+
+/**
+ * Put the `spotify:` scheme back on a bare Spotify id; anything else is returned untouched.
+ *
+ * Without it the path names no service, so nothing can play it: it was stored in the queue as is,
+ * and every later play of the zone failed on it with "no playback source resolved" (#417).
+ */
+export function withSpotifyScheme(value: string): string {
+  const trimmed = value.trim();
+  return BARE_SPOTIFY_ID.test(trimmed) ? `spotify:${trimmed}` : value;
+}
+
 export function normalizeSpotifyAudiopath(value: string): string {
   if (!value) return value;
+  if (BARE_SPOTIFY_ID.test(value.trim())) {
+    return withSpotifyScheme(value);
+  }
   let cleaned = value.trim().replace('spotify://', 'spotify:');
   try {
     cleaned = decodeURIComponent(cleaned);

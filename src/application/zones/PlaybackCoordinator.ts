@@ -47,7 +47,11 @@ import {
 import { handlePlaybackError as handlePlaybackErrorTransition } from '@/application/zones/playback/playbackErrors';
 import { updateOutputState as handleUpdateOutputState } from '@/application/zones/playback/outputStateUpdater';
 import { RadioParadiseBlockService } from '@/application/zones/radioparadise/radioParadiseBlockService';
-import { normalizeSpotifyAudiopath, resolveSpotifyAccountId } from '@/application/zones/helpers/queueHelpers';
+import {
+  normalizeSpotifyAudiopath,
+  resolveSpotifyAccountId,
+  withSpotifyScheme,
+} from '@/application/zones/helpers/queueHelpers';
 
 type PlaybackCoordinatorDeps = {
   zones: ZoneRepository;
@@ -447,7 +451,9 @@ export class PlaybackCoordinator {
     // the disguised `spotify@bridge-...` form (also for room-favs). Translate it
     // to the service-native core identity here so everything downstream is
     // service-native. Idempotent on already-native / non-bridge paths.
-    const nativeUri = toServiceNative(uri, this.contentPort.getBridgeRegistry());
+    // A bare Spotify id (`track:<id>`) names no service; give it its scheme back so it is played
+    // and queued as the Spotify track it is (#417).
+    const nativeUri = toServiceNative(withSpotifyScheme(uri), this.contentPort.getBridgeRegistry());
     return this.playRequest.play(zoneId, nativeUri, type, metadata, options);
   }
 
