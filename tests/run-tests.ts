@@ -179,6 +179,7 @@ import './itemAbout.test';
 import './browseContainerIdentity.test';
 import './outputDelay.test';
 import './outputStreamFormat.test';
+import './musicAssistantAnnouncement.test';
 import './dlnaPlaybackReadiness.test';
 import './dlnaVolumeEcho.test';
 import './waveform.test';

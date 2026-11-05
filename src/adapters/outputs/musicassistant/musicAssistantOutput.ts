@@ -2,6 +2,7 @@ import { createLogger } from '@/shared/logging/logger';
 import type { MusicAssistantApi } from '@/shared/musicassistant/musicAssistantApi';
 import type {
   HttpPreferences,
+  NativeAlertRequest,
   OutputConfigDefinition,
   PreferredOutput,
   ZoneOutput,
@@ -20,6 +21,12 @@ import {
   type StreamFormatPreference,
   type StreamProfileChoice,
 } from '@/domain/outputs/streamProfilePolicy';
+
+/**
+ * How long MA gets to refuse an announcement. A refusal (unknown player, bad URL, an MA without
+ * the command) comes back in one round trip; past this the announcement is taken to be playing.
+ */
+const MA_ANNOUNCEMENT_ACCEPT_MS = 1500;
 
 export interface MusicAssistantOutputConfig {
   bridgeId: string;
@@ -155,6 +162,74 @@ export class MusicAssistantOutput implements ZoneOutput {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Hand the alert to Music Assistant as an announcement instead of streaming it ourselves.
+   *
+   * The stream path cannot work well through MA: it replaced the player's queue with our
+   * stream URL (so the music came back from the start of the track, or not at all), raised the
+   * volume against a buffer it cannot see (MA re-buffers for whatever it drives, seconds rather
+   * than the one we assume), and ended the clip on that same guess, cutting it off (#416). MA
+   * knows all three, so it is the one to do it.
+   *
+   * MA only answers once the announcement has been heard out, which can outlast its own RPC
+   * timeout for a long TTS. So a refusal is judged on what comes back quickly: an error within
+   * the acceptance window means MA would not take it and the stream path runs instead;
+   * anything still in flight after that is an announcement being played.
+   */
+  public async playNativeAlert(request: NativeAlertRequest): Promise<boolean> {
+    if (!this.api) this.api = this.acquireApi();
+    const api = this.api;
+    if (!api) {
+      return false;
+    }
+    let targetPlayerId: string | null;
+    try {
+      targetPlayerId = await resolveActiveMaPlayerId(api, this.playerId);
+    } catch {
+      targetPlayerId = null;
+    }
+    if (!targetPlayerId) {
+      this.log.debug('MA announcement has no player; using the stream path', { zoneId: this.zoneId });
+      return false;
+    }
+    const announcement = api.playAnnouncement(targetPlayerId, request.url, request.volume);
+    const outcome = await Promise.race([
+      announcement.then(
+        () => 'done' as const,
+        (err: unknown) => err instanceof Error ? err : new Error(String(err)),
+      ),
+      new Promise<'pending'>((resolve) => {
+        const timer = setTimeout(() => resolve('pending'), MA_ANNOUNCEMENT_ACCEPT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (outcome instanceof Error) {
+      this.log.debug('MA announcement refused; using the stream path', {
+        zoneId: this.zoneId,
+        playerId: targetPlayerId,
+        message: outcome.message,
+      });
+      return false;
+    }
+    if (outcome === 'pending') {
+      // Accepted and playing. Whatever it ends with is MA's to settle; only say so.
+      void announcement.catch((err: unknown) => {
+        this.log.debug('MA announcement ended with an error', {
+          zoneId: this.zoneId,
+          playerId: targetPlayerId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    this.log.info('MA announcement played', {
+      zoneId: this.zoneId,
+      playerId: targetPlayerId,
+      type: request.type,
+      url: request.url,
+    });
+    return true;
   }
 
   public async pause(_session: PlaybackSession | null): Promise<void> {

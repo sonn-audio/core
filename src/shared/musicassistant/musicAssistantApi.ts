@@ -323,6 +323,32 @@ export class MusicAssistantApi {
     return Boolean(result);
   }
 
+  /**
+   * Play `url` on a player as an announcement: Music Assistant lowers or pauses what the player
+   * is on, plays the clip at `volumeLevel`, waits for it to be heard out and then puts the
+   * player back where it was — queue, track position and volume included.
+   *
+   * MA answers only once all of that is over, so the promise can take as long as the clip
+   * itself. It rejects when MA refuses the request (unknown player, unreachable URL, an MA
+   * without the command), which callers use to fall back to something else.
+   */
+  public async playAnnouncement(playerId: string, url: string, volumeLevel?: number): Promise<void> {
+    if (!playerId || !url) {
+      throw new Error('announcement needs a player and a url');
+    }
+    const payload: Record<string, unknown> = {
+      player_id: playerId,
+      url,
+      // A doorbell must not be preceded by MA's own chime.
+      pre_announce: false,
+    };
+    if (typeof volumeLevel === 'number' && Number.isFinite(volumeLevel)) {
+      payload.volume_level = Math.max(0, Math.min(100, Math.round(volumeLevel)));
+    }
+    await this.ensureConnected();
+    await this.client.rpc('players/cmd/play_announcement', payload);
+  }
+
   public async playerCommand(
     playerId: string,
     command: string,
