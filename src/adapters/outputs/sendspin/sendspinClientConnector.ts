@@ -13,6 +13,46 @@ interface Endpoint {
   clientId?: string;
 }
 
+/** What a dialled socket showed of itself, kept to explain its close. */
+interface SocketTrace {
+  openedAt: number | null;
+  /** `type` of the first text message the client sent, or null when it sent none. */
+  firstType: string | null;
+  /** `payload.version` of the client's hello, as sent. */
+  helloVersion: unknown;
+  /** The close our side sent (the session refusing the client), if it was ours. */
+  serverClose: { code: number | null; reason: string } | null;
+  helloTimer: NodeJS.Timeout | null;
+}
+
+/** How long a client gets to say hello before the log says it has not. */
+const HELLO_WAIT_MS = 10_000;
+/** A connection that lasted this long was working; its drop is not a repeat of an earlier one. */
+const HEALTHY_SESSION_MS = 60_000;
+/** The core protocol version node-sendspin speaks (`client/hello` `version`). */
+const SUPPORTED_PROTOCOL_VERSION = 1;
+
+/** Why a dialled socket closed, in words a log reader can act on. */
+export function describeDrop(trace: Omit<SocketTrace, 'helloTimer' | 'openedAt'>, code: number, reason: string): string {
+  if (trace.serverClose) {
+    const said = trace.serverClose.reason || `no reason given, code ${trace.serverClose.code ?? code}`;
+    if (trace.serverClose.reason === 'invalid protocol version') {
+      return (
+        `server refused the client's hello: it carries protocol version ${JSON.stringify(trace.helloVersion ?? null)},` +
+        ` this server speaks version ${SUPPORTED_PROTOCOL_VERSION} (a newer spec release, e.g. 1.0.0-rc1, on the client?)`
+      );
+    }
+    if (trace.firstType && trace.firstType !== 'client/hello' && trace.firstType !== 'client/init') {
+      return `server closed it: ${said} (client opened with ${trace.firstType})`;
+    }
+    return `server closed it: ${said}`;
+  }
+  if (!trace.firstType) {
+    return `socket open but client never sent client/hello; client closed it (code ${code}${reason ? `: ${reason}` : ''})`;
+  }
+  return `client closed it (code ${code}${reason ? `: ${reason}` : ''})`;
+}
+
 /**
  * Discovers Sendspin clients via mDNS and establishes outbound WebSocket connections
  * so playback can be pushed without manually starting the client with a URL.
@@ -35,6 +75,7 @@ export class SendspinClientConnector {
   private readonly directPortFallbackTried = new Set<string>();
   private readonly resolvedClientIds = new Map<string, string>();
   private readonly resolveListeners = new Map<string, Set<(resolvedClientId: string) => void>>();
+  private readonly lastDrops = new Map<string, { why: string; repeats: number }>();
   private browser: MdnsBrowser | null = null;
   private serverRegistration: MdnsRegistration | null = null;
 
@@ -256,11 +297,23 @@ export class SendspinClientConnector {
     let upgradeReq: IncomingMessage | null = null;
     let matchedDesired = false;
     const ws = new WebSocket(endpoint.url);
+    const trace = this.traceSocket(ws);
     ws.on('upgrade', (req) => {
       upgradeReq = req;
     });
 
     ws.once('open', () => {
+      trace.openedAt = Date.now();
+      trace.helloTimer = setTimeout(() => {
+        trace.helloTimer = null;
+        if (trace.firstType) return;
+        this.log.warn('Sendspin socket open but the client has not sent client/hello', {
+          url: endpoint.url,
+          clientId: endpoint.clientId,
+          waitedMs: HELLO_WAIT_MS,
+        });
+      }, HELLO_WAIT_MS);
+      trace.helloTimer.unref?.();
       this.activeSockets.set(endpoint.url, ws);
       const reason =
         endpoint.reason === 'playback' ? ConnectionReason.PLAYBACK : ConnectionReason.DISCOVERY;
@@ -317,7 +370,11 @@ export class SendspinClientConnector {
       // Do not disconnect solely to "upgrade" the connection reason.
     });
 
-    ws.on('close', (_code, reasonBuf) => {
+    ws.on('close', (code, reasonBuf) => {
+      if (trace.helloTimer) {
+        clearTimeout(trace.helloTimer);
+        trace.helloTimer = null;
+      }
       this.activeSockets.delete(endpoint.url);
       this.socketReason.delete(endpoint.url);
       const knownClientId = this.socketClientId.get(endpoint.url);
@@ -337,6 +394,9 @@ export class SendspinClientConnector {
       const shouldRetry =
         (matchedDesired || endpoint.candidateMatch) &&
         !this.shouldSuppressRetry(goodbyeReason);
+      if (trace.openedAt !== null) {
+        this.logDrop(endpoint, trace, code, reason, shouldRetry);
+      }
       this.scheduleRetry(endpoint, shouldRetry);
     });
 
@@ -347,6 +407,67 @@ export class SendspinClientConnector {
       });
       this.recordFailure(endpoint, (err as Error).message);
     });
+  }
+
+  /**
+   * Watch a dialled socket closely enough to say afterwards why it did not last.
+   *
+   * The session that owns the socket (node-sendspin) closes it itself when a hello is refused —
+   * a protocol version it does not speak, missing roles, a client state that never came — and
+   * only the peer's echo of that close reaches our `close` event, usually without the reason. So
+   * the close is recorded as it is sent, next to what the client opened with.
+   */
+  private traceSocket(ws: WebSocket): SocketTrace {
+    const trace: SocketTrace = {
+      openedAt: null,
+      firstType: null,
+      helloVersion: undefined,
+      serverClose: null,
+      helloTimer: null,
+    };
+    ws.on('message', (data, isBinary) => {
+      if (trace.firstType || isBinary) return;
+      try {
+        const msg = JSON.parse(data.toString()) as { type?: unknown; payload?: { version?: unknown } };
+        trace.firstType = typeof msg?.type === 'string' ? msg.type : '(untyped)';
+        if (msg?.type === 'client/hello') trace.helloVersion = msg.payload?.version;
+      } catch {
+        trace.firstType = '(not JSON)';
+      }
+    });
+    const close = ws.close.bind(ws);
+    ws.close = (code?: number, reason?: string | Buffer) => {
+      trace.serverClose ??= { code: code ?? null, reason: reason ? reason.toString() : '' };
+      close(code, reason);
+    };
+    return trace;
+  }
+
+  /** One line on why a dialled socket closed — at warn when the cause is new, then quietly. */
+  private logDrop(endpoint: Endpoint, trace: SocketTrace, code: number, reason: string, redialing: boolean): void {
+    const upMs = trace.openedAt !== null ? Date.now() - trace.openedAt : null;
+    const why = describeDrop(trace, code, reason);
+    const previous = this.lastDrops.get(endpoint.url);
+    // A connection that held for a while was a working one; whatever ends the next is news.
+    const repeats = previous && previous.why === why && (upMs ?? 0) < HEALTHY_SESSION_MS ? previous.repeats + 1 : 0;
+    this.lastDrops.set(endpoint.url, { why, repeats });
+    const fields = {
+      url: endpoint.url,
+      clientId: this.socketClientIdFor(endpoint),
+      why,
+      upMs,
+      ...(repeats ? { repeats } : {}),
+    };
+    const message = redialing ? 'Sendspin connection dropped; redialing' : 'Sendspin connection dropped';
+    if (repeats) {
+      this.log.debug(message, fields);
+    } else {
+      this.log.warn(message, fields);
+    }
+  }
+
+  private socketClientIdFor(endpoint: Endpoint): string | undefined {
+    return endpoint.clientId ? this.resolveClientId(endpoint.clientId) : undefined;
   }
 
   private scheduleRetry(endpoint: Endpoint, shouldRetry: boolean): void {

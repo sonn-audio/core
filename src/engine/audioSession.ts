@@ -52,6 +52,9 @@ const RESTART_BACKOFF_MAX_MS = 500;
  */
 const LATE_SUBSCRIBER_GRACE_MS = 5000;
 
+/** How long a session may produce audio with no subscriber before the log says so. */
+const UNHEARD_WARN_MS = 60_000;
+
 function sourceFormatFor(
   source: PlaybackSource,
   nativeFormat: SourceNativeFormat | undefined,
@@ -100,6 +103,9 @@ export class AudioSession {
   /** @internal */ public readonly firstChunk = new FirstChunkBarrier();
   private bytesSinceLog = 0;
   private lastLogTs = 0;
+  /** Since when audio has been produced with no subscriber, while that lasts. */
+  private unheardSince: number | null = null;
+  private unheardWarned = false;
   private totalBytes = 0;
   private lastBps = 0;
   private lastBpsTs = 0;
@@ -1193,6 +1199,33 @@ export class AudioSession {
     });
     this.lastLogTs = now;
     this.bytesSinceLog = 0;
+    this.checkUnheard(now);
+  }
+
+  /**
+   * Say so, once, when audio has been produced for a while with nobody to take it.
+   *
+   * A zone whose output never really connected — a client that opens a socket and is then refused,
+   * say — still reads as playing, and the only trace is `subscribers=0` in the exit line after the
+   * fact. Live sources keep encoding at real time for as long as that lasts.
+   */
+  private checkUnheard(now: number): void {
+    if (this.fanout.size > 0) {
+      this.unheardSince = null;
+      this.unheardWarned = false;
+      return;
+    }
+    this.unheardSince ??= now;
+    if (this.unheardWarned || now - this.unheardSince < UNHEARD_WARN_MS) {
+      return;
+    }
+    this.unheardWarned = true;
+    this.log.warn('audio is being produced but no output is taking it', {
+      zoneId: this.zoneId,
+      profile: this.profile,
+      forMs: now - this.unheardSince,
+      totalBytes: this.totalBytes,
+    });
   }
 
   /** @internal */ public recordBytes(length: number): void {

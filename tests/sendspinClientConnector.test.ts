@@ -3,7 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { sendspinCore } from '@sonn-audio/node-sendspin';
 import { test } from './testHarness';
-import { SendspinClientConnector } from '../src/adapters/outputs/sendspin/sendspinClientConnector';
+import { describeDrop, SendspinClientConnector } from '../src/adapters/outputs/sendspin/sendspinClientConnector';
+import { logBuffer } from '../src/shared/logging/logBuffer';
 import type { MdnsPort } from '../src/ports/MdnsPort';
 
 /**
@@ -104,4 +105,52 @@ test('a client that said a terminal goodbye is not dialled again', async () => {
   } finally {
     await env.close();
   }
+});
+
+test('a client whose hello the session refuses is redialled with the reason in the log (#423)', async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  // A client on a newer spec release: node-sendspin 0.6 refuses the hello it sends.
+  server.on('connection', (ws) => {
+    ws.send(JSON.stringify({ type: 'client/hello', payload: { client_id: 'sauna-audio', version: '1.0.0-rc1' } }));
+  });
+  const lines: string[] = [];
+  const unsubscribe = logBuffer.subscribe((entry) => lines.push(entry.line));
+  const mdns = {
+    browse: (_options: unknown, onService: (service: unknown) => void) => {
+      onService({ name: 'sauna-audio', addresses: ['127.0.0.1'], port, txt: {} });
+      return { stop: () => {} };
+    },
+    publish: () => ({ stop: () => {} }),
+    shutdown: () => {},
+  } as unknown as MdnsPort;
+  const connector = new SendspinClientConnector(mdns);
+  const unwatch = connector.watchClient('sauna-audio');
+  try {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && !lines.some((line) => line.includes('Sendspin connection dropped'))) {
+      await settle(25);
+    }
+    const drop = lines.find((line) => line.includes('Sendspin connection dropped; redialing'));
+    assert.ok(drop, `no drop line among:\n${lines.join('\n')}`);
+    assert.match(drop, /protocol version/);
+    assert.match(drop, /1\.0\.0-rc1/);
+  } finally {
+    unwatch();
+    unsubscribe();
+    for (const client of server.clients) client.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('a socket the client never says hello on is described as such', () => {
+  const why = describeDrop({ firstType: null, helloVersion: undefined, serverClose: null }, 1006, '');
+  assert.match(why, /never sent client\/hello/);
+  const refused = describeDrop(
+    { firstType: 'client/hello', helloVersion: 1, serverClose: { code: 1008, reason: 'initial state timeout' } },
+    1008,
+    '',
+  );
+  assert.equal(refused, 'server closed it: initial state timeout');
 });
