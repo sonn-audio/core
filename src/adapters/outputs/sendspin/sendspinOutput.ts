@@ -482,6 +482,11 @@ export class SendspinOutput implements ZoneOutput {
       },
       onPlayerState: (_session: SendspinSession, update: SendspinPlayerStateUpdate) => this.handleClientState(update),
       onLeave: (sendspinSession: SendspinSession) => this.handleClientLeave(sendspinSession),
+      onVisualizerFormatChanged: (sendspinSession: SendspinSession) => {
+        if (this.activeSession === sendspinSession) {
+          this.restartVisualizerIfRunning(this.primary);
+        }
+      },
       /*
        * An rc1 display changed its artwork channels mid-stream (another size, another
        * format, a channel switched off). node-sendspin has re-sent `stream/start` with them,
@@ -603,6 +608,7 @@ export class SendspinOutput implements ZoneOutput {
         futureFrames: () => this.getFutureFrames(),
         currentVolume: () => this.lastKnownVolume,
         joined: () => this.startVisualizerFor(sender),
+        visualizerChanged: () => this.restartVisualizerIfRunning(sender),
         left: () => this.stopVisualizerFor(sender),
       });
       this.log.info('Sendspin satellite registered', {
@@ -2642,6 +2648,18 @@ export class SendspinOutput implements ZoneOutput {
       unsubscribe();
     }
     this.analysisSubscriptions.clear();
+  }
+
+  /**
+   * An rc1 visualizer changed what it asks for in its `client/state` (types, rate, spectrum
+   * shape) while its stream was up. node-sendspin has re-sent `stream/start`, but the analyzer
+   * feeding it was set up for the old request, so set it up again from the client's current
+   * declaration. Nothing to do for a client that is not being fed.
+   */
+  private restartVisualizerIfRunning(sender: SendspinClientSender): void {
+    if (this.analysisSubscriptions.has(sender.clientId)) {
+      this.startVisualizerFor(sender);
+    }
   }
 
   private stopVisualizerFor(sender: SendspinClientSender): void {

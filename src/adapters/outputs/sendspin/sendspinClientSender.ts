@@ -26,6 +26,8 @@ export interface SatelliteHandlers {
   currentVolume(): number;
   /** The satellite joined a running stream; start whatever else it asked for (visualizer@v1). */
   joined(): void;
+  /** The satellite's visualizer changed what it asks for; feed it the new request. */
+  visualizerChanged(): void;
   /** The satellite went away; stop producing anything for it. */
   left(): void;
 }
@@ -155,6 +157,11 @@ export class SendspinClientSender {
           clientId: this.activeClientId(),
           roles: session.getRoles(),
         });
+      },
+      onVisualizerFormatChanged: (session: SendspinSession) => {
+        if (this.session === session) {
+          handlers.visualizerChanged();
+        }
       },
       onDisconnected: (session: SendspinSession) => {
         if (this.session !== session) {

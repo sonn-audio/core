@@ -92,6 +92,8 @@ interface Harness {
   commands: Array<[string, unknown]>;
   connect(clientId: string, roles?: string[]): void;
   disconnect(clientId: string): void;
+  /** The client's visualizer changed its stream config (rc1 client/state). */
+  visualizerChanged(clientId: string): void;
 }
 
 function build(): Harness {
@@ -131,6 +133,8 @@ function build(): Harness {
     commands,
     connect: (clientId, roles) => hooks.get(clientId)?.onIdentified?.(sessionFor(clientId, roles), null),
     disconnect: (clientId) => hooks.get(clientId)?.onDisconnected?.(sessionFor(clientId)),
+    visualizerChanged: (clientId) =>
+      hooks.get(clientId)?.onVisualizerFormatChanged?.(sessionFor(clientId), {} as never),
   };
 }
 
@@ -254,6 +258,40 @@ test('a satellite that declared player@v1 still gets the stream, volume and its 
     const sent = commands.filter(([id]) => id === 'sauna-licht').map(([, command]) => command);
     assert.ok(sent.includes(PlayerCommand.SET_STATIC_DELAY));
     assert.ok(sent.includes(PlayerCommand.VOLUME));
+    output.teardown();
+  } finally {
+    core.restore();
+  }
+});
+
+test('an rc1 visualizer that changes its request mid-stream is fed the new one', () => {
+  const core = stubCore(['sauna-licht']);
+  try {
+    const { output, listeners, connect, visualizerChanged } = build();
+    playPcm(output);
+    connect('sauna-licht');
+    assert.equal(listeners.length, 1);
+
+    visualizerChanged('sauna-licht');
+    assert.equal(listeners.length, 2, 'the analyzer is set up again for what the client asks now');
+    assert.equal((output.analysisSubscriptions as Map<string, unknown>).size, 1, 'the old one is let go');
+    assert.equal(
+      core.calls.filter(([name, id]) => name === 'sendVisualizerStreamStartV1' && id === 'sauna-licht').length,
+      2,
+    );
+    output.teardown();
+  } finally {
+    core.restore();
+  }
+});
+
+test('a visualizer change from a client nobody is feeding starts nothing', () => {
+  const core = stubCore(['sauna-licht']);
+  try {
+    const { output, listeners, connect, visualizerChanged } = build();
+    connect('sauna-licht');
+    visualizerChanged('sauna-licht');
+    assert.equal(listeners.length, 0);
     output.teardown();
   } finally {
     core.restore();
