@@ -274,3 +274,69 @@ test('sonos state controller never reloads our own stream once its session is go
   assert.deepEqual(reloads, []);
   assert.equal(played, 0);
 });
+
+test('sonos state controller tears down a client whose socket is already gone (#413)', async () => {
+  // node-sonos unsubscribes its groups before closing the socket, which throws once the socket is
+  // gone. The listen loop was then never stopped, its promise never settled, and the reconnect
+  // that awaited it hung forever: no more state updates, no error, until a re-init.
+  const controller = createStateController();
+  let loopStopped!: () => void;
+  const listening = new Promise<void>((resolve) => {
+    loopStopped = resolve;
+  });
+  controller.client = {
+    disconnect: async () => {
+      throw new Error('Not connected');
+    },
+    api: {
+      disconnect: async () => {
+        loopStopped();
+      },
+    },
+  };
+  controller.startPromise = listening;
+
+  const outcome = await Promise.race([
+    controller.destroyClient().then(() => 'done'),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 1000)),
+  ]);
+  assert.equal(outcome, 'done');
+  assert.equal(controller.client, null);
+});
+
+test('sonos state controller trusts the speaker over a cached play once events went quiet (#413)', async () => {
+  const patches: any[] = [];
+  const controller = new SonosStateController({
+    zone: { id: 5, name: 'Büro', output: { host: '192.168.20.34' } as any } as any,
+    onStatePatch: (_zoneId: number, patch: any) => patches.push(patch),
+  } as any) as any;
+  const group: any = { playbackState: 'PLAYBACK_STATE_PLAYING' };
+  controller.client = { player: { group } };
+  let reconnects = 0;
+  controller.connect = async () => {
+    reconnects += 1;
+  };
+  const answers = ['STOPPED', 'TRANSITIONING', 'PLAYING', 'STOPPED', 'STOPPED'];
+  controller.fetchTransportState = async () => answers.shift() ?? null;
+
+  await controller.checkTransportState(); // STOPPED: one answer could be a track change
+  await controller.checkTransportState(); // TRANSITIONING: says nothing
+  await controller.checkTransportState(); // PLAYING: events are fine, start over
+  await controller.checkTransportState(); // STOPPED
+  assert.deepEqual(patches, []);
+  assert.equal(reconnects, 0);
+
+  await controller.checkTransportState(); // STOPPED again: the cache is stale
+  assert.deepEqual(patches, [{ mode: 'stop' }]);
+  assert.equal(reconnects, 1, 'the connection is rebuilt so events flow again');
+
+  // Nothing is asked while the cache does not claim play.
+  group.playbackState = 'PLAYBACK_STATE_IDLE';
+  let asked = 0;
+  controller.fetchTransportState = async () => {
+    asked += 1;
+    return 'STOPPED';
+  };
+  await controller.checkTransportState();
+  assert.equal(asked, 0);
+});

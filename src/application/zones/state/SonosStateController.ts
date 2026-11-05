@@ -34,6 +34,17 @@ const RECONNECT_BACKOFF_FACTOR = 2;
 // later zone's controller from coming up. On timeout we drop to the reconnect
 // schedule and return so the manager can move on.
 const START_TIMEOUT_MS = 15_000;
+// How long teardown waits for the old client's listen loop to wind down before moving on. The
+// loop normally ends the moment its transport is closed; this only bounds a loop that will not.
+const TEARDOWN_TIMEOUT_MS = 5_000;
+// While we believe the speaker is playing, ask it directly this often (UPnP GetTransportInfo,
+// which S1 and S2 firmware both answer). Events are what keep the state current; this only
+// catches the case where they silently stopped arriving (#413).
+const TRANSPORT_CHECK_INTERVAL_MS = 20_000;
+const TRANSPORT_CHECK_TIMEOUT_MS = 5_000;
+// Consecutive "not playing" answers before we believe them over the cached state; one alone can
+// be a track change or a rebuffer caught at the wrong moment.
+const TRANSPORT_STALE_THRESHOLD = 2;
 
 export class SonosStateController implements ZoneStateController {
   private readonly log = createLogger('Zones', 'StateController:Sonos');
@@ -46,6 +57,9 @@ export class SonosStateController implements ZoneStateController {
   private stopRequested = false;
   private unsubscribeEvent: (() => void) | null = null;
   private timeTicker: NodeJS.Timeout | null = null;
+  private transportCheckTimer: NodeJS.Timeout | null = null;
+  private transportCheckInFlight = false;
+  private transportStaleCount = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
   private connectionGeneration = 0;
@@ -234,12 +248,22 @@ export class SonosStateController implements ZoneStateController {
     if (client) {
       try {
         await client.disconnect();
-      } catch {
-        // ignore disconnect failures
+      } catch (err) {
+        // The S2 client unsubscribes its groups before it closes the socket, and that throws
+        // when the socket is already gone, which is exactly when we reconnect. The socket was
+        // then never closed and its listen loop never told to stop, so the start promise below
+        // never settled and this teardown hung forever: the controller was wedged, the old
+        // client kept reconnecting on its own with nobody listening, and the zone kept its
+        // last state until the controllers were re-initialised (#413). Close it directly.
+        this.log.debug('sonos client disconnect failed; closing its transport directly', {
+          zoneId: this.zone.id,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        await closeTransport(client);
       }
     }
     if (startPromise) {
-      await startPromise.catch(() => undefined);
+      await settleWithin(startPromise, TEARDOWN_TIMEOUT_MS);
     }
   }
 
@@ -280,12 +304,104 @@ export class SonosStateController implements ZoneStateController {
     this.timeTicker = setInterval(() => {
       this.emitTimeTick();
     }, TIME_TICK_MS);
+    if (this.transportCheckTimer) {
+      clearInterval(this.transportCheckTimer);
+    }
+    this.transportStaleCount = 0;
+    this.transportCheckTimer = setInterval(() => {
+      void this.checkTransportState();
+    }, TRANSPORT_CHECK_INTERVAL_MS);
+    this.transportCheckTimer.unref?.();
   }
 
   private stopTicker(): void {
     if (this.timeTicker) {
       clearInterval(this.timeTicker);
       this.timeTicker = null;
+    }
+    if (this.transportCheckTimer) {
+      clearInterval(this.transportCheckTimer);
+      this.transportCheckTimer = null;
+    }
+  }
+
+  /**
+   * Safety net for events that stop arriving without an error: a half-open socket, or a lapsed
+   * subscription the speaker no longer pushes to. Either way the cache keeps saying 'play' while
+   * the speaker sits stopped (#413). While the cache says 'play' we ask the speaker itself; when
+   * it disagrees twice in a row we report what it says and rebuild the connection, which
+   * re-subscribes and re-reads the full state.
+   */
+  private async checkTransportState(): Promise<void> {
+    const group = this.client?.player?.group;
+    if (!group || !this.host || this.stopRequested || this.transportCheckInFlight) {
+      return;
+    }
+    if (mapPlaybackState(group.playbackState) !== 'play') {
+      this.transportStaleCount = 0;
+      return;
+    }
+    const generation = this.connectionGeneration;
+    this.transportCheckInFlight = true;
+    let state: string | null;
+    try {
+      state = await this.fetchTransportState(this.host);
+    } finally {
+      this.transportCheckInFlight = false;
+    }
+    if (generation !== this.connectionGeneration || this.stopRequested) {
+      return;
+    }
+    const observed = mapTransportInfoState(state);
+    if (observed === 'play') {
+      this.transportStaleCount = 0;
+      return;
+    }
+    if (observed === null) {
+      // No answer, or a transitional one, says nothing about our events.
+      return;
+    }
+    if (mapPlaybackState(this.client?.player?.group?.playbackState) !== 'play') {
+      this.transportStaleCount = 0;
+      return;
+    }
+    this.transportStaleCount += 1;
+    if (this.transportStaleCount < TRANSPORT_STALE_THRESHOLD) {
+      return;
+    }
+    this.transportStaleCount = 0;
+    this.log.warn('sonos state stale; speaker is not playing but no event said so, reconnecting', {
+      zoneId: this.zone.id,
+      host: this.host,
+      transportState: state,
+    });
+    this.onStatePatch(this.zone.id, { mode: observed });
+    void this.connect();
+  }
+
+  private async fetchTransportState(host: string): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TRANSPORT_CHECK_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      const response = await fetch(`http://${formatHost(host)}:1400/MediaRenderer/AVTransport/Control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/xml; charset="utf-8"',
+          SOAPAction: '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"',
+        },
+        body: GET_TRANSPORT_INFO_BODY,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const match = /<CurrentTransportState>([^<]*)<\/CurrentTransportState>/i.exec(await response.text());
+      return match?.[1]?.trim() || null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -549,6 +665,63 @@ export class SonosStateController implements ZoneStateController {
     // and this async continuation. group.play() is the only thing left to try, and it is what
     // the old code did unconditionally.
     await group.play();
+  }
+}
+
+const GET_TRANSPORT_INFO_BODY = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+    </u:GetTransportInfo>
+  </s:Body>
+</s:Envelope>`;
+
+/** UPnP transport state to zone mode; null for anything that is not a settled answer. */
+function mapTransportInfoState(state: string | null): ZoneState['mode'] | null {
+  switch (String(state ?? '').toUpperCase()) {
+    case 'PLAYING':
+      return 'play';
+    case 'PAUSED_PLAYBACK':
+      return 'pause';
+    case 'STOPPED':
+    case 'NO_MEDIA_PRESENT':
+      return 'stop';
+    default:
+      // TRANSITIONING, or no answer at all.
+      return null;
+  }
+}
+
+function formatHost(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+/**
+ * Closes a client's transport without going through its own disconnect(), which can throw
+ * before it gets that far. Only the S2 client has a socket to close; S1 disconnect() does not
+ * throw on a dead speaker.
+ */
+async function closeTransport(client: AnySonosClient): Promise<void> {
+  const api = (client as { api?: { disconnect?: () => Promise<void> } }).api;
+  try {
+    await api?.disconnect?.();
+  } catch {
+    // nothing left to close
+  }
+}
+
+/** Waits for a promise to settle, but never longer than `ms`; its outcome is not needed. */
+async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([promise.then(() => undefined, () => undefined), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
