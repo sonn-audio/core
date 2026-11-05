@@ -19,12 +19,27 @@ interface SocketTrace {
   openedAt: number | null;
   /** `type` of the first text message the client sent, or null when it sent none. */
   firstType: string | null;
-  /** `payload.version` of the client's hello, as sent. */
+  /** `payload.version` of the client's opening `client/init` or `client/hello`, as sent. */
   helloVersion: unknown;
   /** The close our side sent (the session refusing the client), if it was ours. */
   serverClose: { code: number | null; reason: string } | null;
+  /**
+   * The reason of a `client/goodbye`, read from the session as the socket closes. Under
+   * encryption the goodbye travels encrypted, so only the session saw it; it then closes the
+   * socket without a reason, which on its own would read as the server hanging up.
+   */
+  goodbye?: string | null;
+  /** Why the session was held idle (pairing required) when it closed, if it was. */
+  pairingRequired?: SendspinPairingRequiredReason | null;
   helloTimer: NodeJS.Timeout | null;
 }
+
+/** `server/error` reasons node-sendspin answers an unacceptable `client/init` with. */
+const INIT_REJECTIONS: Record<string, string> = {
+  unsupported_version: 'a core protocol version this server does not speak',
+  unsupported_suite: 'a Noise suite this server does not implement',
+  malformed: 'a malformed client/init',
+};
 
 /** How long a client gets to say hello before the log says it has not. */
 const HELLO_WAIT_MS = 10_000;
@@ -35,23 +50,40 @@ const SUPPORTED_PROTOCOL_VERSION = 1;
 
 /** Why a dialled socket closed, in words a log reader can act on. */
 export function describeDrop(trace: Omit<SocketTrace, 'helloTimer' | 'openedAt'>, code: number, reason: string): string {
+  const idle = trace.pairingRequired
+    ? ` (the session was held idle: ${describePairingRequired(trace.pairingRequired)})`
+    : '';
+  if (trace.goodbye) {
+    const hint =
+      trace.goodbye === 'pairing_required'
+        ? ': it will not play for an unpaired server; enable unpaired access on the device (sonn cannot pair yet)'
+        : '';
+    return `client said goodbye (${trace.goodbye})${hint}`;
+  }
   if (trace.serverClose) {
+    const rejection = INIT_REJECTIONS[trace.serverClose.reason];
+    if (rejection && trace.firstType === 'client/init') {
+      return (
+        `server refused the client's client/init with server/error ${trace.serverClose.reason}:` +
+        ` ${rejection} (version ${JSON.stringify(trace.helloVersion ?? null)}; this server speaks ${SUPPORTED_PROTOCOL_VERSION})`
+      );
+    }
     const said = trace.serverClose.reason || `no reason given, code ${trace.serverClose.code ?? code}`;
     if (trace.serverClose.reason === 'invalid protocol version') {
       return (
         `server refused the client's hello: it carries protocol version ${JSON.stringify(trace.helloVersion ?? null)},` +
-        ` this server speaks version ${SUPPORTED_PROTOCOL_VERSION} (a newer spec release, e.g. 1.0.0-rc1, on the client?)`
+        ` this server speaks version ${SUPPORTED_PROTOCOL_VERSION} (a client on a newer core protocol?)`
       );
     }
     if (trace.firstType && trace.firstType !== 'client/hello' && trace.firstType !== 'client/init') {
       return `server closed it: ${said} (client opened with ${trace.firstType})`;
     }
-    return `server closed it: ${said}`;
+    return `server closed it: ${said}${idle}`;
   }
   if (!trace.firstType) {
-    return `socket open but client never sent client/hello; client closed it (code ${code}${reason ? `: ${reason}` : ''})`;
+    return `socket open but client never sent client/init or client/hello; client closed it (code ${code}${reason ? `: ${reason}` : ''})`;
   }
-  return `client closed it (code ${code}${reason ? `: ${reason}` : ''})`;
+  return `client closed it (code ${code}${reason ? `: ${reason}` : ''})${idle}`;
 }
 
 /**
@@ -328,7 +360,7 @@ export class SendspinClientConnector {
       trace.helloTimer = setTimeout(() => {
         trace.helloTimer = null;
         if (trace.firstType) return;
-        this.log.warn('Sendspin socket open but the client has not sent client/hello', {
+        this.log.warn('Sendspin socket open but the client has not sent client/init or client/hello', {
           url: endpoint.url,
           clientId: endpoint.clientId,
           waitedMs: HELLO_WAIT_MS,
@@ -371,7 +403,9 @@ export class SendspinClientConnector {
         ws.close();
         return;
       }
-      this.log.info('Sendspin client connected', { clientId, url: endpoint.url });
+      // Its first message names it, but under encryption that is `client/init`, before the
+      // handshake and the hello: answering is not yet being identified (see markInboundConnected).
+      this.log.info('Sendspin client answered', { clientId, url: endpoint.url, opening: trace.firstType });
       this.socketClientId.set(endpoint.url, clientId);
 
       // If we already had another socket for this clientId, close it in favor of the newest one.
@@ -411,7 +445,11 @@ export class SendspinClientConnector {
         }
       }
       const reason = reasonBuf ? reasonBuf.toString() : '';
-      const goodbyeReason = this.parseGoodbyeReason(reason);
+      // Ours runs before node-sendspin's own close handler, so the session is still there.
+      const session = sendspinCore.getSessionBySocket(ws);
+      trace.goodbye = session?.getLastGoodbyeReason() ?? null;
+      trace.pairingRequired = session?.getPairingRequired?.() ?? null;
+      const goodbyeReason = this.parseGoodbyeReason(reason) ?? trace.goodbye;
       const shouldRetry =
         (matchedDesired || endpoint.candidateMatch) &&
         !this.shouldSuppressRetry(goodbyeReason);
@@ -451,7 +489,7 @@ export class SendspinClientConnector {
       try {
         const msg = JSON.parse(data.toString()) as { type?: unknown; payload?: { version?: unknown } };
         trace.firstType = typeof msg?.type === 'string' ? msg.type : '(untyped)';
-        if (msg?.type === 'client/hello') trace.helloVersion = msg.payload?.version;
+        if (msg?.type === 'client/hello' || msg?.type === 'client/init') trace.helloVersion = msg.payload?.version;
       } catch {
         trace.firstType = '(not JSON)';
       }
@@ -752,10 +790,14 @@ export class SendspinClientConnector {
     return this.pairingRequired.get(this.resolveClientId(clientId)) ?? this.pairingRequired.get(clientId.trim()) ?? null;
   }
 
+  /** The client's session identified: hello done and, for an rc1 client, its first state in. */
   public markInboundConnected(clientId: string): void {
     const normalized = clientId.trim();
     if (!normalized) {
       return;
+    }
+    if (!this.inboundClients.has(normalized)) {
+      this.log.info('Sendspin client identified', { clientId: normalized });
     }
     this.inboundClients.add(normalized);
   }

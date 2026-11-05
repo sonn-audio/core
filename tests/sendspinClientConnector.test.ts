@@ -150,7 +150,7 @@ test('a client whose hello the session refuses is redialled with the reason in t
 
 test('a socket the client never says hello on is described as such', () => {
   const why = describeDrop({ firstType: null, helloVersion: undefined, serverClose: null }, 1006, '');
-  assert.match(why, /never sent client\/hello/);
+  assert.match(why, /never sent client\/init or client\/hello/);
   const refused = describeDrop(
     { firstType: 'client/hello', helloVersion: 1, serverClose: { code: 1008, reason: 'initial state timeout' } },
     1008,
@@ -182,4 +182,36 @@ test('every reason a session is held idle reads as something the owner can act o
   for (const reason of ['unpaired_access_disabled', 'not_approved', 'credential_mismatch'] as const) {
     assert.doesNotMatch(describePairingRequired(reason), /pairing required \(/, reason);
   }
+});
+
+test('a drop reads well for an rc1 client: its goodbye, a refused init, an idle session', () => {
+  // The session closes the socket itself on an encrypted goodbye, without a reason; that is the
+  // client leaving, not the server hanging up.
+  const goodbye = describeDrop(
+    { firstType: 'client/init', helloVersion: 1, serverClose: { code: null, reason: '' }, goodbye: 'pairing_required' },
+    1005,
+    '',
+  );
+  assert.match(goodbye, /^client said goodbye \(pairing_required\)/);
+  assert.match(goodbye, /enable unpaired access on the device/);
+
+  const refused = describeDrop(
+    { firstType: 'client/init', helloVersion: 2, serverClose: { code: 1008, reason: 'unsupported_version' } },
+    1008,
+    '',
+  );
+  assert.match(refused, /server\/error unsupported_version/);
+  assert.match(refused, /version 2; this server speaks 1/);
+
+  const idle = describeDrop(
+    {
+      firstType: 'client/init',
+      helloVersion: 1,
+      serverClose: null,
+      pairingRequired: 'unpaired_access_disabled',
+    },
+    1000,
+    '',
+  );
+  assert.match(idle, /^client closed it \(code 1000\) \(the session was held idle: .*unpaired access/);
 });
