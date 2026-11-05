@@ -26,6 +26,7 @@ import {
 } from '@/domain/outputs/streamProfilePolicy';
 import { buildBaseUrl, normalizeStreamUrl, resolveAbsoluteUrl, upsertQueryParam } from '@/shared/streamUrl';
 import { decodeAudiopath } from '@/domain/zones/audiopath';
+import { SONOS_OWN_CONTAINER_SERVICE_ID } from '@/domain/outputs/sonosIdentity';
 import {
   discoverSonosDevice,
   resolveSonosCoordinatorHost,
@@ -132,7 +133,6 @@ function isS2ConnectionLost(err: unknown): boolean {
 }
 
 /** Identity we stamp on the containers we hand to Sonos; see buildS2Container. */
-const SONOS_CONTAINER_SERVICE_ID = 'sonn';
 const SONOS_CONTAINER_SERVICE_NAME = 'Sonn';
 
 export class SonosOutput implements ZoneOutput {
@@ -867,8 +867,8 @@ export class SonosOutput implements ZoneOutput {
       type: 'trackList',
       id: {
         _objectType: 'id',
-        serviceId: SONOS_CONTAINER_SERVICE_ID,
-        objectId: `${SONOS_CONTAINER_SERVICE_ID}:${this.zoneId}:${session.stream.id}`,
+        serviceId: SONOS_OWN_CONTAINER_SERVICE_ID,
+        objectId: `${SONOS_OWN_CONTAINER_SERVICE_ID}:${this.zoneId}:${session.stream.id}`,
       },
       service: {
         _objectType: 'service',

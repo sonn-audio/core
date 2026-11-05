@@ -15,6 +15,7 @@ type AnySonosClient = SonosClient | S1Client;
 import type { ZoneConfig } from '@/domain/config/types';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { AudioType } from '@/domain/zones/enums';
+import { SONOS_OWN_CONTAINER_SERVICE_ID } from '@/domain/outputs/sonosIdentity';
 import { createLogger } from '@/shared/logging/logger';
 import type { ZoneStateController } from '@/application/zones/state/StateController';
 
@@ -348,7 +349,19 @@ export class SonosStateController implements ZoneStateController {
     const container = metadata?.container;
 
     const trackMediaUrl = cleanString(track?.mediaUrl);
-    if (trackMediaUrl) {
+    if (isOwnStream(trackMediaUrl, container)) {
+      // Our own stream lives exactly as long as the session that feeds it, so it is never a
+      // reload target: once that session ends the URL leads nowhere, and an older external URL
+      // still in the cache is not what the zone was last playing either (#418).
+      if (this.lastTrackMediaUrl) {
+        this.log.debug('sonos play-cache cleared; speaker is playing our own stream', {
+          zoneId: this.zone.id,
+          mediaUrl: trackMediaUrl || null,
+        });
+      }
+      this.lastTrackMediaUrl = null;
+      this.lastTrackTitle = null;
+    } else if (trackMediaUrl) {
       const isNew = this.lastTrackMediaUrl !== trackMediaUrl;
       this.lastTrackMediaUrl = trackMediaUrl;
       this.lastTrackTitle = cleanString(track?.name) || cleanString(container?.name) || null;
@@ -464,14 +477,23 @@ export class SonosStateController implements ZoneStateController {
    *   own HTTP stream, because Sonos does not pause a length-less stream, it drops it. There is no
    *   command that revives that, so the caller must hand the play back to local playback (#345).
    *
-   * Note that `lastTrackMediaUrl` only ever fills for sources Sonos loaded itself: for our own
-   * stream the device reports an empty currentItem, so `reload` is in practice the external-source
-   * path. Music Assistant reaches the same conclusion from the other side and never asks the
+   * Our own stream is never resumed or reloaded, whatever the speaker reports for it: the
+   * speaker can name its URL (and the title of whatever the radio played last), but that URL is
+   * dead once the session behind it ended, so `reload` is strictly the external-source path
+   * (#418). Music Assistant reaches the same conclusion from the other side and never asks the
    * speaker to resume its own queue content either (providers/sonos/player.py).
    */
   private resolvePlayStrategy(
     group: AnySonosGroup,
   ): { kind: 'resume' } | { kind: 'reload'; url: string } | { kind: 'none'; reason: string } {
+    const metadata = group.playbackMetadataStatus;
+    if (isOwnStream(cleanString(metadata?.currentItem?.track?.mediaUrl), metadata?.container)) {
+      // The speaker still holds our stream, but play only reaches this controller once the local
+      // session behind it is gone, so neither resuming nor reloading that URL can produce sound:
+      // the speaker flips to PLAYING and drops back to STOPPED (#418). Local playback restarts the
+      // current queue item instead.
+      return { kind: 'none', reason: 'own-stream-ended' };
+    }
     const rawState = String(group.playbackState ?? '');
     if (rawState.toUpperCase().includes('PAUSED')) {
       return { kind: 'resume' };
@@ -585,6 +607,29 @@ function mapPlaybackState(state: string | null | undefined): ZoneState['mode'] {
   if (token.includes('PAUSED')) return 'pause';
   if (token.includes('PLAYING') || token.includes('BUFFERING')) return 'play';
   return 'stop';
+}
+
+/**
+ * True when the speaker is playing something this server streams to it. The container identity
+ * is what SonosOutput's playStreamUrl path sets; the `/streams/` path also catches the SOAP path
+ * (including its `x-rincon-mp3radio://` form), which carries no identity of ours.
+ */
+function isOwnStream(
+  mediaUrl: string,
+  container: { id?: { serviceId?: string | null } | null } | null | undefined,
+): boolean {
+  if (cleanString(container?.id?.serviceId) === SONOS_OWN_CONTAINER_SERVICE_ID) {
+    return true;
+  }
+  if (!mediaUrl) {
+    return false;
+  }
+  try {
+    const parsed = new URL(mediaUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, 'http://'));
+    return parsed.pathname.startsWith('/streams/');
+  } catch {
+    return false;
+  }
 }
 
 function cleanString(value: unknown): string {

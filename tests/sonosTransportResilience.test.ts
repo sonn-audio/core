@@ -229,3 +229,48 @@ test('sonos state controller reloads an idle speaker through the media url it re
   assert.equal(reloads[0]?.url, 'http://speaker/radio.mp3');
   assert.equal(reloads[0]?.container.name, 'Some Station');
 });
+
+test('sonos state controller never reloads our own stream once its session is gone', async () => {
+  // Issue #418: a radio favourite had played through our own stream, so the speaker reported our
+  // URL (and the last song title) as its media. After the session ended, play reloaded that dead
+  // URL: Loxone showed play, the speaker stayed silent and fell back to STOPPED.
+  const controller = createStateController();
+  const reloads: string[] = [];
+  let played = 0;
+  const group: any = {
+    playbackState: 'PLAYBACK_STATE_PLAYING',
+    positionSeconds: 0,
+    playbackMetadataStatus: {
+      container: { name: 'Ibiza Live Radio', id: { serviceId: 'sonn', objectId: 'sonn:1:42' } },
+      currentItem: {
+        track: { name: 'Sargasso Sea', mediaUrl: 'http://192.168.1.10:7090/streams/1/current.mp3?prime=1' },
+      },
+    },
+    play: async () => {
+      played += 1;
+    },
+    playStreamUrl: async (url: string) => {
+      reloads.push(url);
+    },
+  };
+  controller.client = { player: { group } };
+  // An older external source must not be what play falls back to either.
+  controller.lastTrackMediaUrl = 'x-sonosapi-stream:s1234?sid=254';
+  controller.buildSnapshotPatch();
+  assert.equal(controller.lastTrackMediaUrl, null, 'our own URL is never cached as a reload target');
+
+  group.playbackState = 'PLAYBACK_STATE_IDLE';
+  assert.equal(controller.handleCommand('play'), false, 'declined: local playback restarts the item');
+
+  // The SOAP path carries no container identity; the stream path alone gives it away.
+  group.playbackState = 'PLAYBACK_STATE_PAUSED';
+  group.playbackMetadataStatus = {
+    container: { name: 'Ibiza Live Radio' },
+    currentItem: { track: { mediaUrl: 'x-rincon-mp3radio://192.168.1.10:7090/streams/1/current.mp3' } },
+  };
+  assert.equal(controller.handleCommand('play'), false);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(reloads, []);
+  assert.equal(played, 0);
+});
