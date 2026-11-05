@@ -5,6 +5,7 @@ import {
   expandPresetOutlines,
   listPlayablePresets,
 } from '../src/adapters/content/providers/tunein/tuneinPresets';
+import { TuneInProvider } from '../src/adapters/content/providers/tunein/tuneinProvider';
 
 // TuneIn returns an account's presets in three different layouts and we only parsed the
 // flat one, so accounts that file favourites in folders — or whose listing arrives grouped
@@ -194,4 +195,12 @@ test('a logo that is not a url is left off rather than rendered as a broken imag
   const [preset] = listPlayablePresets(outlines);
   assert.equal(preset?.logo, undefined);
   assert.equal(preset?.bitrate, undefined);
+});
+
+test('without a TuneIn account the presets list is empty, not a stock demo list', async () => {
+  const store = { list: async () => [] } as unknown as ConstructorParameters<typeof TuneInProvider>[0];
+  const provider = new TuneInProvider(store);
+  const folder = await provider.getFolder('local', 'start', 0, 50);
+  assert.equal(folder?.totalitems, 0);
+  assert.deepEqual(folder?.items, []);
 });

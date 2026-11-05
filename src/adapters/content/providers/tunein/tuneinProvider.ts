@@ -13,27 +13,6 @@ import { resizeTuneInCoverUrl, COVER_ART_BROWSE_SIZE } from '@/shared/coverArt';
 const DEFAULT_ICON =
   'https://extended-app-content.s3.eu-central-1.amazonaws.com/audioZone/services/Icon-TuneIn.svg';
 
-const DEMO_STATIONS: RadioStation[] = [
-  {
-    id: 'tunein_s6707',
-    name: 'BBC Radio 1',
-    stream: 'http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one',
-    coverurl: DEFAULT_ICON,
-  },
-  {
-    id: 'tunein_s2475',
-    name: 'NPO Radio 2',
-    stream: 'http://icecast.omroep.nl/radio2-bb-mp3',
-    coverurl: DEFAULT_ICON,
-  },
-  {
-    id: 'tunein_s129237',
-    name: 'KEXP 90.3 FM',
-    stream: 'http://live-mp3-128.kexp.org/kexp128.mp3',
-    coverurl: DEFAULT_ICON,
-  },
-];
-
 const log = createLogger('Content', 'TuneIn');
 
 export interface TuneInProviderOptions {
@@ -170,8 +149,11 @@ export class TuneInProvider {
 
   private async getLocalStations(): Promise<RadioStation[]> {
     const username = this.username;
+    // Without an account there are no presets to show. The list used to fall
+    // back to a few hard-coded stations nobody had chosen and nobody could
+    // remove, one of which no longer even streamed (issue #427).
     if (!username) {
-      return DEMO_STATIONS;
+      return [];
     }
 
     const cached = this.localStationsCache;
