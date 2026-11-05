@@ -275,6 +275,57 @@ test('sonos state controller never reloads our own stream once its session is go
   assert.equal(played, 0);
 });
 
+test('a sonos group leader pulls its members back in on every play over S2 (#411)', async () => {
+  // A fixed Loxone group is formed once; the speakers can be used on their own afterwards. The
+  // SOAP play path re-joined the members each time, the S2 path (the normal one) never did.
+  const synced: number[] = [];
+  const output = new SonosOutput(
+    7,
+    'Wohnzimmer',
+    { host: '192.168.20.40' },
+    {
+      sonosGroup: {
+        register: () => undefined,
+        unregister: () => undefined,
+        tryJoinLeader: async () => false,
+        syncGroupMembers: async (leader: any) => {
+          synced.push(leader.getZoneId());
+        },
+      },
+      config: { getSystemConfig: () => ({ audioserver: { ip: '192.168.20.2' } }) },
+    } as any,
+  ) as any;
+  output.playViaS2 = async () => true;
+  output.applyPendingVolume = async () => undefined;
+
+  await output.play({
+    zoneId: 7,
+    playbackSource: 'radio://station',
+    stream: { id: 's1', url: '/streams/7/current.mp3' },
+  } as any);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(synced, [7]);
+});
+
+test('a sonos member already in the leader group is not asked to join again', async () => {
+  const output = new SonosOutput(8, 'Küche', { host: '192.168.20.41' }, {
+    sonosGroup: { register: () => undefined, unregister: () => undefined },
+  } as any) as any;
+  let joins = 0;
+  output.s2Client = {
+    player: {
+      group: { id: 'RINCON_LEADER:12' },
+      joinGroup: async () => {
+        joins += 1;
+      },
+    },
+  };
+  assert.equal(await output.joinToLeaderS2('RINCON_LEADER:12'), true);
+  assert.equal(joins, 0);
+  assert.equal(await output.joinToLeaderS2('RINCON_OTHER:3'), true);
+  assert.equal(joins, 1);
+});
+
 test('sonos state controller tears down a client whose socket is already gone (#413)', async () => {
   // node-sonos unsubscribes its groups before closing the socket, which throws once the socket is
   // gone. The listen loop was then never stopped, its promise never settled, and the reconnect

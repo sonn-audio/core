@@ -266,6 +266,15 @@ export class SonosOutput implements ZoneOutput {
       if (s2Played) {
         this.playInProgress = false;
         void this.applyPendingVolume('play-s2');
+        // Members are pulled into the leader's Sonos group on every play, as the SOAP path below
+        // does. The group can have come apart on the speakers since it was formed (used on their
+        // own, regrouped in the Sonos app), and only a play is a moment to put it back (#411).
+        void this.ports.sonosGroup.syncGroupMembers(this).catch((err: unknown) => {
+          this.log.debug('sonos group sync after play failed', {
+            zoneId: this.zoneId,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
         return;
       }
       if (!(await this.ensureEndpoints())) {
@@ -420,8 +429,13 @@ export class SonosOutput implements ZoneOutput {
   public async joinToLeaderS2(groupId: string): Promise<boolean> {
     // Bail out before the retry loop when there is no websocket API at all (S1, or a device
     // that never connected): the caller falls back to SOAP grouping and should not wait.
-    if (!(await this.ensureS2Client())?.player) {
+    const client = await this.ensureS2Client();
+    if (!client?.player) {
       return false;
+    }
+    if (client.player.group?.id === groupId) {
+      // Already there; every play re-asserts the group, so this is the common case.
+      return true;
     }
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (await this.tryS2Player('join', (player) => player.joinGroup(groupId))) {
