@@ -182,3 +182,31 @@ test('sendspin rc1: a client held idle for pairing is reported, and cleared once
     core.restore();
   }
 });
+
+test('sendspin rc1: the format a player states it prefers is the one advertised and streamed', () => {
+  const core = stubCore();
+  try {
+    const clientId = 'rc1-preferred-format';
+    const { output, hooks, session } = build({ clientId });
+    let preferred: unknown = null;
+    const live = session(clientId, { getPlayerPreferredFormat: () => preferred });
+    hooks.get(clientId)?.onIdentified?.(live, null);
+    const before = output.getPreferredOutput();
+
+    // Stated in client/state while nothing streams: node-sendspin fires no onFormatChanged then.
+    preferred = { codec: 'pcm', sampleRate: 96000, channels: 2, bitDepth: 24 };
+    assert.deepEqual(
+      { sampleRate: output.getPreferredOutput().sampleRate, bitDepth: output.getPreferredOutput().bitDepth },
+      { sampleRate: 96000, bitDepth: 24 },
+      `still advertising ${before.sampleRate}/${before.bitDepth} after the player stated its preference`,
+    );
+    // startStream takes it as a request from the client, and remembers it like one.
+    assert.equal(output.rememberPreferredFormat()?.sampleRate, 96000);
+    assert.equal(output.lastClientNegotiatedFormat?.sampleRate, 96000);
+
+    preferred = null;
+    assert.equal(output.rememberPreferredFormat(), null, 'no preference stated, nothing requested');
+  } finally {
+    core.restore();
+  }
+});

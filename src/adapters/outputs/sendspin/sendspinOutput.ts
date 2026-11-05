@@ -753,7 +753,10 @@ export class SendspinOutput implements ZoneOutput {
     // audible dmix loop. lastClientNegotiatedFormat survives reconnects; the
     // persisted store survives lox restarts (first-play-after-restart fix).
     const fmt =
-      this.lastClientNegotiatedFormat ?? getStoredClientFormat(this.clientId) ?? this.negotiatedFormat;
+      this.clientPreferredFormat() ??
+      this.lastClientNegotiatedFormat ??
+      getStoredClientFormat(this.clientId) ??
+      this.negotiatedFormat;
     const preferredPrebuffer = this.computePrebufferBytes(fmt);
     return {
       profile:
@@ -767,6 +770,20 @@ export class SendspinOutput implements ZoneOutput {
       bitDepth: fmt.bitDepth,
       prebufferBytes: preferredPrebuffer,
     };
+  }
+
+  /**
+   * The format an rc1 player says it prefers in its `client/state`, or null when it states none.
+   *
+   * rc1 folded `stream/request-format` into that state, and the server should stream it whenever
+   * it can. node-sendspin reports a change through `onFormatChanged` only while a stream is up;
+   * one stated while idle is only readable here, and would otherwise lose to the format
+   * remembered from an earlier session. It counts as a request from the client, so it is not
+   * second-guessed by source-rate matching. The codec still goes through `normalizeFormat`.
+   */
+  private clientPreferredFormat(): SendspinFormat | null {
+    const preferred = this.activeSession?.getPlayerPreferredFormat?.() ?? null;
+    return preferred ? this.normalizeFormat(preferred) : null;
   }
 
   /**
@@ -1302,6 +1319,29 @@ export class SendspinOutput implements ZoneOutput {
     sendspinOutputsByZoneId.delete(this.zoneId);
   }
 
+  /**
+   * The rc1 player's stated format preference, remembered like a negotiated one so it survives a
+   * reconnect and a restart (see `onFormatChanged`). Null when the client states none.
+   */
+  private rememberPreferredFormat(): SendspinFormat | null {
+    const preferred = this.clientPreferredFormat();
+    if (!preferred) {
+      return null;
+    }
+    const known = this.lastClientNegotiatedFormat;
+    if (
+      !known ||
+      known.codec !== preferred.codec ||
+      known.sampleRate !== preferred.sampleRate ||
+      known.channels !== preferred.channels ||
+      known.bitDepth !== preferred.bitDepth
+    ) {
+      this.lastClientNegotiatedFormat = preferred;
+      rememberClientFormat(this.clientId, preferred);
+    }
+    return preferred;
+  }
+
   private async startStream(
     options: {
       preserveAnchor?: boolean;
@@ -1336,12 +1376,13 @@ export class SendspinOutput implements ZoneOutput {
         });
         return;
       }
-      let chosenFormat = this.normalizeFormat(options.formatOverride ?? this.negotiatedFormat);
+      const requested = options.formatOverride ?? this.rememberPreferredFormat();
+      let chosenFormat = this.normalizeFormat(requested ?? this.negotiatedFormat);
       // Prefer the source's native rate/depth when the client can accept it, so a
       // lossless file reaches the speaker without a resample. Explicit overrides
-      // (a client-driven stream/request-format) win — the client asked for that
-      // format specifically, so we must not second-guess it.
-      if (!options.formatOverride) {
+      // (a client-driven stream/request-format, or an rc1 player's stated preference)
+      // win — the client asked for that format specifically, so we must not second-guess it.
+      if (!requested) {
         chosenFormat = await this.applyBitPerfectFormat(chosenFormat, current.playbackSource);
       }
       this.negotiatedFormat = chosenFormat;
