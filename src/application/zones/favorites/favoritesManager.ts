@@ -432,8 +432,17 @@ function extractProviderId(audiopath: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * Put the Spotify account back on a Spotify favourite.
+ *
+ * Only a `spotify:` path has an account to restore. Favourites saved before `add` stopped
+ * borrowing the playing account's id still carry an owner on whatever they are -- a custom
+ * stream or a TuneIn station saved while Spotify was on -- and wrapping that URL as
+ * `spotify@<owner>:http://…` handed the engine an address it cannot open, so the favourite
+ * answered with "Playback unavailable" while the same station played fine from its list (#415).
+ */
 function attachProviderToAudiopath(audiopath: string, providerId?: string): string {
-  if (!audiopath || !providerId) {
+  if (!audiopath || !providerId || !/^spotify:/i.test(audiopath)) {
     return audiopath;
   }
   return `spotify@${providerId}:${audiopath.replace(/^spotify:/i, '')}`;

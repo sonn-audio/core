@@ -368,3 +368,54 @@ test('a non-spotify favorite does not inherit the playing spotify account', asyn
     assert.equal(await favoritesManager.getAudiopathForFavorite(28, spotify.id), 'spotify@acct-1:album:111');
   });
 });
+
+test('a stream favourite that carries a stale owner plays its own url, not a spotify one', async () => {
+  // Favourites saved while Spotify was playing borrowed its account as their owner. Putting that
+  // owner back as `spotify@<owner>:` turned a custom stream or TuneIn station into an address the
+  // engine cannot open, and the room answered "Playback unavailable" (#415).
+  await withTempCwd(async () => {
+    const stream = 'http://example.com/bbc.m3u8?station=bbc_radio_two';
+    const station = 'tunein:station:b64_aHR0cDovL2V4YW1wbGUuY29tL3JhZGlv';
+    const item = (id: number, audiopath: string, type: string) => ({
+      id,
+      slot: id,
+      plus: true,
+      name: `fav ${id}`,
+      title: `fav ${id}`,
+      audiopath,
+      type,
+      coverurl: '',
+      artist: '',
+      album: '',
+      service: 'custom',
+      serviceType: 3,
+      owner: 'md123121',
+    });
+    await fs.mkdir(path.join(process.cwd(), 'data', 'favorites'), { recursive: true });
+    await fs.writeFile(
+      path.join(process.cwd(), 'data', 'favorites', '12.json'),
+      JSON.stringify({
+        id: 12,
+        type: 4,
+        start: 0,
+        totalitems: 3,
+        items: [
+          item(1, stream, 'custom_stream'),
+          item(2, station, 'tunein'),
+          item(3, 'spotify:playlist:abc', 'spotify_playlist'),
+        ],
+      }),
+    );
+
+    const favoritesManager = createFavoritesManager({
+      notifier: { notifyRoomFavoritesChanged: () => {} } as any,
+      contentPort: { resolveMetadata: async () => null } as any,
+    });
+    favoritesManager.initOnce({ zoneManager: { getState: () => undefined } as any });
+
+    assert.equal(await favoritesManager.getAudiopathForFavorite(12, 1), stream);
+    assert.equal(await favoritesManager.getAudiopathForFavorite(12, 2), station);
+    // A Spotify favourite still gets its account back.
+    assert.equal(await favoritesManager.getAudiopathForFavorite(12, 3), 'spotify@md123121:playlist:abc');
+  });
+});
