@@ -63,6 +63,11 @@ export class SqueezeliteOutput implements ZoneOutput {
     return true;
   }
 
+  /** A member pauses alone and sits the group out until it is played again (#409). */
+  public supportsMemberPause(): boolean {
+    return true;
+  }
+
   private readonly log = createLogger('Output', 'Squeezelite');
   private readonly normalizedPlayerId: string;
   private readonly normalizedPlayerName: string;

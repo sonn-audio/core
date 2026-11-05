@@ -173,6 +173,16 @@ export interface ZoneOutput {
    */
   supportsNativeGrouping?(): boolean;
   /**
+   * Whether one member of this protocol's group can be paused on its own while the rest
+   * play on, and be brought back by playing it again.
+   *
+   * A member of such a group has no session of its own: it plays the leader's stream, so
+   * the zone hands its pause and play straight to the output (`pause`/`resume` with no
+   * session) instead of looking for something of its own to pause or restart. An output
+   * that says nothing here leaves member transport to the zone as before.
+   */
+  supportsMemberPause?(): boolean;
+  /**
    * Optional timing relationship with the device, for outputs that have one to report.
    *
    * Only protocols that schedule audio against a shared clock can answer this — Sendspin

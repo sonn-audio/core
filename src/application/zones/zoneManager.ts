@@ -714,8 +714,80 @@ export class ZoneManager {
       if (shouldUseExternalController && this.stateControllers.handleCommand(zoneId, command, payload)) {
         return;
       }
+      if (this.routeGroupMemberTransport(ctx, command)) {
+        return;
+      }
     }
     this.playbackCoordinator.handleCommand(zoneId, command, payload);
+  }
+
+  /**
+   * Pause and play of one member of a group whose protocol can pause a member alone.
+   *
+   * Such a member has no session of its own — it plays the leader's stream — so the usual
+   * path had nothing to pause and nowhere to send it: the zone reported `pause` while its
+   * speaker played on, unless an output happened to be left active from earlier, in which
+   * case the output paused the whole group under a leader that kept running. And the
+   * leader's next `play` was mirrored straight back onto it at the following track. Play
+   * was no better: with no session it went looking in the member's own queue, where the
+   * mirrored audiopath of the leader is, instead of back into the group (#409).
+   *
+   * So a member paused while its leader plays is handed to its output and held: the
+   * leader's `play` is no longer mirrored onto it until it is played itself, which brings
+   * it back through the same output. A pause while the leader is not playing is the group
+   * pausing as a whole (the grouped command pauses every zone in turn) and is left alone.
+   */
+  private routeGroupMemberTransport(ctx: ZoneContext, command: string): boolean {
+    const zoneId = ctx.id;
+    const isStop = command === 'stop' || command === 'off';
+    const isPlay = command === 'play' || command === 'resume';
+    if (command !== 'pause' && !isStop && !isPlay) {
+      return false;
+    }
+    const output = ctx.outputs.find((candidate) => candidate.supportsMemberPause?.() === true);
+    const group = getGroupByZone(zoneId);
+    const isFollower =
+      Boolean(output && group && group.leader !== zoneId && group.members.length > 1) &&
+      !this.audioManager.getSession(zoneId);
+    if (isStop) {
+      // A stopped member has nothing left to sit out; the zone's own stop runs as usual.
+      if (this.groupingCoordinator.releaseMember(zoneId) && isFollower) {
+        void this.runMemberTransport(zoneId, () => output!.stop(null));
+      }
+      return false;
+    }
+    if (!isFollower || !group || !output) {
+      return false;
+    }
+    if (command === 'pause') {
+      if (this.getState(group.leader)?.mode !== 'play') {
+        return false;
+      }
+      this.groupingCoordinator.holdMember(zoneId, group.leader);
+      void this.runMemberTransport(zoneId, () => output.pause(null));
+      this.applyPatch(zoneId, { mode: 'pause', clientState: 'on', power: 'on' });
+      return true;
+    }
+    if (!this.groupingCoordinator.releaseMember(zoneId)) {
+      return false;
+    }
+    void this.runMemberTransport(zoneId, () => output.resume(null));
+    this.applyPatch(zoneId, { mode: 'play', clientState: 'on', power: 'on' });
+    return true;
+  }
+
+  private async runMemberTransport(
+    zoneId: number,
+    action: () => Promise<void> | void,
+  ): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      this.log.warn('group member transport failed', {
+        zoneId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   public setPower(zoneId: number, signal: PowerSignal): boolean {

@@ -1070,6 +1070,101 @@ test('queue refresh of current item does not wipe live metadata', async () => {
   setNotifier(noopNotifier);
 });
 
+test('a squeezelite member paused on its own stays paused through the next track (#409)', async () => {
+  // A member of a squeezelite group has no session: it plays the leader's stream. Its
+  // pause used to find nothing of its own to pause (or paused the whole group), and the
+  // leader's `play` at the next track was mirrored straight back onto it.
+  const { zoneManager, groupTracker } = await getZoneHarness();
+  const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
+  const proto = SqueezeliteOutput.prototype as unknown as Record<'pause' | 'resume', unknown>;
+  const original = { pause: proto.pause, resume: proto.resume };
+  const calls: string[] = [];
+  proto.pause = async function (this: { zoneId: number }) {
+    calls.push(`${this.zoneId}:pause`);
+  };
+  proto.resume = async function (this: { zoneId: number }) {
+    calls.push(`${this.zoneId}:resume`);
+  };
+  const LEADER = 31;
+  const MEMBER = 32;
+  const zone = (id: number, name: string): ZoneConfig => ({
+    ...createZoneConfig(id, name),
+    transports: [{ id: 'squeezelite', playerId: `aa:bb:cc:00:00:${id}` } as never],
+  });
+  try {
+    await zoneManager.replaceAll([zone(LEADER, 'Living'), zone(MEMBER, 'Kitchen')], { spotify: {} });
+    groupTracker.upsertGroup({
+      leader: LEADER,
+      members: [MEMBER],
+      backend: 'internal',
+      externalId: 'group-409',
+      source: 'manual',
+    });
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the member follows the leader');
+
+    zoneManager.handleCommand(MEMBER, 'pause');
+    assert.deepEqual(calls, [`${MEMBER}:pause`], 'the pause reaches the member output');
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause');
+    assert.equal(zoneManager.getState(LEADER)?.mode, 'play', 'the leader plays on');
+
+    // The next track starts on the leader.
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'Two' }, true);
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause', 'the member stays paused');
+    assert.equal(zoneManager.getState(MEMBER)?.title, 'Two', 'while still showing the group');
+
+    zoneManager.handleCommand(MEMBER, 'play');
+    assert.deepEqual(calls, [`${MEMBER}:pause`, `${MEMBER}:resume`], 'play brings it back');
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+
+    // Back in the group: the leader's state is mirrored again.
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause');
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+  } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    proto.pause = original.pause;
+    proto.resume = original.resume;
+  }
+});
+
+test('a pause of the whole squeezelite group is not a member stepping out', async () => {
+  // The grouped pause sends pause to every zone in turn, leader first. By the time the
+  // member's pause arrives the leader is paused, so the member must not be held out of
+  // the group play that follows.
+  const { zoneManager, groupTracker } = await getZoneHarness();
+  const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
+  const proto = SqueezeliteOutput.prototype as unknown as Record<'pause' | 'resume', unknown>;
+  const original = { pause: proto.pause, resume: proto.resume };
+  proto.pause = async () => undefined;
+  proto.resume = async () => undefined;
+  const LEADER = 33;
+  const MEMBER = 34;
+  const zone = (id: number, name: string): ZoneConfig => ({
+    ...createZoneConfig(id, name),
+    transports: [{ id: 'squeezelite', playerId: `aa:bb:cc:00:00:${id}` } as never],
+  });
+  try {
+    await zoneManager.replaceAll([zone(LEADER, 'Living'), zone(MEMBER, 'Kitchen')], { spotify: {} });
+    groupTracker.upsertGroup({
+      leader: LEADER,
+      members: [MEMBER],
+      backend: 'internal',
+      externalId: 'group-409b',
+      source: 'manual',
+    });
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    zoneManager.handleCommand(MEMBER, 'pause');
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the group play reaches the member');
+  } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    proto.pause = original.pause;
+    proto.resume = original.resume;
+  }
+});
+
 test('group join/leave emits audio sync payloads', async () => {
   const harness = await getZoneHarness();
   const {
