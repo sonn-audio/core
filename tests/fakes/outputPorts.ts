@@ -213,6 +213,11 @@ export const noopSqueezeliteGroupController: SqueezeliteGroupCoordinator = {
   }),
   orchestrateGroupEnqueue: async () => false,
   isZoneResyncing: () => false,
+  holdMember: () => {
+    /* noop */
+  },
+  releaseMember: () => false,
+  isMemberHeld: () => false,
   orchestrateGroupPlayback: async () => false,
   orchestrateGroupPause: async () => false,
   orchestrateGroupResume: async () => false,

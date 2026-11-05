@@ -104,6 +104,7 @@ function harness(
       notifyPlaybackTick: () => undefined,
       orchestrateGroupPlayback: async () => true,
       orchestrateGroupEnqueue: async () => true,
+      isMemberHeld: () => false,
     },
     zoneAudioPrefs: {
       getEffectiveOutputSettings: () => ({ sampleRate: 44100, channels: 2, pcmBitDepth: 16 }),

@@ -266,6 +266,16 @@ export class SqueezeliteOutput implements ZoneOutput {
     // plays its own stream, so it pauses itself — and when the orchestration finds
     // too few connected players to coordinate, pausing itself is still the job.
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
+      if (this.zoneId !== group.leader && this.isLeaderPlaying(group.leader)) {
+        // A member paused on its own while the leader plays: only this room goes quiet.
+        // Pausing the whole group here silenced the leader too while its session ran
+        // on, and without the hold the next coordinated start unpaused this member
+        // again at the following track (#409).
+        this.ports.squeezeliteGroup.holdMember(this.zoneId);
+        const own = this.resolvePlayer();
+        if (own) await own.pause();
+        return;
+      }
       if (await this.ports.squeezeliteGroup.orchestrateGroupPause(group.leader)) {
         return;
       }
@@ -278,6 +288,10 @@ export class SqueezeliteOutput implements ZoneOutput {
   public async resume(session: PlaybackSession | null): Promise<void> {
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
+      if (this.zoneId !== group.leader && this.ports.squeezeliteGroup.releaseMember(this.zoneId)) {
+        await this.rejoinAfterHold();
+        return;
+      }
       const ownPlayer = this.resolvePlayer();
       if (ownPlayer?.state === PlayerState.STOPPED) {
         // Player was stopped (e.g. by a local TTS override on this zone). A bare
@@ -317,6 +331,8 @@ export class SqueezeliteOutput implements ZoneOutput {
       } else {
         // Member stops only itself. Orchestrating a full group stop would silence
         // all zones, which is wrong for local overrides like TTS on a single zone.
+        // A stopped member has nothing left to hold: it rejoins with the next start.
+        this.ports.squeezeliteGroup.releaseMember(this.zoneId);
         const player = this.resolvePlayer();
         if (player) await player.stop().catch(() => undefined);
       }
@@ -414,6 +430,7 @@ export class SqueezeliteOutput implements ZoneOutput {
     try {
       this.clearPendingAutostart();
       this.ports.groupTracker.clearJoinedLeader(this.zoneId);
+      this.ports.squeezeliteGroup.releaseMember(this.zoneId);
       const player = this.resolvePlayer();
       if (!player) return;
       this.log.debug('squeezelite member dropped from group; stopping', {
@@ -424,6 +441,30 @@ export class SqueezeliteOutput implements ZoneOutput {
     } finally {
       this.stoppingAfterDrop = false;
     }
+  }
+
+  private isLeaderPlaying(leaderZoneId: number): boolean {
+    return this.ports.audioManager.getSession(leaderZoneId)?.state === 'playing';
+  }
+
+  /**
+   * Bring a member that was paused on its own back into its group.
+   *
+   * Its buffer stopped at the moment it was paused while the leader played on, so simply
+   * unpausing it would play stale audio out of step. With the leader playing it rejoins the
+   * way a reconnecting member does: the group is restarted on the leader's stream so every
+   * player starts from the same byte. With the leader not playing there is nothing to join
+   * yet, so the stale buffer is dropped and the member comes along with the next start.
+   */
+  private async rejoinAfterHold(): Promise<void> {
+    const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
+    if (group && this.isLeaderPlaying(group.leader)) {
+      this.lastJoinAt = 0;
+      await this.maybeJoinLeader('member_resume');
+      return;
+    }
+    const player = this.resolvePlayer();
+    if (player) await player.stop().catch(() => undefined);
   }
 
   private async ensurePlayer(): Promise<SlimClient | null> {
@@ -516,6 +557,10 @@ export class SqueezeliteOutput implements ZoneOutput {
   private async maybeResyncGroup(source: 'group_change'): Promise<void> {
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (!group || !this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
+      return;
+    }
+    // A member paused on its own stays out until it is played again.
+    if (this.ports.squeezeliteGroup.isMemberHeld(this.zoneId)) {
       return;
     }
     const leaderZoneId = group.leader;
@@ -639,12 +684,16 @@ export class SqueezeliteOutput implements ZoneOutput {
     await this.play(session);
   }
 
-  private async maybeJoinLeader(source: 'group_change' | 'player_connected'): Promise<void> {
+  private async maybeJoinLeader(
+    source: 'group_change' | 'player_connected' | 'member_resume',
+  ): Promise<void> {
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (
       !group ||
       group.leader === this.zoneId ||
-      !this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)
+      !this.ports.squeezeliteGroup.isSyncGroup(this.zoneId) ||
+      // A member paused on its own does not rejoin because its player reconnected.
+      this.ports.squeezeliteGroup.isMemberHeld(this.zoneId)
     ) {
       return;
     }

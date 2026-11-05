@@ -53,6 +53,16 @@ export type SqueezeliteGroupCoordinator = {
   notifyPlaybackTick: (zoneId: number) => void;
   /** True while a resync pause-and-unpause is in flight for the given zone. */
   isZoneResyncing: (zoneId: number) => boolean;
+  /**
+   * Keep a member that was paused on its own out of the group's orchestration, so the
+   * next coordinated start (a track change, a resync) does not unpause it. The rest of
+   * the group plays on. Only a member can be held; the leader pauses the whole group.
+   */
+  holdMember: (zoneId: number) => void;
+  /** Let a held member take part again. True when it was held. */
+  releaseMember: (zoneId: number) => boolean;
+  /** Whether this member was paused on its own and is sitting the group out. */
+  isMemberHeld: (zoneId: number) => boolean;
 };
 
 type PendingGroup = {
@@ -77,6 +87,9 @@ class SqueezeliteGroupController {
   private readonly doNotResyncBefore = new Map<string, number>();
   private readonly lastTickAt = new Map<string, number>();
   private readonly resyncingZones = new Set<number>();
+  // Members paused on their own, keyed to the leader they were paused under. They stay
+  // out of every coordinated start until they are played again or leave that group.
+  private readonly heldMembers = new Map<number, number>();
   // Per-pair elapsed baseline: when a member joins with a different elapsed counter
   // (e.g. 0ms while the leader is at 133 000ms due to CROSSFADE carry-over), we
   // record the initial offset so corrections are applied relative to that baseline
@@ -106,6 +119,40 @@ class SqueezeliteGroupController {
 
   public unregister(zoneId: number): void {
     this.participants.delete(zoneId);
+    this.heldMembers.delete(zoneId);
+  }
+
+  public holdMember(zoneId: number): void {
+    const group = getGroupByZone(zoneId);
+    if (!group || group.leader === zoneId) {
+      return;
+    }
+    this.heldMembers.set(zoneId, group.leader);
+    this.log.debug('squeezelite member paused on its own; holding it out of the group', {
+      zoneId,
+      leaderZoneId: group.leader,
+    });
+  }
+
+  public releaseMember(zoneId: number): boolean {
+    const held = this.isMemberHeld(zoneId);
+    this.heldMembers.delete(zoneId);
+    return held;
+  }
+
+  public isMemberHeld(zoneId: number): boolean {
+    const leaderZoneId = this.heldMembers.get(zoneId);
+    if (leaderZoneId === undefined) {
+      return false;
+    }
+    // A hold belongs to the group it was made in. Once the zone left that group, or
+    // the group got another leader, it means nothing any more.
+    const group = getGroupByZone(zoneId);
+    if (!group || group.leader !== leaderZoneId || group.leader === zoneId) {
+      this.heldMembers.delete(zoneId);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -139,6 +186,7 @@ class SqueezeliteGroupController {
     const expectedZones = new Set<number>([leaderZoneId, ...group.members]);
     const activeZones = new Set<number>();
     for (const memberId of expectedZones) {
+      if (this.isMemberHeld(memberId)) continue;
       const participant = this.participants.get(memberId);
       const player = participant?.getPlayer();
       if (player) {
@@ -257,6 +305,7 @@ class SqueezeliteGroupController {
     const expectedZones = new Set<number>([group.leader, ...group.members]);
     const entries: Array<{ zoneId: number; player: SlimClient }> = [];
     for (const memberId of expectedZones) {
+      if (this.isMemberHeld(memberId)) continue;
       const participant = this.participants.get(memberId);
       const player = participant?.getPlayer();
       if (player) {
@@ -397,6 +446,7 @@ class SqueezeliteGroupController {
     const memberIds = new Set<number>([leaderZoneId, ...group.members]);
     for (const memberId of memberIds) {
       if (memberId === leaderZoneId) continue;
+      if (this.isMemberHeld(memberId)) continue;
       const member = this.participants.get(memberId)?.getPlayer();
       const memberLatency = this.participants.get(memberId)?.getLatencyMs?.() ?? 0;
       if (!member || member.state !== PlayerState.PLAYING) continue;
@@ -551,6 +601,8 @@ class SqueezeliteGroupController {
   ): Promise<boolean> {
     const entries: Array<{ zoneId: number; player: SlimClient; latencyMs: number }> = [];
     for (const zoneId of zones) {
+      // A member paused on its own since this start was prepared stays paused.
+      if (this.isMemberHeld(zoneId)) continue;
       const participant = this.participants.get(zoneId);
       const player = participant?.getPlayer();
       if (player) {

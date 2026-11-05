@@ -202,6 +202,7 @@ import './browserZoneNaming.test';
 import './mqttCommands.test';
 import './squeezeliteReconnect.test';
 import './squeezeliteMixedGroup.test';
+import './squeezeliteMemberPause.test';
 import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
 import './adminZoneStates.test';
