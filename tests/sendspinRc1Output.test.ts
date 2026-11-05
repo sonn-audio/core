@@ -134,3 +134,25 @@ test('sendspin rc1: a pause ends playback but keeps the cover on the client and 
     core.restore();
   }
 });
+
+test('sendspin rc1: a stop withdraws the playback activity, a pause keeps it', async () => {
+  const core = stubCore();
+  try {
+    const { output, hooks, session } = build({ clientId: 'kitchen', satellites: ['kitchen-sub'] });
+    output.isOwner = () => true;
+    output.releaseOwnership = () => {};
+    hooks.get('kitchen-sub')?.onIdentified?.(session('kitchen-sub'), null);
+    core.calls.length = 0;
+
+    await output.pause(null);
+    assert.deepEqual(named(core.calls, 'setPlaybackActive'), [], 'a paused group still holds its clients');
+
+    await output.stop(null);
+    assert.deepEqual(named(core.calls, 'setPlaybackActive'), [
+      ['setPlaybackActive', 'kitchen', false],
+      ['setPlaybackActive', 'kitchen-sub', false],
+    ]);
+  } finally {
+    core.restore();
+  }
+});

@@ -39,6 +39,7 @@ const CORE_METHODS = [
   'setClientMetadata',
   'setClientControllerState',
   'setClientPlaybackState',
+  'setPlaybackActive',
 ] as const;
 
 function recordCore(): { timeline: Timeline; restore: () => void } {
@@ -272,6 +273,26 @@ test('a paused leader ends its members\' playback but leaves their artwork up', 
   }
 });
 
+test('a stopped group lets its members go, a paused one does not', async () => {
+  const rec = recordCore();
+  try {
+    group([MEMBER_A]);
+    sendspinGroupController.register(LEADER, participant('leader'));
+    sendspinGroupController.register(MEMBER_A, participant('a'));
+    await settle();
+    rec.timeline.length = 0;
+
+    sendspinGroupController.broadcastPlaybackState(LEADER, PlaybackStateType.PAUSED, 'g901', 'Zone 901');
+    assert.equal(rec.timeline.filter(([name]) => name === 'setPlaybackActive').length, 0);
+
+    sendspinGroupController.broadcastPlaybackState(LEADER, PlaybackStateType.STOPPED, 'g901', 'Zone 901');
+    assert.deepEqual(rec.timeline.at(-1), ['setPlaybackActive', 'a', false]);
+  } finally {
+    rec.restore();
+    cleanup();
+  }
+});
+
 test('the leader rebuilds the shared format before any member is fed', async () => {
   const rec = recordCore();
   const order: string[] = [];
@@ -333,6 +354,8 @@ test('losing the group stops each member and tells it so', async () => {
       ['sendStreamEnd', 'a'],
       ['sendStreamClear', 'a', ['player']],
       ['setClientPlaybackState', 'a', PlaybackStateType.STOPPED, 'g901', 'Zone 902'],
+      // Alone in a stopped group, it is not held for playback any more.
+      ['setPlaybackActive', 'a', false],
     ]);
   } finally {
     rec.restore();

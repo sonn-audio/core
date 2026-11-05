@@ -2314,7 +2314,23 @@ export class SendspinOutput implements ZoneOutput {
           : PlaybackStateType.STOPPED;
     sendspinCore.setClientPlaybackState(this.activeClientId(), mappedState, groupId, groupName);
     this.ports.sendspinGroup.broadcastPlaybackState(this.zoneId, mappedState, groupId, groupName);
+    if (mappedState === PlaybackStateType.STOPPED) {
+      this.dropPlaybackActivity();
+    }
     this.lastSentPlaybackState = state;
+  }
+
+  /**
+   * The group stopped: withdraw the `playback` activity from the client and its satellites.
+   *
+   * An rc1 client admits the server whose highest-ranked activity wins, so a server that keeps
+   * declaring `playback` while idle keeps another one (Music Assistant, say) from getting the
+   * device. node-sendspin raises it again with the next stream start, and ignores this for a
+   * pre-rc1 client. Not on a pause: a paused group still holds the client.
+   */
+  private dropPlaybackActivity(): void {
+    sendspinCore.setPlaybackActive(this.activeClientId(), false);
+    this.forEachConnectedSatellite((satellite) => sendspinCore.setPlaybackActive(satellite.activeClientId(), false));
   }
 
   private isOwner(): boolean {

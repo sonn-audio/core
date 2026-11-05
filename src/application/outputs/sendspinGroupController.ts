@@ -207,6 +207,11 @@ class SendspinGroupController {
     this.lastPlaybackState.set(leaderZoneId, state);
     this.forEachMemberOutput(leaderZoneId, (output) => {
       sendspinCore.setClientPlaybackState(output.getClientId(), state, groupId, groupName);
+      if (state === PlaybackStateType.STOPPED) {
+        // A stopped group no longer claims its members for playback (see the leader's own
+        // `dropPlaybackActivity`); the next stream start raises it again.
+        sendspinCore.setPlaybackActive(output.getClientId(), false);
+      }
     });
   }
 
@@ -256,6 +261,8 @@ class SendspinGroupController {
       const name = this.zones.getZoneState(memberId)?.name ?? `Zone ${memberId}`;
       const groupId = record.externalId ?? `group-${leader}`;
       sendspinCore.setClientPlaybackState(clientId, PlaybackStateType.STOPPED, groupId, name);
+      // Left alone in a stopped group, the member no longer plays for us.
+      sendspinCore.setPlaybackActive(clientId, false);
     }
   }
 
