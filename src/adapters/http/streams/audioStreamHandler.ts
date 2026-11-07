@@ -419,6 +419,23 @@ export class AudioStreamHandler {
     return String(header ?? '').trim() === '1';
   }
 
+  /**
+   * Whether a sync stream starts with what the session has buffered, rather than live.
+   *
+   * Only when the URL says so outright with `prime=1`; a sync group's music stays unprimed.
+   * An alert played to several players as one stream asks for it (#359): the alert has been
+   * running since it started, the players are handed it only once every zone's alert has
+   * reached its output, and unprimed they would all have come in after its first moments.
+   */
+  private requestsPrimedSync(req: IncomingMessage): boolean {
+    try {
+      const value = new URL(req.url ?? '', 'http://localhost').searchParams.get('prime');
+      return value === '1' || value === 'true';
+    } catch {
+      return false;
+    }
+  }
+
   private shouldPrimeWithBuffer(req: IncomingMessage): boolean {
     const rawUrl = req.url ?? '';
     if (!rawUrl) {
@@ -661,6 +678,7 @@ export class AudioStreamHandler {
         outputSettings,
         session,
         sync.expected,
+        this.requestsPrimedSync(req),
       );
     } catch {
       this.engineUnavailable(res);
@@ -735,6 +753,7 @@ export class AudioStreamHandler {
     outputSettings: AudioOutputSettings,
     session: PlaybackSession,
     expectedCount: number,
+    primeWithBuffer = false,
   ): SyncStreamEntry {
     const existing = this.syncStreams.get(syncId);
     if (existing) {
@@ -746,13 +765,14 @@ export class AudioStreamHandler {
     let audioStream = this.engine.createStream(zoneSessionKey(zoneId), outputProfile, {
       label: clientLabel,
       // Avoid priming a backlog for sync groups; it can overwhelm some clients and cause early underruns.
-      primeWithBuffer: false,
+      // Only a sync stream that asks for it is primed (see `requestsPrimedSync`).
+      primeWithBuffer,
     });
     if (!audioStream && session.playbackSource) {
       this.engine.start(zoneSessionKey(zoneId), session.playbackSource, Array.from(new Set<OutputProfile>([outputProfile, 'pcm'])));
       audioStream = this.engine.createStream(zoneSessionKey(zoneId), outputProfile, {
         label: clientLabel,
-        primeWithBuffer: false,
+        primeWithBuffer,
       });
     }
     if (!audioStream) {

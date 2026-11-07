@@ -109,3 +109,33 @@ test('the zone clock still ends an alert that has no stop window', () => {
   player.emit('ended', null);
   assert.deepEqual(stops, [4]);
 });
+
+test('a sync stream starts primed only when its url asks for it (#359)', () => {
+  const primed: Array<boolean | undefined> = [];
+  const engine = {
+    createStream: (_key: string, _profile: string, options: { primeWithBuffer?: boolean }) => {
+      primed.push(options.primeWithBuffer);
+      return new EventEmitter();
+    },
+  };
+  const handler = new AudioStreamHandler(engine as any, {} as any, {} as any, {} as any) as any;
+  const open = (url: string, syncId: string) => {
+    const entry = handler.getOrCreateSyncEntry(
+      syncId,
+      4,
+      'flac',
+      OUTPUT,
+      { playbackSource: { kind: 'file', path: '/alerts/bell.mp3' } },
+      2,
+      handler.requestsPrimedSync({ url }),
+    );
+    handler.cleanupSyncEntry(entry);
+  };
+
+  // An alert shared by several players is handed out from its first byte.
+  open('/streams/4/a1.flac?prime=1&sync=alert-1&expect=2', 'alert-1');
+  // A sync group's music, and anything that does not say, joins live as before.
+  open('/streams/4/current.flac?prime=0&sync=4-s1&expect=2', '4-s1');
+  open('/streams/4/current.flac?sync=4-s2&expect=2', '4-s2');
+  assert.deepEqual(primed, [true, false, false]);
+});
