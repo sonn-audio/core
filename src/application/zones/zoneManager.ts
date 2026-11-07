@@ -19,6 +19,7 @@ import { registerPlayer, unregisterPlayer, clearPlayers } from '@/application/pl
 import type { RecentsManager } from '@/application/zones/recents/recentsManager';
 import type { MixedGroupCoordinator } from '@/application/groups/mixedGroupController';
 import { getGroupByZone } from '@/application/groups/groupTracker';
+import { followsLeaderStream } from '@/application/zones/helpers/groupFollower';
 import type { OutputsPort } from '@/ports/OutputsPort';
 import type { MemberPauseControl, OutputSyncStatus, ZoneOutput } from '@/ports/OutputsTypes';
 import type { InputsPort } from '@/ports/InputsPort';
@@ -114,6 +115,21 @@ export type ZoneInputController = Pick<
   | 'updateInputVolume'
   | 'updateInputTiming'
 >;
+
+/**
+ * Commands a member that follows its leader's stream hands to that leader (#409): they steer
+ * the music, and the music is the group's. Volume and mute stay with the room.
+ */
+const GROUP_LEADER_COMMANDS: ReadonlySet<string> = new Set([
+  'queueplus',
+  'queueminus',
+  'next',
+  'previous',
+  'position',
+  'queueplaycurrent',
+  'shuffle',
+  'repeat',
+]);
 
 export type ZoneQueueOps = Pick<
   ZoneQueueController,
@@ -585,6 +601,14 @@ export class ZoneManager {
     metadata?: PlaybackMetadata,
     options?: { startAtSec?: number },
   ): Promise<void> {
+    // Music started in a room that follows its leader's stream is music for the group. Started
+    // on the member it became a session of the member's own, which its speaker never played:
+    // the room showed a track the group was not playing until the leader moved on (#409).
+    const leader = this.followedLeader(zoneId);
+    if (leader !== null) {
+      this.log.debug('content started on a group member goes to its leader', { zoneId, leader, type });
+      return this.playbackCoordinator.playContent(leader, uri, type, metadata, options);
+    }
     return this.playbackCoordinator.playContent(zoneId, uri, type, metadata, options);
   }
 
@@ -708,6 +732,9 @@ export class ZoneManager {
   ): void {
     const ctx = this.zoneRepo.get(zoneId);
     if (ctx) {
+      if (this.forwardToFollowedLeader(ctx, command, payload, context?.groupedTargets)) {
+        return;
+      }
       const controllerId = resolveZoneStateControllerId(ctx.config);
       // For routing, a paused session whose engine is still alive must stay with
       // the playback coordinator so resume/next/etc. reuse the engine rather than
@@ -732,6 +759,73 @@ export class ZoneManager {
   }
 
   /**
+   * The leader whose stream this zone's speaker plays, or null when it plays its own. See
+   * `followsLeaderStream`.
+   */
+  private followedLeader(zoneId: number): number | null {
+    const ctx = this.zoneRepo.get(zoneId);
+    const group = getGroupByZone(zoneId);
+    if (!ctx || !group || group.leader === zoneId || group.members.length <= 1) {
+      return null;
+    }
+    return followsLeaderStream(ctx.outputs) ? group.leader : null;
+  }
+
+  /**
+   * Hand a member's queue and transport commands to the leader whose stream it plays.
+   *
+   * Such a member has no music of its own to step or seek through. Next on it stepped the
+   * queue the zone still kept from before it joined and started that track as a session of
+   * its own, which its speaker never played: the room kept sounding like the group while it
+   * showed another track, until the leader changed track and the mirror caught up (#409). So
+   * these act on the group, through its leader. A member held out of the group stays held:
+   * the leader's next track is not mirrored onto it as `play`, and its player is left out of
+   * the group's start.
+   *
+   * A grouped command that already goes to the leader does not go there twice: the member's
+   * copy is dropped. Volume and mute stay with the room; pause, play and stop are the
+   * member's own business and are settled in `routeGroupMemberTransport`.
+   */
+  private forwardToFollowedLeader(
+    ctx: ZoneContext,
+    command: string,
+    payload: string | undefined,
+    groupedTargets: readonly number[] | undefined,
+  ): boolean {
+    if (!GROUP_LEADER_COMMANDS.has(command)) {
+      return false;
+    }
+    const leader = this.followedLeader(ctx.id);
+    if (leader === null) {
+      return false;
+    }
+    if (groupedTargets?.includes(leader)) {
+      return true;
+    }
+    if (command === 'queueplaycurrent') {
+      // The item was picked in the queue this zone shows (`queue/play`, `queueandplay`),
+      // which is its own and not the leader's, so the leader's current item is not it. It
+      // is started on the leader as anything else picked on this room would be.
+      const current = ctx.queueController.current();
+      if (current?.audiopath) {
+        void this.playContent(leader, current.audiopath, 'queue', {
+          title: current.title,
+          artist: current.artist,
+          album: current.album,
+          coverurl: current.coverurl,
+          audiopath: current.audiopath,
+          duration: current.duration,
+          station: current.station,
+        });
+      }
+      return true;
+    }
+    this.log.debug('group member command goes to its leader', { zoneId: ctx.id, leader, command });
+    this.handleCommand(leader, command, payload);
+    return true;
+  }
+
+  /**
    * Pause and play of one member of a group whose protocol can pause a member alone.
    *
    * Such a member has no session of its own — it plays the leader's stream — so the usual
@@ -753,6 +847,10 @@ export class ZoneManager {
    *
    * Whether the leader plays is the leader zone's mode, decided here and handed to the
    * output, so the zone and the protocol cannot disagree about it.
+   *
+   * Play on a member that is not held is the group's play: the member has nothing of its
+   * own to start, so it goes to the leader unless the group already plays or a grouped play
+   * reaches the leader by itself.
    */
   private routeGroupMemberTransport(
     ctx: ZoneContext,
@@ -794,7 +892,20 @@ export class ZoneManager {
       return true;
     }
     if (!control.isHeld()) {
-      return false;
+      // A member that is not held is in the group already, and has nothing of its own to
+      // play: the zone's own play started whatever its own queue still held, as a session
+      // its speaker never played. Play on it is the group's play. A grouped play brings the
+      // group back through the leader's own copy, a playing leader has it playing already,
+      // and otherwise the leader is played.
+      if (groupedTargets?.includes(group.leader)) {
+        return true;
+      }
+      if (leaderPlaying) {
+        this.applyPatch(zoneId, { mode: 'play', clientState: 'on', power: 'on' });
+        return true;
+      }
+      this.handleCommand(group.leader, command);
+      return true;
     }
     void this.runMemberTransport(zoneId, () => control.release(leaderPlaying));
     // Back in the group, the member is where the group is: playing with a playing leader,

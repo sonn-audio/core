@@ -1317,6 +1317,194 @@ test('a member still holding a session of its own is paused and played as a memb
   }
 });
 
+/**
+ * Record what reaches the zones' playback after the zone manager has routed a command, and
+ * keep it from doing anything: these tests are about where a command goes, not what it does.
+ */
+function spyZonePlayback(zoneManager: ZoneHarness['zoneManager']) {
+  const coordinator = (zoneManager as unknown as {
+    playbackCoordinator: {
+      handleCommand: (zoneId: number, command: string, payload?: string) => void;
+      playContent: (zoneId: number, uri: string, type: string) => Promise<void>;
+    };
+  }).playbackCoordinator;
+  const original = { handleCommand: coordinator.handleCommand, playContent: coordinator.playContent };
+  const calls: string[] = [];
+  coordinator.handleCommand = (zoneId, command, payload) => {
+    calls.push(`${zoneId}:${command}${payload !== undefined ? `(${payload})` : ''}`);
+  };
+  coordinator.playContent = async (zoneId, uri, type) => {
+    calls.push(`${zoneId}:playContent(${uri},${type})`);
+  };
+  return {
+    calls,
+    restore: () => {
+      coordinator.handleCommand = original.handleCommand;
+      coordinator.playContent = original.playContent;
+    },
+  };
+}
+
+test('next, seek, shuffle and repeat on a squeezelite member steer the group through its leader (#409)', async () => {
+  // Next on a member stepped the queue the member kept from before it joined and started
+  // that track as a session of its own. Its speaker plays the leader's stream, so the room
+  // sounded unchanged while it showed another track until the leader moved on.
+  const LEADER = 43;
+  const MEMBER = 44;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409g');
+  const spy = spyZonePlayback(zoneManager);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+    for (const [command, payload] of [
+      ['queueplus', undefined],
+      ['queueminus', undefined],
+      ['next', undefined],
+      ['previous', undefined],
+      ['position', '42'],
+      ['shuffle', 'on'],
+      ['repeat', 'all'],
+    ] as const) {
+      zoneManager.handleCommand(MEMBER, command, payload);
+    }
+    assert.deepEqual(spy.calls, [
+      `${LEADER}:queueplus`,
+      `${LEADER}:queueminus`,
+      `${LEADER}:next`,
+      `${LEADER}:previous`,
+      `${LEADER}:position(42)`,
+      `${LEADER}:shuffle(on)`,
+      `${LEADER}:repeat(all)`,
+    ]);
+
+    spy.calls.length = 0;
+    zoneManager.handleCommand(MEMBER, 'volume_set', '30');
+    zoneManager.handleCommand(MEMBER, 'mute', 'on');
+    assert.deepEqual(spy.calls, [`${MEMBER}:volume_set(30)`, `${MEMBER}:mute(on)`], 'the room keeps its own level');
+
+    spy.calls.length = 0;
+    zoneManager.handleCommand(LEADER, 'queueplus');
+    assert.deepEqual(spy.calls, [`${LEADER}:queueplus`], 'the leader steps its own queue');
+  } finally {
+    spy.restore();
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('a grouped command that reaches the leader is not sent to it again by a member (#409)', async () => {
+  const LEADER = 45;
+  const MEMBER = 46;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409h');
+  const spy = spyZonePlayback(zoneManager);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    zoneManager.handleCommand(MEMBER, 'queueplus', undefined, { groupedTargets: [MEMBER, LEADER] });
+    assert.deepEqual(spy.calls, [], "the member's copy is dropped");
+    zoneManager.handleCommand(MEMBER, 'queueplus', undefined, { groupedTargets: [MEMBER] });
+    assert.deepEqual(spy.calls, [`${LEADER}:queueplus`], 'without the leader among the targets it goes there');
+  } finally {
+    spy.restore();
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('a held squeezelite member stays held when next is pressed on it (#409)', async () => {
+  const LEADER = 47;
+  const MEMBER = 48;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409i');
+  const spy = spyZonePlayback(zoneManager);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+    zoneManager.handleCommand(MEMBER, 'pause');
+    zoneManager.handleCommand(MEMBER, 'queueplus');
+    assert.deepEqual(spy.calls, [`${LEADER}:queueplus`]);
+    assert.ok(stub.held.has(MEMBER), 'still held');
+    assert.ok(!stub.calls.some((call) => call.includes('release')), 'its hold was not released');
+
+    // The leader starts the next track.
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'Two' }, true);
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause', 'the member sits it out');
+    assert.equal(zoneManager.getState(MEMBER)?.title, 'Two', 'showing the track the group plays');
+  } finally {
+    spy.restore();
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('content started on a squeezelite member is started on its leader (#409)', async () => {
+  // Another Spotify account picked on the member started a session of the member's own,
+  // which its speaker never played.
+  const LEADER = 49;
+  const MEMBER = 50;
+  const stub = stubSqueezeliteMemberPause();
+  const harness = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409j');
+  const { zoneManager, groupTracker } = harness;
+  const spy = spyZonePlayback(zoneManager);
+  try {
+    await zoneManager.playContent(MEMBER, 'spotify:track:abc', 'serviceplay');
+    assert.deepEqual(spy.calls, [`${LEADER}:playContent(spotify:track:abc,serviceplay)`]);
+
+    // A queue row picked on the member: the row is from the queue the member shows, so it
+    // is that row the group plays, not the leader's current one.
+    spy.calls.length = 0;
+    const repo = (zoneManager as unknown as {
+      zoneRepo: { get: (id: number) => import('../src/application/zones/internal/zoneTypes').ZoneContext | undefined };
+    }).zoneRepo;
+    repo.get(MEMBER)!.queueController.setItems(
+      [
+        { audiopath: 'spotify:track:one', title: 'One', unique_id: 'u1' },
+        { audiopath: 'spotify:track:two', title: 'Two', unique_id: 'u2' },
+      ] as never,
+      0,
+    );
+    assert.ok(zoneManager.queue.seekInQueue(MEMBER, 'u2'));
+    zoneManager.handleCommand(MEMBER, 'queueplaycurrent');
+    assert.deepEqual(spy.calls, [`${LEADER}:playContent(spotify:track:two,queue)`]);
+
+    groupTracker.removeGroupByLeader(LEADER);
+    spy.calls.length = 0;
+    await zoneManager.playContent(MEMBER, 'spotify:track:abc', 'serviceplay');
+    assert.deepEqual(spy.calls, [`${MEMBER}:playContent(spotify:track:abc,serviceplay)`], 'once it left, on itself');
+  } finally {
+    spy.restore();
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('play on a squeezelite member that is not held is the group play (#409)', async () => {
+  // Its own play started whatever the member's own queue still held, as a session its
+  // speaker never played.
+  const LEADER = 51;
+  const MEMBER = 52;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409k');
+  const spy = spyZonePlayback(zoneManager);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    zoneManager.handleCommand(MEMBER, 'play');
+    assert.deepEqual(spy.calls, [`${LEADER}:play`], 'a paused group is played through its leader');
+
+    spy.calls.length = 0;
+    zoneManager.handleCommand(MEMBER, 'resume', undefined, { groupedTargets: [MEMBER, LEADER] });
+    assert.deepEqual(spy.calls, [], "a grouped play reaches the leader by its own copy");
+
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    zoneManager.handleCommand(MEMBER, 'play');
+    assert.deepEqual(spy.calls, [], 'a playing group has the member playing already');
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+  } finally {
+    spy.restore();
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
 test('group join/leave emits audio sync payloads', async () => {
   const harness = await getZoneHarness();
   const {
