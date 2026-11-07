@@ -135,6 +135,7 @@ export class StateControllerManager {
     if (controllerId === 'sonos') {
       return new SonosStateController({
         zone,
+        configPort: this.configPort,
         onStatePatch: this.onStatePatch,
       });
     }

@@ -164,9 +164,13 @@ test('a failed pause or stop is not escalated to a fatal playback error', async 
   assert.deepEqual(playErrors, ['Not connected'], 'silence after play must still surface');
 });
 
+// This server's stream base, as SonosOutput builds it from the configured audioserver ip.
+const configPort = { getSystemConfig: () => ({ audioserver: { ip: '192.168.1.10' } }) } as any;
+
 function createStateController() {
   return new SonosStateController({
     zone: { id: 5, name: 'Büro', output: { host: '192.168.20.34' } as any } as any,
+    configPort,
     onStatePatch: () => undefined,
   } as any) as any;
 }
@@ -355,10 +359,46 @@ test('sonos state controller tears down a client whose socket is already gone (#
   assert.equal(controller.client, null);
 });
 
+test('sonos state controller resumes an external station whose path merely looks like ours', async () => {
+  // A station started in the Sonos app may well live under /streams/ on its own host. Only our own
+  // host serves our stream, so that URL is cached and reloaded like any other external source.
+  const controller = createStateController();
+  const reloads: string[] = [];
+  const stationUrl = 'http://radio.example.com/streams/live.mp3';
+  const group: any = {
+    playbackState: 'PLAYBACK_STATE_PLAYING',
+    positionSeconds: 0,
+    playbackMetadataStatus: {
+      container: { name: 'Example Radio' },
+      currentItem: { track: { name: 'Example Radio', mediaUrl: stationUrl } },
+    },
+    play: async () => undefined,
+    playStreamUrl: async (url: string) => {
+      reloads.push(url);
+    },
+  };
+  controller.client = { player: { group } };
+  controller.buildSnapshotPatch();
+  assert.equal(controller.lastTrackMediaUrl, stationUrl);
+
+  // Same for a numbered /streams/<n>/ path on another host or port.
+  group.playbackMetadataStatus.currentItem.track.mediaUrl = 'http://192.168.1.10:8000/streams/1/current.mp3';
+  controller.buildSnapshotPatch();
+  assert.equal(controller.lastTrackMediaUrl, 'http://192.168.1.10:8000/streams/1/current.mp3');
+
+  group.playbackMetadataStatus.currentItem.track.mediaUrl = stationUrl;
+  controller.buildSnapshotPatch();
+  group.playbackState = 'PLAYBACK_STATE_IDLE';
+  assert.equal(controller.handleCommand('play'), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(reloads, [stationUrl]);
+});
+
 test('sonos state controller trusts the speaker over a cached play once events went quiet (#413)', async () => {
   const patches: any[] = [];
   const controller = new SonosStateController({
     zone: { id: 5, name: 'Büro', output: { host: '192.168.20.34' } as any } as any,
+    configPort,
     onStatePatch: (_zoneId: number, patch: any) => patches.push(patch),
   } as any) as any;
   const group: any = { playbackState: 'PLAYBACK_STATE_PLAYING' };

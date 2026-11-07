@@ -15,12 +15,15 @@ type AnySonosClient = SonosClient | S1Client;
 import type { ZoneConfig } from '@/domain/config/types';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { AudioType } from '@/domain/zones/enums';
-import { SONOS_OWN_CONTAINER_SERVICE_ID } from '@/domain/outputs/sonosIdentity';
+import { SONOS_OWN_CONTAINER_SERVICE_ID, isOwnStreamUrl } from '@/domain/outputs/sonosIdentity';
+import { buildBaseUrl } from '@/shared/streamUrl';
+import type { ConfigPort } from '@/ports/ConfigPort';
 import { createLogger } from '@/shared/logging/logger';
 import type { ZoneStateController } from '@/application/zones/state/StateController';
 
 type SonosControllerOptions = {
   zone: ZoneConfig;
+  configPort: ConfigPort;
   onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
 };
 
@@ -51,6 +54,7 @@ export class SonosStateController implements ZoneStateController {
   private readonly zone: ZoneConfig;
   private readonly onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
   private readonly host: string | null;
+  private readonly configPort: ConfigPort;
 
   private client: AnySonosClient | null = null;
   private startPromise: Promise<void> | null = null;
@@ -73,7 +77,16 @@ export class SonosStateController implements ZoneStateController {
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
     this.onStatePatch = options.onStatePatch;
+    this.configPort = options.configPort;
     this.host = resolveSonosHost(this.zone);
+  }
+
+  /** Base of the stream URLs SonosOutput hands the speaker; read per call so config edits apply. */
+  private ownStreamBaseUrl(): string {
+    return buildBaseUrl({
+      host: this.configPort.getSystemConfig().audioserver.ip?.trim(),
+      fallbackHost: '127.0.0.1',
+    });
   }
 
   public async start(): Promise<void> {
@@ -465,7 +478,7 @@ export class SonosStateController implements ZoneStateController {
     const container = metadata?.container;
 
     const trackMediaUrl = cleanString(track?.mediaUrl);
-    if (isOwnStream(trackMediaUrl, container)) {
+    if (isOwnStream(trackMediaUrl, container, this.ownStreamBaseUrl())) {
       // Our own stream lives exactly as long as the session that feeds it, so it is never a
       // reload target: once that session ends the URL leads nowhere, and an older external URL
       // still in the cache is not what the zone was last playing either (#418).
@@ -603,7 +616,7 @@ export class SonosStateController implements ZoneStateController {
     group: AnySonosGroup,
   ): { kind: 'resume' } | { kind: 'reload'; url: string } | { kind: 'none'; reason: string } {
     const metadata = group.playbackMetadataStatus;
-    if (isOwnStream(cleanString(metadata?.currentItem?.track?.mediaUrl), metadata?.container)) {
+    if (isOwnStream(cleanString(metadata?.currentItem?.track?.mediaUrl), metadata?.container, this.ownStreamBaseUrl())) {
       // The speaker still holds our stream, but play only reaches this controller once the local
       // session behind it is gone, so neither resuming nor reloading that URL can produce sound:
       // the speaker flips to PLAYING and drops back to STOPPED (#418). Local playback restarts the
@@ -784,25 +797,18 @@ function mapPlaybackState(state: string | null | undefined): ZoneState['mode'] {
 
 /**
  * True when the speaker is playing something this server streams to it. The container identity
- * is what SonosOutput's playStreamUrl path sets; the `/streams/` path also catches the SOAP path
- * (including its `x-rincon-mp3radio://` form), which carries no identity of ours.
+ * is what SonosOutput's playStreamUrl path sets; the stream URL on our own host also catches the
+ * SOAP path (including its `x-rincon-mp3radio://` form), which carries no identity of ours.
  */
 function isOwnStream(
   mediaUrl: string,
   container: { id?: { serviceId?: string | null } | null } | null | undefined,
+  ownBaseUrl: string,
 ): boolean {
   if (cleanString(container?.id?.serviceId) === SONOS_OWN_CONTAINER_SERVICE_ID) {
     return true;
   }
-  if (!mediaUrl) {
-    return false;
-  }
-  try {
-    const parsed = new URL(mediaUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, 'http://'));
-    return parsed.pathname.startsWith('/streams/');
-  } catch {
-    return false;
-  }
+  return isOwnStreamUrl(mediaUrl, ownBaseUrl);
 }
 
 function cleanString(value: unknown): string {
