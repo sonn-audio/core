@@ -206,6 +206,7 @@ import './mqttCommands.test';
 import './squeezeliteReconnect.test';
 import './squeezeliteMixedGroup.test';
 import './squeezeliteMemberPause.test';
+import './squeezelitePlaybackStart.test';
 import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
 import './adminZoneStates.test';

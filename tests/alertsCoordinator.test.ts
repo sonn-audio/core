@@ -778,3 +778,127 @@ test('a stopped alert does not get its volume applied afterwards (#359)', async 
   assert.deepEqual(playerVolumes, [20]);
   assert.equal(ctx.state.volume, 20);
 });
+
+test('the announcement volume waits for a squeezelite player to start the alert (#359)', async () => {
+  // A Squeezelite room playing music: the lag the zone measured off the player's
+  // heartbeat came out small, which used to put the level up the moment the source
+  // switched — while the player was still on the outgoing track. The player says
+  // when the alert starts; the level waits for that.
+  const zone: ZoneConfig = {
+    id: 1,
+    name: 'Living',
+    sourceMac: '00:00:00:00:00:01',
+    volumes: {
+      default: 20,
+      alarm: 20,
+      fire: 20,
+      bell: 80,
+      buzzer: 20,
+      tts: 20,
+      volstep: 1,
+      fading: 0,
+      maxVolume: 100,
+    },
+  };
+
+  let reportStart: (started: boolean) => void = () => {};
+  const startWaits: number[] = [];
+  const output = {
+    type: 'squeezelite',
+    play: () => {},
+    pause: () => {},
+    resume: () => {},
+    stop: () => {},
+    waitForPlaybackStart: (timeoutMs: number) => {
+      startWaits.push(timeoutMs);
+      return new Promise<boolean>((resolve) => {
+        reportStart = resolve;
+      });
+    },
+  };
+
+  const zoneRepo = new ZoneRepository();
+  const playerVolumes: number[] = [];
+  const ctx = {
+    id: zone.id,
+    name: zone.name,
+    sourceMac: zone.sourceMac,
+    config: zone,
+    state: { ...buildInitialState(zone), mode: 'play', volume: 50 },
+    queue: { items: [], shuffle: false, repeat: 0, currentIndex: 0, authority: 'local' },
+    queueController: { setItems: () => {}, currentIndex: () => 0, current: () => null },
+    inputAdapter: {},
+    spotifyAdapter: {},
+    metadata: {},
+    outputs: [output],
+    player: {
+      setVolume: (level: number) => playerVolumes.push(level),
+      playUri: () => ({ playbackSource: { kind: 'file', path: '/tmp/bell.mp3' } }) as any,
+      stop: () => {},
+    },
+    outputTimingActive: false,
+    lastOutputTimingAt: 0,
+    lastZoneBroadcastAt: 0,
+    lastPositionUpdateAt: 0,
+    lastPositionValue: 0,
+    lastPlaybackErrorAt: 0,
+    activeOutputTypes: new Set<string>(),
+    activeOutput: 'squeezelite',
+    activeInput: null,
+    lastMetadataDispatchAt: 0,
+    inputMode: 'queue',
+  } as unknown as ZoneContext;
+  zoneRepo.set(zone.id, ctx);
+
+  const coordinator = new AlertsCoordinator({
+    zones: zoneRepo,
+    configPort: alertConfigPort,
+    playbackCoordinator: {
+      setInputMode: (_ctx: ZoneContext, mode: ZoneContext['inputMode']) => {
+        _ctx.inputMode = mode;
+      },
+      alignOutputFormat: () => {},
+      applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
+      getRoomLagMs: () => 120,
+    } as any,
+    applyPatch: (_zoneId, patch) => {
+      ctx.state = { ...ctx.state, ...(patch as Record<string, unknown>) };
+    },
+    log: { warn: () => {}, debug: () => {} } as any,
+    audioHelpers: { resolveAlertEventType: () => 0 } as any,
+    zoneAudioPrefs: {
+      setTransientGainDb: () => {},
+      setAlertPreDelayFloorMs: () => {},
+    } as any,
+  });
+
+  // Keep the alert's own stop timer from running for real.
+  const realSetTimeout = global.setTimeout;
+  (global as any).setTimeout = () => {
+    const handle = realSetTimeout(() => {}, 1_000_000);
+    handle.unref?.();
+    return handle;
+  };
+  try {
+    await coordinator.startAlert(
+      zone.id,
+      'bell',
+      { title: 'bell', url: 'alerts://bell.mp3', relativePath: 'bell.mp3', duration: 4 },
+      80,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    (global as any).setTimeout = realSetTimeout;
+  }
+
+  // The source has switched, but the player has not started the alert yet.
+  assert.deepEqual(playerVolumes, []);
+  assert.equal(ctx.state.volume, 50);
+  assert.equal(startWaits.length, 1);
+
+  reportStart(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(playerVolumes, [80]);
+  assert.equal(ctx.state.volume, 80);
+});

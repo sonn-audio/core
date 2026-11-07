@@ -60,6 +60,14 @@ export const SQUEEZELITE_OUTPUT_DEFINITION: OutputConfigDefinition = {
   ],
 };
 
+/** One `play()` waiting for its player to report the new stream started. */
+type PlaybackStartWatch = {
+  promise: Promise<boolean>;
+  /** Set once the new stream has been handed over, so a later "playing" can only be it. */
+  armed: boolean;
+  settle: (started: boolean) => void;
+};
+
 export class SqueezeliteOutput implements ZoneOutput {
   public readonly type = 'squeezelite';
 
@@ -92,6 +100,8 @@ export class SqueezeliteOutput implements ZoneOutput {
   private pendingAutostart = false;
   private autostartTimer?: NodeJS.Timeout;
   private lastPositionReportAt = 0;
+  /** The latest `play()`, until its player reports the new stream playing (see `waitForPlaybackStart`). */
+  private playbackStart: PlaybackStartWatch | null = null;
   private lastJoinAt = 0;
   private lastResumeAt = 0;
   private lastJoinLeaderId: number | null = null;
@@ -145,6 +155,63 @@ export class SqueezeliteOutput implements ZoneOutput {
   }
 
   public async play(session: PlaybackSession): Promise<void> {
+    // Taken before the first await: whoever started this play asks for it straight after.
+    const watch = this.watchPlaybackStart();
+    try {
+      await this.startPlayback(session, watch);
+    } finally {
+      if (!watch.armed) {
+        watch.settle(false);
+      }
+    }
+  }
+
+  /**
+   * Resolves once the player reports that the stream handed over by the latest `play()`
+   * is playing — the moment its first sample goes out — or false when that cannot be told.
+   *
+   * The server's own idea of when a room hears something is a guess here: SlimProto has
+   * the player flush, reconnect and fill its buffer before it starts, and how long that
+   * takes depends on the player. The player does say when it has started (`STMs`, or the
+   * `STMr` of a server-side autostart), so whatever has to land with the new stream — an
+   * alert's volume (#359) — can wait for that instead.
+   */
+  public waitForPlaybackStart(timeoutMs: number): Promise<boolean> {
+    const watch = this.playbackStart;
+    if (!watch) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+      timer.unref?.();
+      void watch.promise.then((started) => {
+        clearTimeout(timer);
+        resolve(started);
+      });
+    });
+  }
+
+  private watchPlaybackStart(): PlaybackStartWatch {
+    this.playbackStart?.settle(false);
+    let resolvePromise: (started: boolean) => void = () => undefined;
+    const promise = new Promise<boolean>((resolve) => {
+      resolvePromise = resolve;
+    });
+    const watch: PlaybackStartWatch = {
+      promise,
+      armed: false,
+      settle: (started) => {
+        if (this.playbackStart === watch) {
+          this.playbackStart = null;
+        }
+        resolvePromise(started);
+      },
+    };
+    this.playbackStart = watch;
+    return watch;
+  }
+
+  private async startPlayback(session: PlaybackSession, watch: PlaybackStartWatch): Promise<void> {
     if (!session.playbackSource) {
       this.log.warn('Squeezelite output skipped; no playback source', { zoneId: this.zoneId });
       this.ports.outputHandlers.onOutputError(this.zoneId, 'squeezelite no source');
@@ -234,6 +301,12 @@ export class SqueezeliteOutput implements ZoneOutput {
         shouldAutostart,
         true,
       );
+      // The flush has gone out and the player is buffering the new stream, so the next time
+      // it says it is playing, it is playing this one. Armed only now: nothing the player
+      // reported before the flush can be mistaken for the start.
+      if (this.playbackStart === watch) {
+        watch.armed = true;
+      }
     }
   }
 
@@ -341,6 +414,7 @@ export class SqueezeliteOutput implements ZoneOutput {
 
   public async stop(_session: PlaybackSession | null): Promise<void> {
     this.clearPendingAutostart();
+    this.playbackStart?.settle(false);
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
       if (this.zoneId === group.leader) {
@@ -405,6 +479,7 @@ export class SqueezeliteOutput implements ZoneOutput {
 
   public dispose(): void {
     this.clearPendingAutostart();
+    this.playbackStart?.settle(false);
     this.unsubscribe();
     this.unsubscribeGroups();
     this.ports.squeezeliteGroup.unregister(this.zoneId);
@@ -538,11 +613,15 @@ export class SqueezeliteOutput implements ZoneOutput {
       void this.maybeResumeAfterReconnect();
     }
     if (event.type === EventType.PLAYER_DISCONNECTED) {
+      this.playbackStart?.settle(false);
       this.lastStatus = 'stopped';
       this.ports.outputHandlers.onOutputState(this.zoneId, { status: 'stopped' });
       return;
     }
     if (event.type === EventType.PLAYER_UPDATED) {
+      if (this.playbackStart?.armed && player.state === PlayerState.PLAYING) {
+        this.playbackStart.settle(true);
+      }
       this.emitState(player);
     }
     if (event.type === EventType.PLAYER_HEARTBEAT) {

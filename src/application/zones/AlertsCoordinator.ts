@@ -37,6 +37,11 @@ const ALERT_FIRST_AUDIO_WAIT_MS = 5000;
  * volume instead of the whole output buffer's worth (#359).
  */
 const ALERT_VOLUME_LEAD_MARGIN_MS = 250;
+/**
+ * How long the announcement volume waits for an output to report the alert playing.
+ * A player that has not started by then is not going to be helped by a quieter room.
+ */
+const ALERT_PLAYBACK_START_WAIT_MS = 5000;
 
 type AlertsCoordinatorDeps = {
   zones: ZoneRepository;
@@ -219,12 +224,34 @@ export class AlertsCoordinator {
     // which is the outgoing music. Raising the room the instant playUri returned made that
     // music blast at announcement level before the bell arrived (#359), so the level waits
     // out the lead and lands with the alert's first audible sample.
+    //
+    // An output that reports when its new stream starts playing settles that by itself, and
+    // its word beats any estimate: a Squeezelite player flushes, reconnects and refills its
+    // buffer before the alert plays, and the lag the zone measured from its heartbeat was
+    // read off a clock that only counts whole seconds — it came out low often enough to put
+    // the level up on the spot (#359). There the level goes up when the player says the
+    // alert is playing, plus whatever wake-up silence the alert leads with.
+    const wasPlaying = snapshot.mode === 'play';
     const volumeDelayMs = Math.max(
-      this.resolveAudibleLeadMs(ctx, session, snapshot.mode === 'play') -
-        ALERT_VOLUME_LEAD_MARGIN_MS,
+      this.resolveAudibleLeadMs(ctx, session, wasPlaying) - ALERT_VOLUME_LEAD_MARGIN_MS,
       0,
     );
-    this.scheduleAlertVolume(ctx, alertRecord, clampedVolume, volumeDelayMs);
+    const playbackStart = wasPlaying ? this.waitForOutputPlaybackStart(ctx) : null;
+    this.scheduleAlertVolume(
+      ctx,
+      alertRecord,
+      clampedVolume,
+      volumeDelayMs,
+      playbackStart
+        ? {
+            started: playbackStart,
+            delayAfterStartMs: Math.max(
+              Math.round(resolveSessionPreDelayMs(session)) - ALERT_VOLUME_LEAD_MARGIN_MS,
+              0,
+            ),
+          }
+        : null,
+    );
 
     if (durationMs && durationMs > 0) {
       this.armAlertStopTimer(ctx, alertRecord, session, durationMs);
@@ -347,35 +374,79 @@ export class AlertsCoordinator {
     }
   }
 
-  /** Put the room at the announcement level, waiting `delayMs` for the alert to be audible. */
+  /**
+   * Whether the zone's output reports the alert stream playing, or null when none of its
+   * outputs can report that. Asked straight after `playUri`, which is what handed them
+   * the alert.
+   */
+  private waitForOutputPlaybackStart(ctx: ZoneContext): Promise<boolean> | null {
+    const outputs = ctx.outputs.filter(
+      (output) =>
+        typeof output.waitForPlaybackStart === 'function' &&
+        (ctx.activeOutput == null || output.type === ctx.activeOutput),
+    );
+    if (outputs.length === 0) {
+      return null;
+    }
+    return Promise.all(
+      outputs.map((output) =>
+        output.waitForPlaybackStart!(ALERT_PLAYBACK_START_WAIT_MS).catch(() => false),
+      ),
+    ).then((reports) => reports.some(Boolean));
+  }
+
+  /**
+   * Put the room at the announcement level, waiting `delayMs` for the alert to be audible —
+   * or, when the output can say when the alert started playing, waiting for that and
+   * `delayAfterStartMs` more. `delayMs` remains the answer when it cannot say after all.
+   */
   private scheduleAlertVolume(
     ctx: ZoneContext,
     alert: NonNullable<ZoneContext['alert']>,
     volume: number,
     delayMs: number,
+    playbackStart: { started: Promise<boolean>; delayAfterStartMs: number } | null = null,
   ): void {
+    // The alert can end while we wait — a short clip, or a stop from the
+    // Miniserver. Its restore has put the room back by then, and the level it
+    // restored must not be overwritten with the announcement's.
+    const isCurrent = (): boolean => this.zoneRepo.get(ctx.id) === ctx && ctx.alert === alert;
     const apply = (): void => {
       ctx.player.setVolume(volume);
       this.applyPatch(ctx.id, { volume });
     };
+    const applyAfter = (waitMs: number): void => {
+      if (waitMs <= 0) {
+        apply();
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (!isCurrent()) {
+          return;
+        }
+        alert.volumeTimer = undefined;
+        apply();
+      }, Math.min(waitMs, 2147483647));
+      timer.unref?.();
+      alert.volumeTimer = timer;
+    };
 
-    if (delayMs <= 0) {
-      apply();
+    if (!playbackStart) {
+      applyAfter(delayMs);
       return;
     }
 
-    const timer = setTimeout(() => {
-      // The alert can end while we wait — a short clip, or a stop from the
-      // Miniserver. Its restore has put the room back by then, and the level it
-      // restored must not be overwritten with the announcement's.
-      if (this.zoneRepo.get(ctx.id) !== ctx || ctx.alert !== alert) {
-        return;
-      }
-      alert.volumeTimer = undefined;
-      apply();
-    }, Math.min(delayMs, 2147483647));
-    timer.unref?.();
-    alert.volumeTimer = timer;
+    const askedAt = Date.now();
+    void playbackStart.started
+      .catch(() => false)
+      .then((started) => {
+        if (!isCurrent()) {
+          return;
+        }
+        applyAfter(
+          started ? playbackStart.delayAfterStartMs : delayMs - (Date.now() - askedAt),
+        );
+      });
   }
 
   /**

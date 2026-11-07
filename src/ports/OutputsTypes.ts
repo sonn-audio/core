@@ -166,6 +166,14 @@ export interface ZoneOutput {
   getPreferredOutput?(): PreferredOutput | null;
   /** Optional estimated output latency/buffer in milliseconds. */
   getLatencyMs?(): number | null;
+  /**
+   * Optional: wait for the player to say that the stream handed to it by the latest
+   * `play()` has begun to play out. Resolves true on that report, false when the output
+   * cannot tell (the play never reached a player, it was not a plain start, or nothing
+   * was reported within `timeoutMs`). Only outputs whose player reports the moment its
+   * new stream starts implement it; the alert volume waits for it (#359).
+   */
+  waitForPlaybackStart?(timeoutMs: number): Promise<boolean>;
   /** Protocol-specific client capabilities, when the output has negotiated them. */
   getProtocolCapabilities?(): Record<string, unknown> | null;
   /**
