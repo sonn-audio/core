@@ -270,6 +270,17 @@ export class PowerManager {
         });
         let allSucceeded = true;
         for (const action of fresh.config.actions) {
+          if (signal === 0) {
+            const holder = this.zoneHoldingRelay(zoneId, action);
+            if (holder !== null) {
+              this.log.debug('zone power manager left a shared relay on for another zone', {
+                zoneId,
+                action: action.type,
+                heldByZoneId: holder,
+              });
+              continue;
+            }
+          }
           try {
             await this.executor.execute(action, signal);
           } catch (error: unknown) {
@@ -335,6 +346,30 @@ export class PowerManager {
         const message = error instanceof Error ? error.message : String(error);
         this.log.warn('zone power manager signal failed', { zoneId, signal, message });
       });
+  }
+
+  /**
+   * Another zone whose power configuration switches the same physical relay as `action`
+   * and still needs it on — it wants power, or has not switched off yet — or null.
+   *
+   * Two zones can point at one relay without a shared power group; each then switched it
+   * as if it were its own. A zone going idle switched it off under the other, which still
+   * played and whose books still said on, so nothing ever switched it back on (#359). The
+   * relay is now switched off only by the last zone on it to go idle. Checked right before
+   * the switch is queued, and the executor runs a device's switches in queue order, so a
+   * zone powering on after this check still has its ON land after the OFF.
+   */
+  private zoneHoldingRelay(zoneId: number, action: NormalizedPowerAction): number | null {
+    const key = relayKey(action);
+    for (const [otherId, other] of this.zones) {
+      if (otherId === zoneId || (other.desiredSignal !== 1 && other.currentSignal !== 1)) {
+        continue;
+      }
+      if (other.config.actions.some((candidate) => relayKey(candidate) === key)) {
+        return otherId;
+      }
+    }
+    return null;
   }
 }
 
@@ -490,6 +525,20 @@ function deviceKey(action: NormalizedPowerAction): string {
       return `url:${action.config.onUrl || action.config.offUrl}`;
     case 'udp':
       return `udp:${action.config.host}:${action.config.port}`;
+  }
+}
+
+/** The physical switch an action drives: the relay channel, GPIO line, or on/off endpoint. */
+function relayKey(action: NormalizedPowerAction): string {
+  switch (action.type) {
+    case 'crelay':
+      return `crelay:${action.config.binaryPath}:${action.config.serial ?? ''}:${action.config.relay}`;
+    case 'gpio':
+      return `gpio:${action.config.chip}:${action.config.pin}`;
+    case 'url':
+      return `url:${action.config.onMethod} ${action.config.onUrl} ${action.config.onBody ?? ''}|${action.config.offMethod} ${action.config.offUrl} ${action.config.offBody ?? ''}`;
+    case 'udp':
+      return `udp:${action.config.host}:${action.config.port}:${action.config.onPayload}|${action.config.offPayload}`;
   }
 }
 

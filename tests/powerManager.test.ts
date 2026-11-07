@@ -364,6 +364,48 @@ test('power manager applies off delay and cancels pending off when play resumes'
   ]);
 });
 
+test('a zone going idle does not switch off a relay another playing zone shares (#359)', async () => {
+  const executor = new FakeExecutor();
+  const pm = new PowerManager(noopLogger, executor);
+  // Two zones pointed at the same relay channel, no shared power group configured.
+  const relayZone = (id: number, name: string) =>
+    ({
+      id,
+      name,
+      sourceMac: `00:00:00:00:00:${id}`,
+      volumes: {} as any,
+      powerManager: { offDelayMs: 30, crelay: { enabled: true, relay: '1' } },
+    }) as any;
+  const flur = relayZone(13, 'Flur');
+  const kueche = relayZone(14, 'Küche');
+  const patch = (zone: any, mode: string) =>
+    pm.onStatePatch(zone.id, zone, { mode } as any, { ...baseState, mode } as any);
+
+  // Flur plays radio, Küche is paused; a doorbell plays in both, then each is restored.
+  patch(flur, 'play');
+  patch(kueche, 'pause');
+  await wait(60);
+  patch(flur, 'stop');
+  patch(kueche, 'play');
+  await wait(10);
+  patch(flur, 'play');
+  patch(kueche, 'pause');
+  await wait(60);
+
+  // Küche's idle off would have cut the relay under Flur, which never sent ON again.
+  assert.deepEqual(
+    executor.calls.filter((call) => call.signal === 0),
+    [],
+  );
+  assert.equal(pm.isSignalOn(13), true);
+  assert.equal(pm.isSignalOn(14), false);
+
+  // Once the last zone on the relay goes idle, it is switched off.
+  patch(flur, 'stop');
+  await wait(60);
+  assert.deepEqual(executor.calls.at(-1), { type: 'crelay', signal: 0 });
+});
+
 test('power manager delays pause off by default', async () => {
   const executor = new FakeExecutor();
   const pm = new PowerManager(noopLogger, executor);
