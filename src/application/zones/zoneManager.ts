@@ -768,14 +768,12 @@ export class ZoneManager {
     const output = ctx.outputs.find((candidate) => candidate.memberPause?.() != null);
     const control = output?.memberPause?.() ?? null;
     const group = getGroupByZone(zoneId);
-    if (
-      !output ||
-      !control ||
-      !group ||
-      group.leader === zoneId ||
-      group.members.length <= 1 ||
-      this.audioManager.getSession(zoneId)
-    ) {
+    // Only the output knows whether its player follows the leader's stream; it offers the
+    // control only then. A session the member still has of its own does not change that:
+    // it is what the zone played before it joined (another Spotify account, say, still
+    // paused on its own device), and its speaker plays none of it. Sending the member's
+    // pause and play there paused the whole group and woke that old session up (#409).
+    if (!output || !control || !group || group.leader === zoneId || group.members.length <= 1) {
       return false;
     }
     if (isStop) {

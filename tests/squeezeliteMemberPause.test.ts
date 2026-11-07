@@ -133,11 +133,26 @@ function reset(...fakes: FakePlayer[]): void {
 test('pausing one member of a squeezelite group leaves the leader playing', async () => {
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     assert.equal(h.member.calls.pause, 1, 'the member paused');
     assert.equal(h.leader.calls.pause, 0, 'the leader did not');
     assert.equal(h.controller.isMemberHeld(MEMBER), true);
-    assert.equal(h.memberOutput.memberPause().isHeld(), true);
+    assert.equal(h.memberOutput.memberPause()!.isHeld(), true);
+  } finally {
+    h.dispose();
+  }
+});
+
+test('only a member following the leader over slimproto offers a member pause', async () => {
+  // The zone hands a member's pause and play to this control even when the member has a
+  // session of its own left over. That is only right where the player plays the leader's
+  // stream: in a mixed group the member is fed a session of its own and pauses normally.
+  const h = harness();
+  try {
+    assert.ok(h.memberOutput.memberPause(), 'a member of the sync group');
+    assert.equal(h.leaderOutput.memberPause(), null, 'not the leader');
+    h.controller.unregister(LEADER); // the group is led by another protocol now
+    assert.equal(h.memberOutput.memberPause(), null, 'not a member of a mixed group');
   } finally {
     h.dispose();
   }
@@ -149,7 +164,7 @@ test('a member pause does not ask the leader session whether it plays', async ()
   const h = harness();
   try {
     (h.leaderSession as { state: string }).state = 'stopped';
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     assert.equal(h.leader.calls.pause, 0, 'the leader plays on');
     assert.equal(h.member.calls.pause, 1);
     assert.equal(h.controller.isMemberHeld(MEMBER), true);
@@ -161,7 +176,7 @@ test('a member pause does not ask the leader session whether it plays', async ()
 test('the next track does not unpause a member that was paused on its own', async () => {
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     reset(h.leader, h.member);
 
     // Track change: only the leader gets the new session.
@@ -181,10 +196,10 @@ test('the next track does not unpause a member that was paused on its own', asyn
 test('playing the member again brings it back into the group', async () => {
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     reset(h.leader, h.member);
 
-    await h.memberOutput.memberPause().release(true);
+    await h.memberOutput.memberPause()!.release(true);
     await settle();
 
     assert.equal(h.controller.isMemberHeld(MEMBER), false);
@@ -207,14 +222,14 @@ test('a member played again after the next track joins that track, not the one i
   // underran for both rooms (#409).
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     // The leader moves on to the next track while the member sits it out.
     (h.leaderSession as { stream: { id: string } }).stream.id = 's2';
     await h.leaderOutput.play(h.leaderSession);
     await settle();
     reset(h.leader, h.member);
 
-    await h.memberOutput.memberPause().release(true);
+    await h.memberOutput.memberPause()!.release(true);
     await settle();
 
     assert.equal(h.member.calls.play.length, 1);
@@ -240,9 +255,9 @@ test('a member played again within the same track restarts the group on a sync s
     const running = syncIdOf(h.leader.calls.play[0]!);
     assert.match(h.leader.calls.play[0]!, /expect=2/, 'the group plays one sync stream');
 
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     reset(h.leader, h.member);
-    await h.memberOutput.memberPause().release(true);
+    await h.memberOutput.memberPause()!.release(true);
     await settle();
 
     assert.equal(h.member.calls.play.length, 1);
@@ -256,11 +271,11 @@ test('a member played again within the same track restarts the group on a sync s
 test('a held member released while the leader has no stream to join drops its stale buffer', async () => {
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     (h.leaderSession as { state: string }).state = 'paused';
     reset(h.leader, h.member);
 
-    await h.memberOutput.memberPause().release(true);
+    await h.memberOutput.memberPause()!.release(true);
 
     assert.equal(h.controller.isMemberHeld(MEMBER), false);
     assert.equal(h.member.calls.stop, 1, 'its stale buffer is dropped');
@@ -288,7 +303,7 @@ test('pausing the whole group ends the hold and the group play brings the member
   // A held member used to sit out the group's next play after a pause of the whole group.
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     reset(h.leader, h.member);
 
     await h.leaderOutput.pause(h.leaderSession);
@@ -320,7 +335,7 @@ test('a group resumed after its held member was dropped starts every room from o
     await h.leaderOutput.play(h.leaderSession);
     await settle();
     const running = syncIdOf(h.leader.calls.play[0]!);
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     await h.leaderOutput.pause(h.leaderSession);
     reset(h.leader, h.member);
 
@@ -338,7 +353,7 @@ test('a group resumed after its held member was dropped starts every room from o
 test('stopping the whole group ends the hold and the next play includes the member', async () => {
   const h = harness();
   try {
-    await h.memberOutput.memberPause().hold();
+    await h.memberOutput.memberPause()!.hold();
     await h.leaderOutput.stop(h.leaderSession);
     assert.equal(h.controller.isMemberHeld(MEMBER), false);
     assert.equal(h.member.player.state, PlayerState.STOPPED);

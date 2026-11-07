@@ -196,9 +196,11 @@ export interface ZoneOutput {
   supportsNativeGrouping?(): boolean;
   /**
    * How one member of this protocol's group is paused on its own while the rest play on,
-   * and brought back by playing it again. Null, or absent, when the protocol cannot.
+   * and brought back by playing it again. Null, or absent, when the protocol cannot, and
+   * null whenever this zone is not a member whose player follows the leader's stream.
    *
-   * A member of such a group has no session of its own: it plays the leader's stream, so
+   * A member of such a group has no session of its own that it plays: it plays the
+   * leader's stream (whatever session it had before it joined plays to nobody), so
    * the zone hands its pause and play straight to this control instead of looking for
    * something of its own to pause or restart. The protocol keeps the hold itself, since it
    * is what leaves a held member out of the group's starts; the zone only asks about it.

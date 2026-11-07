@@ -84,8 +84,16 @@ export class SqueezeliteOutput implements ZoneOutput {
    * zone decides when that is, and whether the leader is playing; this only carries it
    * out. The hold itself lives in the group controller, which leaves a held member out
    * of every coordinated start.
+   *
+   * Only for a member of a slimproto sync-group, the one kind whose player plays the
+   * leader's stream. In a mixed group this zone is fed a session of its own and pauses
+   * like any other zone.
    */
-  public memberPause(): MemberPauseControl {
+  public memberPause(): MemberPauseControl | null {
+    const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
+    if (!group || group.leader === this.zoneId || !this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
+      return null;
+    }
     return {
       isHeld: () => this.ports.squeezeliteGroup.isMemberHeld(this.zoneId),
       hold: () => this.holdOutOfGroup(),

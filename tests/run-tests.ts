@@ -245,6 +245,7 @@ type ZoneHarness = {
   noopAirplayGroupController: AirplayGroupCoordinator;
   groupManager: GroupManager;
   groupTracker: typeof import('../src/application/groups/groupTracker');
+  audioManager: import('../src/application/playback/audioManager').AudioManager;
   cleanup: () => Promise<void>;
 };
 
@@ -459,6 +460,7 @@ async function createZoneHarness(): Promise<ZoneHarness> {
       noopAirplayGroupController,
       groupManager,
       groupTracker,
+      audioManager,
       cleanup: async () => {
         try {
           await fs.rm(tempDir, { recursive: true, force: true });
@@ -1275,6 +1277,41 @@ test('the group mirrors the hold the protocol keeps (#409)', async () => {
     zoneManager.applyPatch(LEADER, { mode: 'play' });
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
   } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('a member still holding a session of its own is paused and played as a member (#409)', async () => {
+  // A room that played another Spotify account on its own before it joined keeps that
+  // account's paused session: nothing ends it when the account plays elsewhere. That
+  // session sent the member's pause down the zone's own path, which paused the whole
+  // group, and its play woke the old account up instead of rejoining the group.
+  const LEADER = 41;
+  const MEMBER = 42;
+  const stub = stubSqueezeliteMemberPause();
+  const harness = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409f');
+  const { zoneManager, groupTracker, audioManager } = harness;
+  const ownSession = { zoneId: MEMBER, state: 'paused', source: 'spotify:track:other' };
+  const realGetSession = audioManager.getSession.bind(audioManager);
+  (audioManager as unknown as { getSession: (zoneId: number) => unknown }).getSession = (zoneId) =>
+    zoneId === MEMBER ? ownSession : realGetSession(zoneId);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+
+    zoneManager.handleCommand(MEMBER, 'pause');
+    assert.deepEqual(stub.calls, [`${MEMBER}:hold`], 'only the member is paused');
+    assert.equal(zoneManager.getState(LEADER)?.mode, 'play', 'the leader plays on');
+
+    zoneManager.handleCommand(MEMBER, 'play');
+    assert.deepEqual(
+      stub.calls,
+      [`${MEMBER}:hold`, `${MEMBER}:release(leader playing)`],
+      'play brings it back into the group, not to its old session',
+    );
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+  } finally {
+    delete (audioManager as unknown as { getSession?: unknown }).getSession;
     groupTracker.removeGroupByLeader(LEADER);
     stub.restore();
   }
