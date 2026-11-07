@@ -154,6 +154,22 @@ test('AirPlay controller passes through to playback coordinator', () => {
   assert.deepEqual(fakes.playbackCalls, ['play:1:airplay', 'pause:1', 'resume:1', 'stop:1']);
 });
 
+test('an AirPlay sender that ends its session hands back a zone AirPlay still owns (#420)', () => {
+  const { configurator, fakes } = buildConfigurator({ activeInput: 'airplay' });
+  configurator.configure();
+  fakes.airplay!.stopPlayback(1);
+  assert.deepEqual(fakes.playbackCalls, ['stop:1']);
+});
+
+test('an AirPlay sender that ends its session leaves alone a zone another input has taken', () => {
+  // The phone kept its session open while the zone moved on to a queue; its late TEARDOWN must
+  // not stop that queue or clear its input mode.
+  const { configurator, fakes } = buildConfigurator({ activeInput: 'queue' });
+  configurator.configure();
+  fakes.airplay!.stopPlayback(1);
+  assert.deepEqual(fakes.playbackCalls, []);
+});
+
 test('Spotify Connect takes a zone over from AirPlay and drops the AirPlay sender (#420)', () => {
   const { configurator, fakes } = buildConfigurator({ activeInput: 'airplay' });
   configurator.configure();

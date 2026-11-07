@@ -101,7 +101,21 @@ export class InputSourceConfigurator {
   }
 
   private configureAirplay(): void {
-    this.deps.inputsPort.configureAirplay(this.buildInputController());
+    const controller = this.buildInputController();
+    this.deps.inputsPort.configureAirplay({
+      ...controller,
+      // A sender ending its session gives the room back only if the room is still AirPlay's. A
+      // phone can hold its session open long after the zone moved on (a queue play started after
+      // the zone was stopped never tells AirPlay), and its TEARDOWN then arrives for a zone that
+      // is playing something else; stopping it there would end that and wipe its input mode.
+      stopPlayback: (zoneId) => {
+        const activeInput = this.deps.zoneRepo.get(zoneId)?.activeInput;
+        if (activeInput && activeInput !== 'airplay') {
+          return;
+        }
+        controller.stopPlayback(zoneId);
+      },
+    });
   }
 
   private configureDlna(): void {
