@@ -60,6 +60,9 @@ export const SQUEEZELITE_OUTPUT_DEFINITION: OutputConfigDefinition = {
   ],
 };
 
+/** Counts group restarts across outputs, so each opens a sync stream of its own (see `buildStreamUrl`). */
+let groupRestarts = 0;
+
 /** One `play()` waiting for its player to report the new stream started. */
 type PlaybackStartWatch = {
   promise: Promise<boolean>;
@@ -838,11 +841,14 @@ export class SqueezeliteOutput implements ZoneOutput {
 
     // For 100% sync we cannot allow "late join" mid-stream for codecs with headers (FLAC/MP3).
     // Instead, trigger a full group resync so all players start from the same byte again.
+    // Only a clean restart does that: every player drops what it holds — a member paused
+    // on its own still holds the track it was paused on, minutes behind (#409) — and the
+    // group opens a sync stream of its own instead of joining the running one late.
     const groupInfo = this.ports.squeezeliteGroup.preparePlayback(leaderZoneId);
     if (!groupInfo.grouped || groupInfo.expectedCount < 2) {
       return false;
     }
-    const url = this.buildStreamUrl(leaderSession, groupInfo);
+    const url = this.buildStreamUrl(leaderSession, groupInfo, { restart: true });
     if (!url) {
       return false;
     }
@@ -856,7 +862,9 @@ export class SqueezeliteOutput implements ZoneOutput {
       url,
     });
     try {
-      return await this.ports.squeezeliteGroup.orchestrateGroupPlayback(leaderZoneId, url, mime, meta);
+      return await this.ports.squeezeliteGroup.orchestrateGroupPlayback(leaderZoneId, url, mime, meta, {
+        flush: true,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.log.debug('squeezelite grouped member resync failed', {
@@ -938,9 +946,16 @@ export class SqueezeliteOutput implements ZoneOutput {
     }
   }
 
+  /**
+   * `restart` names a sync stream of its own for a group started again on the stream it
+   * already plays. The sync id is otherwise the leader's stream, so the restart found the
+   * group's running sync stream and joined it late, each player at the byte it happened
+   * to connect on, rather than all of them starting from one (#409).
+   */
   private buildStreamUrl(
     session: PlaybackSession,
     groupInfo?: { grouped: boolean; leaderZoneId: number; expectedCount: number },
+    options: { restart?: boolean } = {},
   ): string | null {
     const sys = this.ports.config.getSystemConfig();
     const baseUrl = buildBaseUrl({
@@ -966,7 +981,12 @@ export class SqueezeliteOutput implements ZoneOutput {
       // IMPORTANT: make the sync stream URL unique per playback session.
       // Otherwise, some players may keep an existing HTTP connection open across track switches,
       // causing `expect=N` to never be satisfied and groups to start via the 10s timeout.
-      const syncId = `${groupInfo.leaderZoneId}-${session.stream?.id ?? 'current'}`;
+      const streamSyncId = `${groupInfo.leaderZoneId}-${session.stream?.id ?? 'current'}`;
+      let syncId = streamSyncId;
+      if (options.restart) {
+        groupRestarts += 1;
+        syncId = `${streamSyncId}-r${groupRestarts}`;
+      }
       result = ensureQueryParam(result, 'sync', syncId);
       result = ensureQueryParam(result, 'expect', String(groupInfo.expectedCount));
     }

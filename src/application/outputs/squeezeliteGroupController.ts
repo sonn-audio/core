@@ -26,12 +26,18 @@ export type SqueezeliteGroupCoordinator = {
   /**
    * Start/replace playback for a sync-group by issuing playUrl to all active members.
    * This is required because only the leader zone gets a new session on track switches.
+   *
+   * `flush` empties every player's buffer first. A track change leaves it out: the
+   * players hold the same audio and play the old track's tail out together. A restart
+   * of the group on the stream it is already playing needs it, because a buffer is only
+   * replaced by a flush — a new stream is queued behind whatever a player still holds.
    */
   orchestrateGroupPlayback: (
     leaderZoneId: number,
     url: string,
     mimeType: string,
     metadata: Record<string, string | number>,
+    options?: { flush?: boolean },
   ) => Promise<boolean>;
   /**
    * Enqueue a new URL on all active group players using a native crossfade transition.
@@ -325,11 +331,13 @@ class SqueezeliteGroupController {
     url: string,
     mimeType: string,
     metadata: Record<string, string | number>,
+    options: { flush?: boolean } = {},
   ): Promise<boolean> {
     const entries = this.getActiveGroupPlayersFor(leaderZoneId);
     if (entries.length < 2) {
       return false;
     }
+    const flush = options.flush === true;
 
     // Ensure pending group tracking exists before BUFFER_READY events arrive.
     this.preparePlayback(leaderZoneId);
@@ -339,10 +347,13 @@ class SqueezeliteGroupController {
     // sendFlush=false: a direct strm-s (enqueue=false) already implies stop+clear,
     // so we avoid the separate strm-f that would trigger STMf → stale _nextMedia
     // dispatch on paused players that had a prior orchestrateGroupEnqueue pending.
+    // A strm-s does not empty the player's buffer, though: the new stream is decoded in
+    // behind it. A restart asks for the flush, or a member paused minutes ago plays out
+    // the track it was paused on before it reaches this stream (#409).
     await Promise.all(
       entries.map(async ({ player }) => {
         try {
-          await player.playUrl(url, mimeType, metadata, undefined, 0, false, false, false);
+          await player.playUrl(url, mimeType, metadata, undefined, 0, false, false, flush);
         } catch {
           // ignore per-client failures; group will degrade to fewer members
         }
