@@ -207,6 +207,7 @@ import './squeezeliteReconnect.test';
 import './squeezeliteMixedGroup.test';
 import './squeezeliteMemberPause.test';
 import './squeezelitePlaybackStart.test';
+import './squeezeliteAlertSync.test';
 import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
 import './adminZoneStates.test';
@@ -1144,6 +1145,54 @@ async function setUpSqueezeliteGroup(leader: number, member: number, externalId:
   });
   return harness;
 }
+
+test('the zone manager lets every room of a synced alert wait for the coldest amp (#359)', async () => {
+  // Loaded the way the zone harness loads it, so no stale module graph is left behind.
+  await getZoneHarness();
+  const { ZoneManager } = require('../src/application/zones/zoneManager') as typeof import('../src/application/zones/zoneManager');
+  const asked: number[][] = [];
+  const syncing = {
+    type: 'squeezelite',
+    prepareSyncedAlert: (zoneIds: readonly number[]) => {
+      asked.push([...zoneIds]);
+      return zoneIds.filter((zoneId) => zoneId !== 3);
+    },
+  };
+  const outputsByZone: Record<number, unknown[]> = {
+    1: [syncing],
+    2: [syncing],
+    3: [{ type: 'sendspin' }],
+  };
+  const manager = {
+    zoneRepo: { get: (zoneId: number) => ({ outputs: outputsByZone[zoneId] ?? [] }) },
+    log: { debug: () => undefined },
+    getAlertStartDelaysMs: () =>
+      new Map([
+        [1, 0],
+        [2, 1500],
+        [3, 200],
+      ]),
+    prepareSyncedAlerts: (ZoneManager.prototype as unknown as { prepareSyncedAlerts: unknown }).prepareSyncedAlerts,
+  };
+  const prepare = (ZoneManager.prototype as unknown as {
+    prepareAlertStart: (zoneIds: number[]) => Map<number, number>;
+  }).prepareAlertStart;
+
+  const delays = prepare.call(manager, [1, 2, 3]);
+  // The hall shares the kitchen's stream, so it leads with the kitchen's wake-up silence;
+  // the sendspin room keeps its own.
+  assert.deepEqual([...delays], [
+    [1, 1500],
+    [2, 1500],
+    [3, 200],
+  ]);
+  assert.deepEqual(asked, [[1, 2, 3]], 'the protocol is asked once, for every zone');
+
+  // One zone has nothing to be in step with.
+  asked.length = 0;
+  prepare.call(manager, [1]);
+  assert.deepEqual(asked, []);
+});
 
 test('a squeezelite member paused on its own stays paused through the next track (#409)', async () => {
   // A member of a squeezelite group has no session: it plays the leader's stream. Its

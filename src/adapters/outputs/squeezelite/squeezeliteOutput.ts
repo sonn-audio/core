@@ -9,6 +9,7 @@ import type {
   ZoneOutput,
 } from '@/ports/OutputsTypes';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
+import type { SqueezeliteAlertJoin } from '@/application/outputs/squeezeliteGroupController';
 import type { SlimClient, SlimEvent } from '@sonn-audio/node-slimproto';
 import { EventType, PlayerState, TransitionType } from '@sonn-audio/node-slimproto';
 
@@ -28,6 +29,12 @@ export interface SqueezeliteOutputConfig {
 const RESUME_DEBOUNCE_MS = 1500;
 /** How often the player's own position is passed on for lag measurement. */
 const POSITION_REPORT_INTERVAL_MS = 2000;
+/**
+ * How long a player whose alert stream went away waits before it plays the alert by itself.
+ * An alert switched off everywhere at once ends the source a moment before the others, and
+ * none of them should start again in the meantime.
+ */
+const ALERT_SOURCE_LOST_GRACE_MS = 300;
 
 export const SQUEEZELITE_OUTPUT_DEFINITION: OutputConfigDefinition = {
   id: 'squeezelite',
@@ -123,6 +130,7 @@ export class SqueezeliteOutput implements ZoneOutput {
   private lastGrouped = false;
   private stoppingAfterDrop = false;
   private latencyMs: number;
+  private alertSourceLostTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly zoneId: number,
@@ -147,6 +155,19 @@ export class SqueezeliteOutput implements ZoneOutput {
 
   public isReady(): boolean {
     return Boolean(this.resolvePlayer());
+  }
+
+  /**
+   * An alert for several rooms reaches each as a stream of its own, and two Squeezelite
+   * players never start their own streams together: each flushes, reconnects and fills its
+   * buffer on its own schedule, so a doorbell rang in two rooms at once came out of them
+   * apart (#359). Leading silence cannot line them up, because how long that takes is not
+   * known here. A sync group's players stay in step another way — they share one stream and
+   * are unpaused against one clock — and the same works for an alert. The group controller
+   * plans that for whichever of these zones it can; see `prepareAlertSync`.
+   */
+  public prepareSyncedAlert(zoneIds: readonly number[]): number[] {
+    return this.ports.squeezeliteGroup.prepareAlertSync(zoneIds);
   }
 
   public supportsCrossfade(): boolean {
@@ -249,6 +270,23 @@ export class SqueezeliteOutput implements ZoneOutput {
     // Consume the crossfade hint set by setCrossfadeHint() before this call.
     const crossfadeSec = this.pendingCrossfadeSec;
     this.pendingCrossfadeSec = 0;
+
+    if (session.metadata?.isAlert) {
+      const outcome = await this.joinAlertSync(session);
+      if (outcome === 'synced') {
+        // The player holds the shared alert stream and starts with the others; the next
+        // "playing" it reports is that start.
+        if (this.playbackStart === watch) {
+          watch.armed = true;
+        }
+        return;
+      }
+      if (outcome === 'cancelled') {
+        return;
+      }
+    } else {
+      this.ports.squeezeliteGroup.leaveAlertSync(this.zoneId);
+    }
 
     const groupInfo = this.ports.squeezeliteGroup.preparePlayback(this.zoneId);
     const streamUrl = this.buildStreamUrl(session, groupInfo, { restart });
@@ -442,6 +480,7 @@ export class SqueezeliteOutput implements ZoneOutput {
   public async stop(_session: PlaybackSession | null): Promise<void> {
     this.clearPendingAutostart();
     this.playbackStart?.settle(false);
+    this.ports.squeezeliteGroup.leaveAlertSync(this.zoneId);
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
       if (this.zoneId === group.leader) {
@@ -510,6 +549,10 @@ export class SqueezeliteOutput implements ZoneOutput {
     this.unsubscribe();
     this.unsubscribeGroups();
     this.ports.squeezeliteGroup.unregister(this.zoneId);
+    if (this.alertSourceLostTimer) {
+      clearTimeout(this.alertSourceLostTimer);
+      this.alertSourceLostTimer = undefined;
+    }
   }
 
   private syncGroupState(): void {
@@ -968,6 +1011,89 @@ export class SqueezeliteOutput implements ZoneOutput {
       clearTimeout(this.autostartTimer);
       this.autostartTimer = undefined;
     }
+  }
+
+  /**
+   * Hand this alert to the alert sync it was planned for. `alone` when it was planned for
+   * none, or could not be played in step after all: the output then plays it as before.
+   */
+  private async joinAlertSync(session: PlaybackSession): Promise<SqueezeliteAlertJoin> {
+    if (this.alertSourceLostTimer) {
+      clearTimeout(this.alertSourceLostTimer);
+      this.alertSourceLostTimer = undefined;
+    }
+    const joined = this.ports.squeezeliteGroup.joinAlertSync({
+      zoneId: this.zoneId,
+      metadata: this.buildMetadata(session, session.metadata?.audiopath ?? ''),
+      stream: (syncId, expected) => this.buildAlertSyncStream(session, syncId, expected),
+      onSourceLost: (heard) => this.continueAlertAlone(session, heard),
+    });
+    return joined ? joined : 'alone';
+  }
+
+  /**
+   * This zone's alert as the stream an alert sync's players share. Primed: the alert has
+   * been running since it was started, and every player has to get it from its first byte.
+   */
+  private buildAlertSyncStream(
+    session: PlaybackSession,
+    syncId: string,
+    expected: number,
+  ): { url: string; mimeType: string } | null {
+    const sys = this.ports.config.getSystemConfig();
+    const baseUrl = buildBaseUrl({
+      host: sys.audioserver.ip?.trim(),
+      fallbackHost: '127.0.0.1',
+    });
+    let url = resolveStreamUrl({
+      baseUrl,
+      zoneId: this.zoneId,
+      streamPath: session.stream?.url,
+      defaultExt: 'flac',
+      prime: '1',
+      primeMode: 'ensure',
+    });
+    if (!url) {
+      return null;
+    }
+    url = ensureQueryParam(url, 'sync', syncId);
+    url = ensureQueryParam(url, 'expect', String(expected));
+    return { url, mimeType: resolveMimeType(url) };
+  }
+
+  /**
+   * The zone this player followed for an alert ended its own alert first, and the stream
+   * went with it. An alert the room has not heard yet, or one with no end of its own (a
+   * looping alarm), is played again from this zone's own alert, which has been running all
+   * along. A timed alert the room is already hearing is left alone: the player has what is
+   * left of it buffered, and the zone's own alert window ends it as before.
+   */
+  private continueAlertAlone(session: PlaybackSession, heard: boolean): void {
+    const duration = Number(session.metadata?.duration);
+    if (heard && Number.isFinite(duration) && duration > 0) {
+      return;
+    }
+    if (this.alertSourceLostTimer) {
+      clearTimeout(this.alertSourceLostTimer);
+    }
+    this.alertSourceLostTimer = setTimeout(() => {
+      this.alertSourceLostTimer = undefined;
+      const current = this.ports.audioManager.getSession(this.zoneId);
+      if (
+        !current ||
+        current.state !== 'playing' ||
+        !current.metadata?.isAlert ||
+        current.stream?.id !== session.stream?.id
+      ) {
+        return;
+      }
+      this.log.debug('squeezelite alert stream went away; playing the alert by itself', {
+        zoneId: this.zoneId,
+        heard,
+      });
+      void this.startPlaybackWatched(current, false);
+    }, ALERT_SOURCE_LOST_GRACE_MS);
+    this.alertSourceLostTimer.unref?.();
   }
 
   /**

@@ -223,6 +223,11 @@ export const noopSqueezeliteGroupController: SqueezeliteGroupCoordinator = {
   releaseMember: () => false,
   isMemberHeld: () => false,
   hasStoppedMember: () => false,
+  prepareAlertSync: () => [],
+  joinAlertSync: () => null,
+  leaveAlertSync: () => {
+    /* noop */
+  },
   orchestrateGroupPlayback: async () => false,
   orchestrateGroupPause: async () => false,
   orchestrateGroupResume: async () => false,

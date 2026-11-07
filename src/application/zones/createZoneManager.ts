@@ -44,6 +44,7 @@ export type ZoneManagerFacade = Pick<
   | 'setOutputLatency'
   | 'startAlert'
   | 'getAlertStartDelaysMs'
+  | 'prepareAlertStart'
   | 'stopAlert'
   | 'syncGroupMembersToLeader'
   | 'refreshContentProviders'

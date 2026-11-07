@@ -68,7 +68,7 @@ export class AlertsManager {
       this.log.warn('no media resolved for alert', { type: normalizedType });
       return { success: false, type: normalizedType, action, reason: 'media-unavailable' };
     }
-    const startDelays = this.zones.getAlertStartDelaysMs(zones);
+    const startDelays = this.zones.prepareAlertStart(zones);
     await Promise.all(
       zones.map(async (zoneId) => {
         const volume = this.resolveAlertVolume(zoneId, normalizedType, volumeOverride);
@@ -99,7 +99,7 @@ export class AlertsManager {
     if (!media) {
       return { success: false, type: 'uploaded', action: 'on', reason: 'media-unavailable' };
     }
-    const startDelays = this.zones.getAlertStartDelaysMs(zones);
+    const startDelays = this.zones.prepareAlertStart(zones);
     await Promise.all(
       zones.map(async (zoneId) => {
         const volume = this.resolveAlertVolume(zoneId, 'uploaded');
@@ -127,7 +127,7 @@ export class AlertsManager {
     if (!media) {
       return { success: false, type: 'playeventfile', action: 'on', reason: 'media-unavailable' };
     }
-    const startDelays = this.zones.getAlertStartDelaysMs(
+    const startDelays = this.zones.prepareAlertStart(
       normalizedTargets.map((entry) => entry.zoneId),
     );
     await Promise.all(

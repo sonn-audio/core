@@ -68,6 +68,8 @@ function harness() {
       notifyPlaybackTick: () => undefined,
       notifyBufferReady: () => undefined,
       isMemberHeld: () => false,
+      joinAlertSync: () => null,
+      leaveAlertSync: () => undefined,
     },
     zoneAudioPrefs: {
       getEffectiveOutputSettings: () => ({ sampleRate: 44100, channels: 2, pcmBitDepth: 16 }),

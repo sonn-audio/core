@@ -225,6 +225,14 @@ export interface ZoneOutput {
    * engine-stream path. Mirrors MA's PlayerFeature.PLAY_ANNOUNCEMENT dispatch.
    */
   playNativeAlert?(request: NativeAlertRequest): Promise<boolean>;
+  /**
+   * Optional: play the next alert of these zones as one stream, in step in every room,
+   * where the protocol keeps players in step only by feeding them one stream (#359).
+   * Asked once per alert, of one output, with every zone the alert is for; this zone is
+   * among them. Returns the zones it took on — only ever two or more — and every zone it
+   * did not plays its alert as before. Their alerts then start as usual, one per zone.
+   */
+  prepareSyncedAlert?(zoneIds: readonly number[]): number[];
   dispose(): Promise<void> | void;
 }
 

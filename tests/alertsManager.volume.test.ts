@@ -18,7 +18,7 @@ test('wecker alert uses alarm-clock volume slot', async () => {
   };
   manager.initOnce({
     zoneManager: {
-      getAlertStartDelaysMs: () => new Map<number, number>(),
+      prepareAlertStart: () => new Map<number, number>(),
       getZoneVolumes: () => ({
         default: 20,
         alarm: 30,

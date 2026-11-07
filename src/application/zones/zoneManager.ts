@@ -1031,6 +1031,68 @@ export class ZoneManager {
     return computeAlertStartDelays(leads);
   }
 
+  /**
+   * Get an alert for these zones ready to start, and say how much wake-up silence each zone's
+   * alert leads with (see `getAlertStartDelaysMs`).
+   *
+   * Zones whose players can only be kept in step by sharing one stream are set up to play it
+   * as one: a Squeezelite player starts a stream of its own whenever it is ready, so two
+   * rooms ringing their own alert rang apart (#359). Those zones hear the alert of one of
+   * them, with its leading silence, so they all lead with the longest any of them needs —
+   * a cold amp in one room is waited for in all of them, as they start together.
+   *
+   * Every zone still runs an alert of its own — its state, volume, window and restore are
+   * untouched by this — and the stream is only what its speaker plays.
+   */
+  public prepareAlertStart(zoneIds: number[]): Map<number, number> {
+    const delays = this.getAlertStartDelaysMs(zoneIds);
+    for (const zones of this.prepareSyncedAlerts(zoneIds)) {
+      const shared = zones.reduce((max, zoneId) => Math.max(max, delays.get(zoneId) ?? 0), 0);
+      for (const zoneId of zones) {
+        delays.set(zoneId, shared);
+      }
+    }
+    return delays;
+  }
+
+  /** The sets of zones whose outputs took on to play this alert as one stream each. */
+  private prepareSyncedAlerts(zoneIds: number[]): number[][] {
+    const remaining = [...new Set(zoneIds)];
+    const sets: number[][] = [];
+    if (remaining.length < 2) {
+      return sets;
+    }
+    const asked = new Set<string>();
+    for (const zoneId of [...remaining]) {
+      if (!remaining.includes(zoneId) || remaining.length < 2) {
+        continue;
+      }
+      const ctx = this.zoneRepo.get(zoneId);
+      for (const output of ctx?.outputs ?? []) {
+        if (typeof output.prepareSyncedAlert !== 'function' || asked.has(output.type)) {
+          continue;
+        }
+        // One protocol plans for all its zones at once; asking it again per zone would
+        // only replace the plan it just made.
+        asked.add(output.type);
+        let taken: number[] = [];
+        try {
+          taken = output.prepareSyncedAlert(remaining).filter((id) => remaining.includes(id));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.log.debug('alert could not be set up as one stream', { zoneId, message });
+        }
+        if (taken.length >= 2) {
+          sets.push(taken);
+          for (const id of taken) {
+            remaining.splice(remaining.indexOf(id), 1);
+          }
+        }
+      }
+    }
+    return sets;
+  }
+
   public async stopAlert(zoneId: number): Promise<void> {
     return this.alertsCoordinator.stopAlert(zoneId);
   }

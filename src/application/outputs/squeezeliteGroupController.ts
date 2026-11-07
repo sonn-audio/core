@@ -9,6 +9,33 @@ export type SqueezeliteGroupParticipant = {
   getLatencyMs: () => number;
 };
 
+/**
+ * One zone's part in an alert played to several standalone players as one stream (#359).
+ * Handed over by the zone's output when the alert reaches it.
+ */
+export type SqueezeliteAlertArrival = {
+  zoneId: number;
+  /** What this player shows while it plays the alert (its own alert, not the source's). */
+  metadata: Record<string, string | number>;
+  /**
+   * The sync stream of this zone's alert, for `expected` players to share. Asked of the
+   * zone the players end up following; null when it has no stream to offer.
+   */
+  stream: (syncId: string, expected: number) => { url: string; mimeType: string } | null;
+  /**
+   * The zone whose stream this player follows left before this one did. `heard` says
+   * whether the players had started: before that the room has heard nothing of the alert.
+   */
+  onSourceLost: (heard: boolean) => void;
+};
+
+/**
+ * What became of an alert that arrived for an alert sync: it plays in step with the others
+ * (`synced`), the output plays it by itself as before (`alone`), or the zone left before
+ * the players were handed anything (`cancelled`).
+ */
+export type SqueezeliteAlertJoin = 'synced' | 'alone' | 'cancelled';
+
 export type SqueezeliteGroupCoordinator = {
   register: (participant: SqueezeliteGroupParticipant) => void;
   unregister: (zoneId: number) => void;
@@ -74,6 +101,21 @@ export type SqueezeliteGroupCoordinator = {
    * unpause cannot bring it back in step and the group has to start again together.
    */
   hasStoppedMember: (zoneId: number) => boolean;
+  /**
+   * Have the next alert of these zones play on their players as one stream, the way a sync
+   * group plays music (#359). Only zones whose player plays on its own — none that is part
+   * of a slimproto sync group, whose alert the group already carries — and only when at
+   * least two of them can. Returns the zones that will, or an empty list.
+   */
+  prepareAlertSync: (zoneIds: readonly number[]) => number[];
+  /**
+   * The alert of a zone prepared above reached its output. Null when the zone was not
+   * prepared for one, so the output plays the alert as it always has; otherwise resolves
+   * once this player was handed the shared stream, or with how the output has to go on.
+   */
+  joinAlertSync: (arrival: SqueezeliteAlertArrival) => Promise<SqueezeliteAlertJoin> | null;
+  /** The zone's alert ended, or something else plays there now: its player leaves the alert sync. */
+  leaveAlertSync: (zoneId: number) => void;
 };
 
 type PendingGroup = {
@@ -84,6 +126,45 @@ type PendingGroup = {
 };
 
 type SyncPlaypoint = { ts: number; diffMs: number };
+
+type AlertSyncMember = {
+  arrival: SqueezeliteAlertArrival;
+  resolve: (outcome: SqueezeliteAlertJoin) => void;
+  player?: SlimClient;
+  /** Unpaused, alone or with the others. */
+  started: boolean;
+};
+
+type AlertSync = {
+  id: string;
+  /** The zones still expected or taking part, in the order the alert named them. */
+  zones: number[];
+  members: Map<number, AlertSyncMember>;
+  /** Players were handed the stream; nobody joins any more. */
+  dispatched: boolean;
+  /** The zone whose alert stream the players follow. */
+  sourceZoneId: number | null;
+  heard: boolean;
+  arrivalTimer?: NodeJS.Timeout;
+  pollTimer?: NodeJS.Timeout;
+  readyDeadline: number;
+  ended: boolean;
+};
+
+/**
+ * How long an alert sync waits for every zone's alert to reach its output, counted from
+ * the moment it was prepared. Each zone's alert first ends the one before it and waits for
+ * its output to be ready, which can take a couple of seconds; a zone later than this plays
+ * its alert by itself rather than hold the others back.
+ */
+const ALERT_SYNC_ARRIVAL_WAIT_MS = 3000;
+/**
+ * How long the players get to fill their buffers before the ones that did start together.
+ * One that is still not ready then starts on its own as soon as it is.
+ */
+const ALERT_SYNC_READY_WAIT_MS = 4000;
+/** How long a player that missed the shared start may take before it is given up on. */
+const ALERT_SYNC_STRAGGLER_WAIT_MS = 10_000;
 
 class SqueezeliteGroupController {
   private readonly log = createLogger('Output', 'SqueezeliteGroups');
@@ -121,6 +202,13 @@ class SqueezeliteGroupController {
   // A member this far out of sync (e.g. due to a broken elapsedMs report)
   // must be left to resync naturally on the next track change.
   private readonly maxResyncDeltaMs = 2000;
+  // Alerts played to several standalone players as one stream (#359). A zone is `prepared`
+  // from the moment the alert is planned until its alert reaches its output, and `joined`
+  // from then until it leaves; the two are apart because a zone ends its previous alert
+  // in between, and that must not take it out of the next one.
+  private readonly preparedAlerts = new Map<number, AlertSync>();
+  private readonly joinedAlerts = new Map<number, AlertSync>();
+  private alertSyncCount = 0;
 
   constructor() {}
 
@@ -129,6 +217,8 @@ class SqueezeliteGroupController {
   }
 
   public unregister(zoneId: number): void {
+    this.leaveAlertSync(zoneId);
+    this.dropPreparedAlert(zoneId);
     this.participants.delete(zoneId);
     this.heldMembers.delete(zoneId);
   }
@@ -252,6 +342,10 @@ class SqueezeliteGroupController {
   }
 
   public notifyBufferReady(zoneId: number): void {
+    const alertSync = this.joinedAlerts.get(zoneId);
+    if (alertSync?.dispatched) {
+      this.scheduleAlertReadyCheck(alertSync, 0);
+    }
     const group = getGroupByZone(zoneId);
     if (!group) return;
     const leaderZoneId = group.leader;
@@ -680,6 +774,32 @@ class SqueezeliteGroupController {
     }
     if (entries.length < 2) return false;
 
+    const { headroomMs: headroom, audibleAtMs } = await this.unpauseTogether(entries);
+    this.log.debug('squeezelite group start', {
+      leaderZoneId,
+      headroomMs: headroom,
+      audibleAtMs,
+      members: entries.map((entry) => entry.zoneId),
+      latencyMs: Object.fromEntries(entries.map((entry) => [entry.zoneId, entry.latencyMs])),
+    });
+    // After a synchronized group start all members resume from the same point,
+    // so any previously recorded elapsed baselines are stale.
+    for (const key of [...this.elapsedBaselines.keys()]) {
+      if (key.startsWith(`${leaderZoneId}:`)) {
+        this.elapsedBaselines.delete(key);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Unpause these players so the first sample comes out of every one at the same moment:
+   * their clocks are synced first, and each is aimed at a shared server time less its own
+   * fixed latency, with headroom for the slowest round trip.
+   */
+  private async unpauseTogether(
+    entries: Array<{ zoneId: number; player: SlimClient; latencyMs: number }>,
+  ): Promise<{ headroomMs: number; audibleAtMs: number }> {
     // Sync clocks first so we can schedule everyone against a shared server time.
     await Promise.all(entries.map((entry) => entry.player.requestClockSync().catch(() => false)));
 
@@ -703,21 +823,304 @@ class SqueezeliteGroupController {
       });
       void entry.player.unpauseAt(target);
     }
-    this.log.debug('squeezelite group start', {
-      leaderZoneId,
-      headroomMs: headroom,
-      audibleAtMs,
-      members: entries.map((entry) => entry.zoneId),
-      latencyMs: Object.fromEntries(entries.map((entry) => [entry.zoneId, entry.latencyMs])),
+    return { headroomMs: headroom, audibleAtMs };
+  }
+
+  public prepareAlertSync(zoneIds: readonly number[]): number[] {
+    const zones: number[] = [];
+    for (const zoneId of new Set(zoneIds)) {
+      if (!this.participants.get(zoneId)?.getPlayer()) continue;
+      // A zone of a slimproto sync group has its alert carried by that group. The group is
+      // the user's, and an alert must not take its players away from it.
+      if (this.isSyncGroup(zoneId)) continue;
+      zones.push(zoneId);
+    }
+    if (zones.length < 2) {
+      return [];
+    }
+    this.alertSyncCount += 1;
+    const sync: AlertSync = {
+      id: `alert-${Date.now().toString(36)}-${this.alertSyncCount}`,
+      zones,
+      members: new Map(),
+      dispatched: false,
+      sourceZoneId: null,
+      heard: false,
+      readyDeadline: 0,
+      ended: false,
+    };
+    for (const zoneId of zones) {
+      this.dropPreparedAlert(zoneId);
+      this.preparedAlerts.set(zoneId, sync);
+    }
+    sync.arrivalTimer = setTimeout(() => {
+      sync.arrivalTimer = undefined;
+      void this.dispatchAlertSync(sync);
+    }, ALERT_SYNC_ARRIVAL_WAIT_MS);
+    sync.arrivalTimer.unref?.();
+    this.log.debug('squeezelite alert prepared as one stream', { syncId: sync.id, zones });
+    return [...zones];
+  }
+
+  public joinAlertSync(arrival: SqueezeliteAlertArrival): Promise<SqueezeliteAlertJoin> | null {
+    const zoneId = arrival.zoneId;
+    const sync = this.preparedAlerts.get(zoneId);
+    if (!sync) {
+      return null;
+    }
+    this.preparedAlerts.delete(zoneId);
+    // Whatever alert stream this player still followed, this alert replaces it.
+    this.leaveAlertSync(zoneId);
+    if (sync.dispatched || sync.ended) {
+      return Promise.resolve('alone');
+    }
+    return new Promise<SqueezeliteAlertJoin>((resolve) => {
+      sync.members.set(zoneId, { arrival, resolve, started: false });
+      this.joinedAlerts.set(zoneId, sync);
+      this.maybeDispatchAlertSync(sync);
     });
-    // After a synchronized group start all members resume from the same point,
-    // so any previously recorded elapsed baselines are stale.
-    for (const key of [...this.elapsedBaselines.keys()]) {
-      if (key.startsWith(`${leaderZoneId}:`)) {
-        this.elapsedBaselines.delete(key);
+  }
+
+  /**
+   * A zone leaving matters in three ways. Before the players were handed the stream it is
+   * simply not waited for. A player following the stream just stops following it. The zone
+   * the stream comes from takes it along, though — its alert session is the stream — so the
+   * others are told and go on by themselves (see `SqueezeliteAlertArrival.onSourceLost`).
+   */
+  public leaveAlertSync(zoneId: number): void {
+    const sync = this.joinedAlerts.get(zoneId);
+    if (!sync) {
+      return;
+    }
+    this.joinedAlerts.delete(zoneId);
+    const member = sync.members.get(zoneId);
+    sync.members.delete(zoneId);
+    sync.zones = sync.zones.filter((id) => id !== zoneId);
+    if (!sync.dispatched) {
+      member?.resolve('cancelled');
+      this.maybeDispatchAlertSync(sync);
+      return;
+    }
+    if (zoneId !== sync.sourceZoneId) {
+      if (sync.members.size === 0) {
+        this.endAlertSync(sync);
+      }
+      return;
+    }
+    const heard = sync.heard;
+    const rest = [...sync.members.values()];
+    this.log.debug('squeezelite alert stream source left; the others go on by themselves', {
+      syncId: sync.id,
+      sourceZoneId: zoneId,
+      heard,
+      remaining: [...sync.members.keys()],
+    });
+    this.endAlertSync(sync);
+    for (const other of rest) {
+      try {
+        other.arrival.onSourceLost(heard);
+      } catch {
+        // Best-effort; the zone's own alert window still ends it.
       }
     }
-    return true;
+  }
+
+  /** A prepared zone takes part in another alert now, or none: the old one stops waiting for it. */
+  private dropPreparedAlert(zoneId: number): void {
+    const sync = this.preparedAlerts.get(zoneId);
+    if (!sync) {
+      return;
+    }
+    this.preparedAlerts.delete(zoneId);
+    sync.zones = sync.zones.filter((id) => id !== zoneId);
+    this.maybeDispatchAlertSync(sync);
+  }
+
+  private maybeDispatchAlertSync(sync: AlertSync): void {
+    if (sync.dispatched || sync.ended) {
+      return;
+    }
+    if (sync.zones.every((zoneId) => sync.members.has(zoneId))) {
+      void this.dispatchAlertSync(sync);
+    }
+  }
+
+  /**
+   * Hand every player that arrived the same stream — the alert of the first of them, in the
+   * order the alert named the zones — paused, as a sync group's track change does. They all
+   * fetch it from its first byte, and are unpaused together once their buffers are full.
+   * Fewer than two players is no sync: each plays its alert by itself, as before.
+   */
+  private async dispatchAlertSync(sync: AlertSync): Promise<void> {
+    if (sync.dispatched || sync.ended) {
+      return;
+    }
+    sync.dispatched = true;
+    if (sync.arrivalTimer) {
+      clearTimeout(sync.arrivalTimer);
+      sync.arrivalTimer = undefined;
+    }
+    for (const [zoneId, prepared] of [...this.preparedAlerts]) {
+      if (prepared === sync) {
+        // Too late for this one; when its alert arrives it plays by itself.
+        this.preparedAlerts.delete(zoneId);
+      }
+    }
+    const entries: Array<{ zoneId: number; member: AlertSyncMember; player: SlimClient }> = [];
+    for (const [zoneId, member] of sync.members) {
+      const player = this.participants.get(zoneId)?.getPlayer();
+      if (player) {
+        entries.push({ zoneId, member, player });
+      }
+    }
+    entries.sort((a, b) => sync.zones.indexOf(a.zoneId) - sync.zones.indexOf(b.zoneId));
+    const source = entries[0];
+    const stream = entries.length >= 2 && source ? source.member.arrival.stream(sync.id, entries.length) : null;
+    if (!source || !stream) {
+      this.endAlertSync(sync);
+      return;
+    }
+    for (const [zoneId, member] of [...sync.members]) {
+      if (!entries.some((entry) => entry.zoneId === zoneId)) {
+        sync.members.delete(zoneId);
+        this.joinedAlerts.delete(zoneId);
+        member.resolve('alone');
+      }
+    }
+    sync.sourceZoneId = source.zoneId;
+    this.log.debug('squeezelite alert plays as one stream', {
+      syncId: sync.id,
+      sourceZoneId: source.zoneId,
+      zones: entries.map((entry) => entry.zoneId),
+      url: stream.url,
+    });
+    await Promise.all(
+      entries.map(async ({ zoneId, member, player }) => {
+        try {
+          // autostart off, flush on: the player drops whatever it was playing and waits,
+          // buffered, for the shared start.
+          await player.playUrl(stream.url, stream.mimeType, member.arrival.metadata, undefined, 0, false, false, true);
+        } catch {
+          if (sync.members.get(zoneId) === member) {
+            sync.members.delete(zoneId);
+            this.joinedAlerts.delete(zoneId);
+          }
+          member.resolve('alone');
+          return;
+        }
+        if (sync.members.get(zoneId) !== member) {
+          // Left while the stream was being handed over; its stop may have gone out first.
+          await player.stop().catch(() => undefined);
+          return;
+        }
+        member.player = player;
+        member.resolve('synced');
+      }),
+    );
+    if (sync.ended) {
+      return;
+    }
+    sync.readyDeadline = Date.now() + ALERT_SYNC_READY_WAIT_MS;
+    this.scheduleAlertReadyCheck(sync, 0);
+  }
+
+  /** A check due now replaces one waiting for the next poll: a player just said it is ready. */
+  private scheduleAlertReadyCheck(sync: AlertSync, delayMs: number): void {
+    if (sync.ended) {
+      return;
+    }
+    if (sync.pollTimer) {
+      if (delayMs > 0) {
+        return;
+      }
+      clearTimeout(sync.pollTimer);
+    }
+    sync.pollTimer = setTimeout(() => {
+      sync.pollTimer = undefined;
+      void this.checkAlertSyncReady(sync);
+    }, delayMs);
+    sync.pollTimer.unref?.();
+  }
+
+  /**
+   * Unpause the players together once every one has its buffer full, or — when one takes
+   * too long — the ones that have, and each latecomer as soon as it is ready: a room that
+   * comes in late is still better than a room that misses the alert.
+   */
+  private async checkAlertSyncReady(sync: AlertSync): Promise<void> {
+    if (sync.ended) {
+      return;
+    }
+    const waiting = [...sync.members].filter(([, member]) => member.player && !member.started);
+    if (waiting.length === 0) {
+      return;
+    }
+    const ready = waiting.filter(([, member]) => member.player!.state === PlayerState.BUFFER_READY);
+    const now = Date.now();
+    if (!sync.heard) {
+      if (ready.length > 0 && (ready.length === waiting.length || now >= sync.readyDeadline)) {
+        sync.heard = true;
+        for (const [, member] of ready) {
+          member.started = true;
+        }
+        const { headroomMs, audibleAtMs } = await this.unpauseTogether(
+          ready.map(([zoneId, member]) => ({
+            zoneId,
+            player: member.player!,
+            latencyMs: this.resolveLatencyMs(zoneId),
+          })),
+        );
+        this.log.debug('squeezelite alert start', {
+          syncId: sync.id,
+          headroomMs,
+          audibleAtMs,
+          members: ready.map(([zoneId]) => zoneId),
+          waiting: waiting.filter((entry) => !ready.includes(entry)).map(([zoneId]) => zoneId),
+        });
+      }
+    } else {
+      for (const [zoneId, member] of ready) {
+        member.started = true;
+        const player = member.player!;
+        const target = player.jiffies && player.jiffies > 0 ? player.jiffies + this.unpauseHeadroomMs : 0;
+        this.log.debug('squeezelite alert start; late player on its own', { syncId: sync.id, zoneId });
+        void player.unpauseAt(target).catch(() => undefined);
+      }
+    }
+    if (sync.ended) {
+      return;
+    }
+    const stillWaiting = [...sync.members.values()].some((member) => member.player && !member.started);
+    if (stillWaiting && now < sync.readyDeadline + ALERT_SYNC_STRAGGLER_WAIT_MS) {
+      this.scheduleAlertReadyCheck(sync, this.readyPollIntervalMs);
+    }
+  }
+
+  private resolveLatencyMs(zoneId: number): number {
+    const value = this.participants.get(zoneId)?.getLatencyMs?.() ?? 0;
+    return Number.isFinite(value) ? Math.round(value) : 0;
+  }
+
+  private endAlertSync(sync: AlertSync): void {
+    sync.ended = true;
+    for (const timer of [sync.arrivalTimer, sync.pollTimer]) {
+      if (timer) clearTimeout(timer);
+    }
+    sync.arrivalTimer = undefined;
+    sync.pollTimer = undefined;
+    for (const [zoneId, member] of sync.members) {
+      if (this.joinedAlerts.get(zoneId) === sync) {
+        this.joinedAlerts.delete(zoneId);
+      }
+      // Anyone still waiting for the stream plays by itself.
+      member.resolve('alone');
+    }
+    sync.members.clear();
+    for (const [zoneId, prepared] of [...this.preparedAlerts]) {
+      if (prepared === sync) {
+        this.preparedAlerts.delete(zoneId);
+      }
+    }
   }
 }
 
