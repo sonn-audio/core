@@ -1505,6 +1505,93 @@ test('play on a squeezelite member that is not held is the group play (#409)', a
   }
 });
 
+test('a zone joining a squeezelite group ends its own session but not its player (#409)', async () => {
+  // A room that had another Spotify account on, paused on its own Connect device, kept
+  // that session after it joined. Minutes later Soloist picked it up again and played it
+  // into the speaker that was meant to follow the leader.
+  const LEADER = 53;
+  const MEMBER = 54;
+  const stub = stubSqueezeliteMemberPause();
+  const harness = await getZoneHarness();
+  const { zoneManager, groupTracker, audioManager } = harness;
+  const zone = (id: number, name: string): ZoneConfig => ({
+    ...createZoneConfig(id, name),
+    transports: [{ id: 'squeezelite', playerId: `aa:bb:cc:00:00:${id}` } as never],
+  });
+  await zoneManager.replaceAll([zone(LEADER, 'Kitchen'), zone(MEMBER, 'Utility')], { spotify: {} });
+  const repo = (zoneManager as unknown as {
+    zoneRepo: { get: (id: number) => import('../src/application/zones/internal/zoneTypes').ZoneContext | undefined };
+  }).zoneRepo;
+  const inputs = (zoneManager as unknown as {
+    inputsPort: { stopSpotifySession: (zoneId: number, reason?: string) => void };
+  }).inputsPort;
+  const realStopSpotify = inputs.stopSpotifySession;
+  const spotifyStops: string[] = [];
+  inputs.stopSpotifySession = (zoneId, reason) => {
+    spotifyStops.push(`${zoneId}:${reason}`);
+  };
+  let ownSession: { zoneId: number; state: string; source: string } | null = {
+    zoneId: MEMBER,
+    state: 'paused',
+    source: 'spotify-connect',
+  };
+  const realGetSession = audioManager.getSession.bind(audioManager);
+  (audioManager as unknown as { getSession: (zoneId: number) => unknown }).getSession = (zoneId) =>
+    zoneId === MEMBER ? ownSession : realGetSession(zoneId);
+  const member = repo.get(MEMBER)!;
+  const playerStops: number[] = [];
+  const realPlayerStop = member.player.stop.bind(member.player);
+  member.player.stop = (reason?: string) => {
+    playerStops.push(MEMBER);
+    ownSession = null;
+    return realPlayerStop(reason);
+  };
+  try {
+    // What the room played on its own before it joined.
+    member.activeInput = 'spotify';
+    member.inputMode = 'spotify';
+    member.activeOutput = 'squeezelite';
+    member.queue.authority = 'spotify';
+    zoneManager.applyPatch(MEMBER, { mode: 'pause', title: 'Planet Techno' });
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+
+    groupTracker.upsertGroup({
+      leader: LEADER,
+      members: [MEMBER],
+      backend: 'internal',
+      externalId: 'group-409l',
+      source: 'manual',
+    });
+
+    assert.deepEqual(spotifyStops, [`${MEMBER}:joined_group`], 'its Spotify session is let go of');
+    assert.deepEqual(playerStops, [MEMBER], 'its own playback ends');
+    assert.equal(member.inputMode, null);
+    assert.equal(member.queue.authority, 'local');
+    assert.ok(!stub.calls.includes(`${MEMBER}:stop`), 'its speaker is left to follow the leader');
+    assert.equal(zoneManager.getState(MEMBER)?.title, 'One', 'it shows the group');
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+
+    spotifyStops.length = 0;
+    playerStops.length = 0;
+    groupTracker.upsertGroup({
+      leader: LEADER,
+      members: [MEMBER],
+      backend: 'internal',
+      externalId: 'group-409l',
+      source: 'manual',
+    });
+    zoneManager.syncGroupMembersToLeader(LEADER);
+    assert.deepEqual(spotifyStops, [], 'with nothing of its own left there is nothing to end');
+    assert.deepEqual(playerStops, []);
+  } finally {
+    inputs.stopSpotifySession = realStopSpotify;
+    member.player.stop = realPlayerStop;
+    delete (audioManager as unknown as { getSession?: unknown }).getSession;
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
 test('group join/leave emits audio sync payloads', async () => {
   const harness = await getZoneHarness();
   const {

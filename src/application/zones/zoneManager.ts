@@ -1090,8 +1090,63 @@ export class ZoneManager {
     return eq.bands;
   }
 
+  /**
+   * Bring a group's members in line with their leader, as the group is formed or changed.
+   *
+   * A member whose speaker now plays the leader's stream first ends whatever it played on
+   * its own (#409). Nothing else did: a room that had another Spotify account on, paused on
+   * its own Connect device, kept that session after it joined. It played to nobody, but it
+   * was still the room's — its pause and play went there instead of to the group, and
+   * minutes later Soloist could pick it up again and play it into the speaker that was
+   * meant to follow the leader.
+   */
   public syncGroupMembersToLeader(leaderId: number): void {
+    const group = getGroupByZone(leaderId);
+    if (group?.leader === leaderId) {
+      for (const memberId of group.members) {
+        const ctx = memberId === leaderId ? undefined : this.zoneRepo.get(memberId);
+        if (ctx && this.followedLeader(memberId) === leaderId) {
+          this.endOwnSession(ctx);
+        }
+      }
+    }
     this.groupingCoordinator.syncGroupMembersToLeader(leaderId);
+  }
+
+  /**
+   * End a member's own playback — the engine session and the input that fed it — without
+   * touching its speaker, which is about to follow the leader's stream. The zone's own stop
+   * would have stopped that player too, and it is not the zone's to stop any more.
+   *
+   * Only what is the member's own: a line-in is not released by its audiopath here, since
+   * a member mirrors its leader's and the source would be the group's.
+   */
+  private endOwnSession(ctx: ZoneContext): void {
+    const input = ctx.activeInput ?? ctx.inputMode;
+    if (!this.audioManager.getSession(ctx.id) && !input) {
+      return;
+    }
+    this.log.info('zone joined a group it follows; ending its own session', {
+      zoneId: ctx.id,
+      input,
+    });
+    // Nothing of the zone's own goes to the speaker from here on, so the stop below is not
+    // dispatched to it either.
+    ctx.activeOutput = null;
+    ctx.activeOutputTypes = new Set();
+    if (input === 'airplay') {
+      this.inputsPort.stopAirplaySession(ctx.id, 'joined_group');
+    }
+    if (input === 'musicassistant') {
+      void this.inputsPort.switchAway(ctx.id).catch(() => undefined);
+    }
+    // Whether the zone played Spotify as an input or from its own queue, a run or a Connect
+    // session of its own is let go of: it holds the account, and a Connect device left
+    // active is one the account can wake up again later.
+    this.inputsPort.stopSpotifySession(ctx.id, 'joined_group');
+    ctx.queue.authority = 'local';
+    this.playbackCoordinator.setInputMode(ctx, null);
+    ctx.player.stop();
   }
 
   public getMetadata(zoneId: number): Record<string, unknown> | undefined {
