@@ -158,10 +158,19 @@ export class SqueezeliteOutput implements ZoneOutput {
   }
 
   public async play(session: PlaybackSession): Promise<void> {
+    await this.startPlaybackWatched(session, false);
+  }
+
+  /**
+   * `restart`: a group resumed by starting it again on the stream it was paused on. Its
+   * players still hold that stream from the pause, so they are flushed and open a sync
+   * stream of their own rather than play what they hold out ahead of the restart (#409).
+   */
+  private async startPlaybackWatched(session: PlaybackSession, restart: boolean): Promise<void> {
     // Taken before the first await: whoever started this play asks for it straight after.
     const watch = this.watchPlaybackStart();
     try {
-      await this.startPlayback(session, watch);
+      await this.startPlayback(session, watch, restart);
     } finally {
       if (!watch.armed) {
         watch.settle(false);
@@ -214,7 +223,11 @@ export class SqueezeliteOutput implements ZoneOutput {
     return watch;
   }
 
-  private async startPlayback(session: PlaybackSession, watch: PlaybackStartWatch): Promise<void> {
+  private async startPlayback(
+    session: PlaybackSession,
+    watch: PlaybackStartWatch,
+    restart: boolean,
+  ): Promise<void> {
     if (!session.playbackSource) {
       this.log.warn('Squeezelite output skipped; no playback source', { zoneId: this.zoneId });
       this.ports.outputHandlers.onOutputError(this.zoneId, 'squeezelite no source');
@@ -230,7 +243,7 @@ export class SqueezeliteOutput implements ZoneOutput {
     this.pendingCrossfadeSec = 0;
 
     const groupInfo = this.ports.squeezeliteGroup.preparePlayback(this.zoneId);
-    const streamUrl = this.buildStreamUrl(session, groupInfo);
+    const streamUrl = this.buildStreamUrl(session, groupInfo, { restart });
     if (!streamUrl) {
       this.ports.outputHandlers.onOutputError(this.zoneId, 'squeezelite no stream');
       return;
@@ -269,6 +282,7 @@ export class SqueezeliteOutput implements ZoneOutput {
         streamUrl,
         mime,
         meta,
+        { flush: restart },
       );
       if (!ok) {
         this.ports.outputHandlers.onOutputError(this.zoneId, 'squeezelite group orchestrate failed');
@@ -386,7 +400,7 @@ export class SqueezeliteOutput implements ZoneOutput {
           return;
         }
         if (session) {
-          await this.play(session);
+          await this.startPlaybackWatched(session, true);
         }
         return;
       }
@@ -397,8 +411,10 @@ export class SqueezeliteOutput implements ZoneOutput {
       ) {
         // A member is stopped — one that sat the group out had its stale buffer dropped
         // when the group paused (#409). An unpause leaves it silent, so the group starts
-        // again on the leader's stream and every player begins from the same byte.
-        await this.play(session);
+        // again on the leader's stream and every player begins from the same byte. The
+        // players that were paused still hold the stream from the pause, so they are
+        // flushed rather than left to play it out ahead of the restart.
+        await this.startPlaybackWatched(session, true);
         return;
       }
       if (await this.ports.squeezeliteGroup.orchestrateGroupResume(group.leader)) {

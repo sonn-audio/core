@@ -309,6 +309,32 @@ test('pausing the whole group ends the hold and the group play brings the member
   }
 });
 
+test('a group resumed after its held member was dropped starts every room from one byte', async () => {
+  // The group pause stops the held member but only pauses the leader, which keeps the
+  // stream it held at the pause. Resuming restarts the group on the leader's stream, and
+  // without a flush the leader played what it held out first, ahead of the member that
+  // started on the new stream; the restart also asked for the group's running sync
+  // stream and joined it late (#409).
+  const h = harness();
+  try {
+    await h.leaderOutput.play(h.leaderSession);
+    await settle();
+    const running = syncIdOf(h.leader.calls.play[0]!);
+    await h.memberOutput.memberPause().hold();
+    await h.leaderOutput.pause(h.leaderSession);
+    reset(h.leader, h.member);
+
+    await h.leaderOutput.resume(h.leaderSession);
+    await settle();
+    assert.deepEqual(h.leader.calls.flushed, [true], 'the leader drops what it held at the pause');
+    assert.deepEqual(h.member.calls.flushed, [true]);
+    assert.notEqual(syncIdOf(h.leader.calls.play[0]!), running, 'not the running sync stream');
+    assert.equal(h.member.calls.play[0], h.leader.calls.play[0], 'one new stream for both');
+  } finally {
+    h.dispose();
+  }
+});
+
 test('stopping the whole group ends the hold and the next play includes the member', async () => {
   const h = harness();
   try {
