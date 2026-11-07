@@ -1078,8 +1078,8 @@ test('queue refresh of current item does not wipe live metadata', async () => {
 
 /**
  * Stand in for the squeezelite protocol under the zone tests below: the member-pause
- * control keeps its hold in a set, the way the group controller does, and the transport
- * calls are only recorded.
+ * control is offered to a group's members, keeps its hold in a set the way the group
+ * controller does, and the transport calls are only recorded.
  */
 function stubSqueezeliteMemberPause() {
   const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
@@ -1100,6 +1100,13 @@ function stubSqueezeliteMemberPause() {
   };
   proto.memberPause = function (this: { zoneId: number }) {
     const zoneId = this.zoneId;
+    // As the protocol does: only a member of a group, never its leader. Looked up on the
+    // tracker the zone harness loaded, which replaces the one loaded before it.
+    const { getGroupByZone } = require('../src/application/groups/groupTracker') as typeof import('../src/application/groups/groupTracker');
+    const group = getGroupByZone(zoneId);
+    if (!group || group.leader === zoneId) {
+      return null;
+    }
     return {
       isHeld: () => held.has(zoneId),
       hold: async () => {
@@ -1587,6 +1594,70 @@ test('a zone joining a squeezelite group ends its own session but not its player
     inputs.stopSpotifySession = realStopSpotify;
     member.player.stop = realPlayerStop;
     delete (audioManager as unknown as { getSession?: unknown }).getSession;
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test("a squeezelite member's own playback does not reach the speaker that follows its leader (#409)", async () => {
+  // A member held out of the group was audible again minutes later: Soloist brought back
+  // a Spotify session of the room's own, and its play went to the member's player, which
+  // the group had left out, so it played that session on its own.
+  const LEADER = 55;
+  const MEMBER = 56;
+  const stub = stubSqueezeliteMemberPause();
+  const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
+  const proto = SqueezeliteOutput.prototype as unknown as Record<string, unknown>;
+  const realPlay = proto.play;
+  proto.play = async function (this: { zoneId: number }) {
+    stub.calls.push(`${this.zoneId}:play`);
+  };
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409m');
+  const repo = (zoneManager as unknown as {
+    zoneRepo: { get: (id: number) => import('../src/application/zones/internal/zoneTypes').ZoneContext | undefined };
+  }).zoneRepo;
+  const emit = (zoneId: number, event: string, session: unknown) =>
+    (repo.get(zoneId)!.player as unknown as { emit: (event: string, ...args: unknown[]) => void }).emit(
+      event,
+      session,
+    );
+  const session = (zoneId: number, extra: Record<string, unknown> = {}) => ({
+    zoneId,
+    state: 'playing',
+    source: 'spotify-connect',
+    playbackSource: { kind: 'url', url: 'http://example/own.flac' },
+    metadata: { title: 'Planet Techno', artist: '', album: '', ...extra },
+  });
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+    zoneManager.handleCommand(MEMBER, 'pause');
+    assert.deepEqual(stub.calls, [`${MEMBER}:hold`]);
+
+    // The room's own session comes back and runs through its play, pause, resume and stop.
+    for (const event of ['started', 'paused', 'resumed', 'stopped']) {
+      emit(MEMBER, event, session(MEMBER));
+    }
+    assert.deepEqual(stub.calls, [`${MEMBER}:hold`], 'none of it reached the member speaker');
+    assert.ok(stub.held.has(MEMBER), 'which is still held');
+    assert.equal(repo.get(MEMBER)!.activeOutput, null);
+
+    // An alert is still heard in the room.
+    emit(MEMBER, 'started', session(MEMBER, { isAlert: true }));
+    assert.equal(stub.calls.at(-1), `${MEMBER}:play`, 'an alert plays on the member speaker');
+
+    // The leader drives its own speaker as before.
+    stub.calls.length = 0;
+    emit(LEADER, 'started', session(LEADER));
+    emit(LEADER, 'paused', session(LEADER));
+    assert.deepEqual(stub.calls, [`${LEADER}:play`, `${LEADER}:pause`]);
+
+    // Out of the group the room's own playback is its own again.
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.calls.length = 0;
+    emit(MEMBER, 'started', session(MEMBER));
+    assert.deepEqual(stub.calls, [`${MEMBER}:play`]);
+  } finally {
+    proto.play = realPlay;
     groupTracker.removeGroupByLeader(LEADER);
     stub.restore();
   }

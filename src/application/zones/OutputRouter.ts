@@ -11,6 +11,7 @@ import type { ZoneState } from '@/domain/zones/zoneState';
 import type { ZoneContext } from '@/application/zones/internal/zoneTypes';
 import { clearPlayers } from '@/application/playback/playerRegistry';
 import { ZoneRepository } from '@/application/zones/ZoneRepository';
+import { followsLeaderStream } from '@/application/zones/helpers/groupFollower';
 
 export class OutputRouter {
   constructor(
@@ -25,7 +26,44 @@ export class OutputRouter {
     action: 'play' | 'pause' | 'resume' | 'stop',
     payload: PlaybackSession | null | undefined,
   ): void {
-    dispatchOutputs(ctx, outputs, action, payload, this.log, this.outputErrorNotifier);
+    const targets = this.outputsDrivenByZone(ctx, outputs, payload);
+    if (targets.length !== outputs.length) {
+      this.log.debug('own playback of a group member kept off the speaker that follows its leader', {
+        zoneId: ctx.id,
+        action,
+        source: payload?.source,
+      });
+    }
+    dispatchOutputs(ctx, targets, action, payload, this.log, this.outputErrorNotifier);
+  }
+
+  /**
+   * The outputs a zone's own playback may drive.
+   *
+   * Not the speaker of a member that plays its leader's stream (#409). Whatever the member
+   * still starts on its own — Soloist bringing back a Spotify session of the room's, a
+   * Connect or AirPlay takeover, a stray play of its own queue — has no business there:
+   * the player belongs to the group, and to the member's hold while it sits the group out.
+   * A play of the member's own reached that player while it was held, and since a held
+   * member is left out of the group, the output played the session on its own and the
+   * room was audible again with music nobody in the group was playing. A pause or stop of
+   * the member's own session paused the whole group or dropped the room out of it.
+   *
+   * The member's own commands do not come this way: its pause and play as a member go to
+   * the output's member controls, and the stop of a held member to the output directly.
+   * An alert is the exception that still plays on the member's speaker, as it did.
+   *
+   * Such a speaker is the one whose output offers a member pause (see `followsLeaderStream`).
+   */
+  public outputsDrivenByZone(
+    ctx: ZoneContext,
+    outputs: ZoneOutput[],
+    payload?: PlaybackSession | null,
+  ): ZoneOutput[] {
+    if (ctx.alert || payload?.metadata?.isAlert) {
+      return outputs;
+    }
+    return outputs.filter((output) => !followsLeaderStream([output]));
   }
 
   public dispatchVolume(ctx: ZoneContext, outputs: ZoneOutput[], volume: number): void {

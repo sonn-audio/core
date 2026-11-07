@@ -13,6 +13,7 @@ import type { ZoneRepository } from '@/application/zones/ZoneRepository';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
 import { resolvePlaybackSource } from '@/application/playback/sourceResolver';
 import { buildQueueItemPlaybackPatch } from '@/application/zones/playback/patchBuilder';
+import { followsLeaderStream } from '@/application/zones/helpers/groupFollower';
 
 interface CrossfadeEntry {
   resolving: boolean;
@@ -436,7 +437,12 @@ export class CrossfadeController {
    * gapless handover yet (DLNA/Sonos/Cast — Phase 2).
    */
   private async runUrlHandover(ctx: ZoneContext, _session: PlaybackSession): Promise<void> {
-    const candidates = ctx.outputs.filter((o) => typeof o.enqueueRotation === 'function');
+    // Never the speaker of a member that plays its leader's stream: like every other piece of
+    // the zone's own playback, a handover of its own must not reach it (see
+    // `OutputRouter.outputsDrivenByZone`, #409).
+    const candidates = ctx.outputs.filter(
+      (o) => typeof o.enqueueRotation === 'function' && !followsLeaderStream([o]),
+    );
     if (candidates.length === 0) return;
     const rotation = this.deps.audioManager.rotateStreamId(ctx.id);
     if (!rotation) return;
