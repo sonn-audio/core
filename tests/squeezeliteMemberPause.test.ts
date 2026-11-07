@@ -130,9 +130,25 @@ function reset(...fakes: FakePlayer[]): void {
 test('pausing one member of a squeezelite group leaves the leader playing', async () => {
   const h = harness();
   try {
-    await h.memberOutput.pause(null);
+    await h.memberOutput.memberPause().hold();
     assert.equal(h.member.calls.pause, 1, 'the member paused');
     assert.equal(h.leader.calls.pause, 0, 'the leader did not');
+    assert.equal(h.controller.isMemberHeld(MEMBER), true);
+    assert.equal(h.memberOutput.memberPause().isHeld(), true);
+  } finally {
+    h.dispose();
+  }
+});
+
+test('a member pause does not ask the leader session whether it plays', async () => {
+  // Whether the leader plays is the zone's call. A leader session caught between states
+  // made the output fall through to the group pause and silence every room.
+  const h = harness();
+  try {
+    (h.leaderSession as { state: string }).state = 'stopped';
+    await h.memberOutput.memberPause().hold();
+    assert.equal(h.leader.calls.pause, 0, 'the leader plays on');
+    assert.equal(h.member.calls.pause, 1);
     assert.equal(h.controller.isMemberHeld(MEMBER), true);
   } finally {
     h.dispose();
@@ -142,7 +158,7 @@ test('pausing one member of a squeezelite group leaves the leader playing', asyn
 test('the next track does not unpause a member that was paused on its own', async () => {
   const h = harness();
   try {
-    await h.memberOutput.pause(null);
+    await h.memberOutput.memberPause().hold();
     reset(h.leader, h.member);
 
     // Track change: only the leader gets the new session.
@@ -162,10 +178,10 @@ test('the next track does not unpause a member that was paused on its own', asyn
 test('playing the member again brings it back into the group', async () => {
   const h = harness();
   try {
-    await h.memberOutput.pause(null);
+    await h.memberOutput.memberPause().hold();
     reset(h.leader, h.member);
 
-    await h.memberOutput.resume(null);
+    await h.memberOutput.memberPause().release(true);
     await settle();
 
     assert.equal(h.controller.isMemberHeld(MEMBER), false);
@@ -179,14 +195,75 @@ test('playing the member again brings it back into the group', async () => {
   }
 });
 
-test('a member pause while the whole group is paused is not a hold', async () => {
-  // The grouped pause sends pause to the leader first and then to each member. That is
-  // the group pausing, not a member stepping out, so the group play brings all back.
+test('a held member released while the leader has no stream to join drops its stale buffer', async () => {
   const h = harness();
   try {
+    await h.memberOutput.memberPause().hold();
     (h.leaderSession as { state: string }).state = 'paused';
+    reset(h.leader, h.member);
+
+    await h.memberOutput.memberPause().release(true);
+
+    assert.equal(h.controller.isMemberHeld(MEMBER), false);
+    assert.equal(h.member.calls.stop, 1, 'its stale buffer is dropped');
+    assert.equal(h.member.calls.play.length, 0);
+    assert.equal(h.leader.calls.play.length, 0, 'the leader is left alone');
+  } finally {
+    h.dispose();
+  }
+});
+
+test('a pause reaching a member output is the group pausing, not a hold', async () => {
+  // A member stepping out goes through `memberPause`; the plain pause is the group's.
+  const h = harness();
+  try {
     await h.memberOutput.pause(null);
     assert.equal(h.controller.isMemberHeld(MEMBER), false);
+    assert.equal(h.leader.calls.pause, 1, 'the whole group paused');
+    assert.equal(h.member.calls.pause, 1);
+  } finally {
+    h.dispose();
+  }
+});
+
+test('pausing the whole group ends the hold and the group play brings the member back', async () => {
+  // A held member used to sit out the group's next play after a pause of the whole group.
+  const h = harness();
+  try {
+    await h.memberOutput.memberPause().hold();
+    reset(h.leader, h.member);
+
+    await h.leaderOutput.pause(h.leaderSession);
+    assert.equal(h.controller.isMemberHeld(MEMBER), false, 'the hold ended with the group pause');
+    assert.equal(h.leader.calls.pause, 1);
+    assert.equal(h.member.calls.stop, 1, 'its stale buffer was dropped, not unpaused later');
+    reset(h.leader, h.member);
+
+    await h.leaderOutput.resume(h.leaderSession);
+    await settle();
+    assert.equal(h.member.calls.play.length, 1, 'the member is in the group play');
+    assert.equal(h.leader.calls.play.length, 1, 'restarted together, from one byte');
+    assert.match(h.leader.calls.play[0]!, /expect=2/);
+    assert.equal(h.member.calls.unpauseAt, 1);
+    assert.equal(h.leader.calls.unpauseAt, 1);
+  } finally {
+    h.dispose();
+  }
+});
+
+test('stopping the whole group ends the hold and the next play includes the member', async () => {
+  const h = harness();
+  try {
+    await h.memberOutput.memberPause().hold();
+    await h.leaderOutput.stop(h.leaderSession);
+    assert.equal(h.controller.isMemberHeld(MEMBER), false);
+    assert.equal(h.member.player.state, PlayerState.STOPPED);
+    reset(h.leader, h.member);
+
+    await h.leaderOutput.play(h.leaderSession);
+    await settle();
+    assert.equal(h.member.calls.play.length, 1, 'the member plays with the group again');
+    assert.match(h.leader.calls.play[0]!, /expect=2/);
   } finally {
     h.dispose();
   }

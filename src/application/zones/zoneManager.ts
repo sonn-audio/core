@@ -20,7 +20,7 @@ import type { RecentsManager } from '@/application/zones/recents/recentsManager'
 import type { MixedGroupCoordinator } from '@/application/groups/mixedGroupController';
 import { getGroupByZone } from '@/application/groups/groupTracker';
 import type { OutputsPort } from '@/ports/OutputsPort';
-import type { OutputSyncStatus, ZoneOutput } from '@/ports/OutputsTypes';
+import type { MemberPauseControl, OutputSyncStatus, ZoneOutput } from '@/ports/OutputsTypes';
 import type { InputsPort } from '@/ports/InputsPort';
 import type { PlaybackErrorOrigin, PlaybackMetadata, PlaybackSession } from '@/ports/types/playback';
 import type {
@@ -243,6 +243,7 @@ export class ZoneManager {
     this.groupingCoordinator = new GroupingCoordinator({
       getState: (zoneId) => this.getState(zoneId),
       applyPatch: (zoneId, patch, force) => this.applyPatch(zoneId, patch, force),
+      isMemberHeld: (memberId) => this.memberPauseOf(memberId)?.isHeld() ?? false,
     });
     this.artworkColors = new ZoneArtworkColorService({
       getPalette: (coverUrl) => artworkService.getPalette(coverUrl),
@@ -695,7 +696,16 @@ export class ZoneManager {
     void this.inputsPort.renameSpotifyZone(zoneId, trimmed);
   }
 
-  public handleCommand(zoneId: number, command: string, payload?: string): void {
+  /**
+   * `context.groupedTargets` lists every zone a grouped command (`audio/grouped/...`) is
+   * sent to, in the order it goes through them; absent for a command to this zone alone.
+   */
+  public handleCommand(
+    zoneId: number,
+    command: string,
+    payload?: string,
+    context?: { groupedTargets?: readonly number[] },
+  ): void {
     const ctx = this.zoneRepo.get(zoneId);
     if (ctx) {
       const controllerId = resolveZoneStateControllerId(ctx.config);
@@ -714,7 +724,7 @@ export class ZoneManager {
       if (shouldUseExternalController && this.stateControllers.handleCommand(zoneId, command, payload)) {
         return;
       }
-      if (this.routeGroupMemberTransport(ctx, command)) {
+      if (this.routeGroupMemberTransport(ctx, command, context?.groupedTargets)) {
         return;
       }
     }
@@ -734,46 +744,83 @@ export class ZoneManager {
    *
    * So a member paused while its leader plays is handed to its output and held: the
    * leader's `play` is no longer mirrored onto it until it is played itself, which brings
-   * it back through the same output. A pause while the leader is not playing is the group
-   * pausing as a whole (the grouped command pauses every zone in turn) and is left alone.
+   * it back through the same output. The output keeps the hold; this only asks about it.
+   *
+   * A pause that is not one member stepping out is left alone: one while the leader is not
+   * playing, and one that is part of a grouped command over the group — the app sends that
+   * to every zone in turn, in its own order, so a member may come before its leader while
+   * the leader still plays. Holding it there kept it out of the group play that followed.
+   *
+   * Whether the leader plays is the leader zone's mode, decided here and handed to the
+   * output, so the zone and the protocol cannot disagree about it.
    */
-  private routeGroupMemberTransport(ctx: ZoneContext, command: string): boolean {
+  private routeGroupMemberTransport(
+    ctx: ZoneContext,
+    command: string,
+    groupedTargets?: readonly number[],
+  ): boolean {
     const zoneId = ctx.id;
     const isStop = command === 'stop' || command === 'off';
     const isPlay = command === 'play' || command === 'resume';
     if (command !== 'pause' && !isStop && !isPlay) {
       return false;
     }
-    const output = ctx.outputs.find((candidate) => candidate.supportsMemberPause?.() === true);
+    const output = ctx.outputs.find((candidate) => candidate.memberPause?.() != null);
+    const control = output?.memberPause?.() ?? null;
     const group = getGroupByZone(zoneId);
-    const isFollower =
-      Boolean(output && group && group.leader !== zoneId && group.members.length > 1) &&
-      !this.audioManager.getSession(zoneId);
+    if (
+      !output ||
+      !control ||
+      !group ||
+      group.leader === zoneId ||
+      group.members.length <= 1 ||
+      this.audioManager.getSession(zoneId)
+    ) {
+      return false;
+    }
     if (isStop) {
       // A stopped member has nothing left to sit out; the zone's own stop runs as usual.
-      if (this.groupingCoordinator.releaseMember(zoneId) && isFollower) {
-        void this.runMemberTransport(zoneId, () => output!.stop(null));
+      if (control.isHeld()) {
+        void this.runMemberTransport(zoneId, () => output.stop(null));
       }
       return false;
     }
-    if (!isFollower || !group || !output) {
-      return false;
-    }
+    const leaderMode = this.getState(group.leader)?.mode;
+    const leaderPlaying = leaderMode === 'play';
     if (command === 'pause') {
-      if (this.getState(group.leader)?.mode !== 'play') {
+      if (!leaderPlaying || groupedTargets?.includes(group.leader)) {
         return false;
       }
-      this.groupingCoordinator.holdMember(zoneId, group.leader);
-      void this.runMemberTransport(zoneId, () => output.pause(null));
+      void this.runMemberTransport(zoneId, () => control.hold());
       this.applyPatch(zoneId, { mode: 'pause', clientState: 'on', power: 'on' });
       return true;
     }
-    if (!this.groupingCoordinator.releaseMember(zoneId)) {
+    if (!control.isHeld()) {
       return false;
     }
-    void this.runMemberTransport(zoneId, () => output.resume(null));
-    this.applyPatch(zoneId, { mode: 'play', clientState: 'on', power: 'on' });
+    void this.runMemberTransport(zoneId, () => control.release(leaderPlaying));
+    // Back in the group, the member is where the group is: playing with a playing leader,
+    // otherwise waiting with it for the group's next start.
+    this.applyPatch(zoneId, {
+      mode: leaderPlaying ? 'play' : (leaderMode ?? 'stop'),
+      clientState: 'on',
+      power: 'on',
+    });
     return true;
+  }
+
+  private memberPauseOf(zoneId: number): MemberPauseControl | null {
+    const ctx = this.zoneRepo.get(zoneId);
+    if (!ctx) {
+      return null;
+    }
+    for (const output of ctx.outputs) {
+      const control = output.memberPause?.();
+      if (control) {
+        return control;
+      }
+    }
+    return null;
   }
 
   private async runMemberTransport(

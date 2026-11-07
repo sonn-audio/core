@@ -2,7 +2,12 @@ import { createLogger } from '@/shared/logging/logger';
 import { resolveSessionCover } from '@/shared/coverArt';
 import { buildBaseUrl, resolveAbsoluteUrl, resolveStreamUrl, ensureQueryParam } from '@/shared/streamUrl';
 import type { PlaybackSession } from '@/ports/types/playback';
-import type { HttpPreferences, OutputConfigDefinition, ZoneOutput } from '@/ports/OutputsTypes';
+import type {
+  HttpPreferences,
+  MemberPauseControl,
+  OutputConfigDefinition,
+  ZoneOutput,
+} from '@/ports/OutputsTypes';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
 import type { SlimClient, SlimEvent } from '@sonn-audio/node-slimproto';
 import { EventType, PlayerState, TransitionType } from '@sonn-audio/node-slimproto';
@@ -63,9 +68,18 @@ export class SqueezeliteOutput implements ZoneOutput {
     return true;
   }
 
-  /** A member pauses alone and sits the group out until it is played again (#409). */
-  public supportsMemberPause(): boolean {
-    return true;
+  /**
+   * A member pauses alone and sits the group out until it is played again (#409). The
+   * zone decides when that is, and whether the leader is playing; this only carries it
+   * out. The hold itself lives in the group controller, which leaves a held member out
+   * of every coordinated start.
+   */
+  public memberPause(): MemberPauseControl {
+    return {
+      isHeld: () => this.ports.squeezeliteGroup.isMemberHeld(this.zoneId),
+      hold: () => this.holdOutOfGroup(),
+      release: (leaderPlaying) => this.rejoinAfterHold(leaderPlaying),
+    };
   }
 
   private readonly log = createLogger('Output', 'Squeezelite');
@@ -270,17 +284,9 @@ export class SqueezeliteOutput implements ZoneOutput {
     // Only a slimproto sync-group is paused as a whole. In a mixed group this zone
     // plays its own stream, so it pauses itself — and when the orchestration finds
     // too few connected players to coordinate, pausing itself is still the job.
+    // A member paused on its own does not come through here: the zone hands that to
+    // `memberPause` (#409). A pause reaching this output is the group's.
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
-      if (this.zoneId !== group.leader && this.isLeaderPlaying(group.leader)) {
-        // A member paused on its own while the leader plays: only this room goes quiet.
-        // Pausing the whole group here silenced the leader too while its session ran
-        // on, and without the hold the next coordinated start unpaused this member
-        // again at the following track (#409).
-        this.ports.squeezeliteGroup.holdMember(this.zoneId);
-        const own = this.resolvePlayer();
-        if (own) await own.pause();
-        return;
-      }
       if (await this.ports.squeezeliteGroup.orchestrateGroupPause(group.leader)) {
         return;
       }
@@ -293,10 +299,6 @@ export class SqueezeliteOutput implements ZoneOutput {
   public async resume(session: PlaybackSession | null): Promise<void> {
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (group && this.ports.squeezeliteGroup.isSyncGroup(this.zoneId)) {
-      if (this.zoneId !== group.leader && this.ports.squeezeliteGroup.releaseMember(this.zoneId)) {
-        await this.rejoinAfterHold();
-        return;
-      }
       const ownPlayer = this.resolvePlayer();
       if (ownPlayer?.state === PlayerState.STOPPED) {
         // Player was stopped (e.g. by a local TTS override on this zone). A bare
@@ -310,6 +312,17 @@ export class SqueezeliteOutput implements ZoneOutput {
         if (session) {
           await this.play(session);
         }
+        return;
+      }
+      if (
+        this.zoneId === group.leader &&
+        session &&
+        this.ports.squeezeliteGroup.hasStoppedMember(group.leader)
+      ) {
+        // A member is stopped — one that sat the group out had its stale buffer dropped
+        // when the group paused (#409). An unpause leaves it silent, so the group starts
+        // again on the leader's stream and every player begins from the same byte.
+        await this.play(session);
         return;
       }
       if (await this.ports.squeezeliteGroup.orchestrateGroupResume(group.leader)) {
@@ -448,8 +461,19 @@ export class SqueezeliteOutput implements ZoneOutput {
     }
   }
 
-  private isLeaderPlaying(leaderZoneId: number): boolean {
-    return this.ports.audioManager.getSession(leaderZoneId)?.state === 'playing';
+  /**
+   * Pause only this member and hold it out of the group. Pausing the whole group here
+   * silenced the leader too while its session ran on, and without the hold the next
+   * coordinated start unpaused this member again at the following track (#409).
+   */
+  private async holdOutOfGroup(): Promise<void> {
+    this.clearPendingAutostart();
+    this.ports.squeezeliteGroup.holdMember(this.zoneId);
+    if (!this.ports.squeezeliteGroup.isMemberHeld(this.zoneId)) {
+      return;
+    }
+    const player = this.resolvePlayer();
+    if (player) await player.pause().catch(() => undefined);
   }
 
   /**
@@ -458,15 +482,18 @@ export class SqueezeliteOutput implements ZoneOutput {
    * Its buffer stopped at the moment it was paused while the leader played on, so simply
    * unpausing it would play stale audio out of step. With the leader playing it rejoins the
    * way a reconnecting member does: the group is restarted on the leader's stream so every
-   * player starts from the same byte. With the leader not playing there is nothing to join
-   * yet, so the stale buffer is dropped and the member comes along with the next start.
+   * player starts from the same byte. Otherwise — or when the leader has no stream to join
+   * just now — the stale buffer is dropped and the member comes along with the next start.
    */
-  private async rejoinAfterHold(): Promise<void> {
-    const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
-    if (group && this.isLeaderPlaying(group.leader)) {
-      this.lastJoinAt = 0;
-      await this.maybeJoinLeader('member_resume');
+  private async rejoinAfterHold(leaderPlaying: boolean): Promise<void> {
+    if (!this.ports.squeezeliteGroup.releaseMember(this.zoneId)) {
       return;
+    }
+    if (leaderPlaying) {
+      this.lastJoinAt = 0;
+      if (await this.maybeJoinLeader('member_resume')) {
+        return;
+      }
     }
     const player = this.resolvePlayer();
     if (player) await player.stop().catch(() => undefined);
@@ -689,9 +716,10 @@ export class SqueezeliteOutput implements ZoneOutput {
     await this.play(session);
   }
 
+  /** True when the member plays, or is being started, in step with its leader. */
   private async maybeJoinLeader(
     source: 'group_change' | 'player_connected' | 'member_resume',
-  ): Promise<void> {
+  ): Promise<boolean> {
     const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
     if (
       !group ||
@@ -700,28 +728,28 @@ export class SqueezeliteOutput implements ZoneOutput {
       // A member paused on its own does not rejoin because its player reconnected.
       this.ports.squeezeliteGroup.isMemberHeld(this.zoneId)
     ) {
-      return;
+      return false;
     }
     const leaderZoneId = group.leader;
     const leaderSession = this.ports.audioManager.getSession(leaderZoneId);
     if (!leaderSession || leaderSession.state !== 'playing') {
-      return;
+      return false;
     }
     const player = await this.ensurePlayer();
     if (!player) {
-      return;
+      return false;
     }
     // Avoid repeated playUrl spam when we get multiple group/connection events in a short window.
     const now = Date.now();
     if (this.lastJoinLeaderId === leaderZoneId && now - this.lastJoinAt < 1500) {
-      return;
+      return false;
     }
     if (player.state === PlayerState.PLAYING) {
-      return;
+      return true;
     }
     const streamUrl = this.buildLeaderFollowUrl(leaderZoneId);
     if (!streamUrl) {
-      return;
+      return false;
     }
     this.lastJoinAt = now;
     this.lastJoinLeaderId = leaderZoneId;
@@ -733,11 +761,11 @@ export class SqueezeliteOutput implements ZoneOutput {
     // Instead, trigger a full group resync so all players start from the same byte again.
     const groupInfo = this.ports.squeezeliteGroup.preparePlayback(leaderZoneId);
     if (!groupInfo.grouped || groupInfo.expectedCount < 2) {
-      return;
+      return false;
     }
     const url = this.buildStreamUrl(leaderSession, groupInfo);
     if (!url) {
-      return;
+      return false;
     }
     const meta = this.buildMetadata(leaderSession, url);
     const mime = resolveMimeType(url);
@@ -749,7 +777,7 @@ export class SqueezeliteOutput implements ZoneOutput {
       url,
     });
     try {
-      await this.ports.squeezeliteGroup.orchestrateGroupPlayback(leaderZoneId, url, mime, meta);
+      return await this.ports.squeezeliteGroup.orchestrateGroupPlayback(leaderZoneId, url, mime, meta);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.log.debug('squeezelite grouped member resync failed', {
@@ -758,6 +786,7 @@ export class SqueezeliteOutput implements ZoneOutput {
         source,
         message,
       });
+      return false;
     }
   }
 

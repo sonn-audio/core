@@ -63,6 +63,11 @@ export type SqueezeliteGroupCoordinator = {
   releaseMember: (zoneId: number) => boolean;
   /** Whether this member was paused on its own and is sitting the group out. */
   isMemberHeld: (zoneId: number) => boolean;
+  /**
+   * Whether a member of this zone's group is stopped while the group is paused, so an
+   * unpause cannot bring it back in step and the group has to start again together.
+   */
+  hasStoppedMember: (zoneId: number) => boolean;
 };
 
 type PendingGroup = {
@@ -385,15 +390,21 @@ class SqueezeliteGroupController {
   }
 
   public async orchestrateGroupPause(zoneId: number): Promise<boolean> {
+    const dropped = await this.dropHeldMembers(zoneId);
     const entries = this.getActiveGroupPlayersFor(zoneId);
     if (entries.length < 2) return false;
-    await Promise.all(entries.map(async ({ player }) => player.pause().catch(() => undefined)));
+    await Promise.all(
+      entries
+        .filter((entry) => !dropped.includes(entry.zoneId))
+        .map(async ({ player }) => player.pause().catch(() => undefined)),
+    );
     return true;
   }
 
   public async orchestrateGroupStop(zoneId: number): Promise<boolean> {
     const group = getGroupByZone(zoneId);
     const leaderZoneId = group?.leader ?? zoneId;
+    await this.dropHeldMembers(zoneId);
     const entries = this.getActiveGroupPlayersFor(zoneId);
     if (entries.length < 2) return false;
     const pending = this.pendingGroups.get(leaderZoneId);
@@ -406,6 +417,45 @@ class SqueezeliteGroupController {
     }
     await Promise.all(entries.map(async ({ player }) => player.stop().catch(() => undefined)));
     return true;
+  }
+
+  /**
+   * The whole group pauses or stops: a member that sat it out is part of the group again,
+   * so the next group play brings it back with the rest (#409). Its buffer stopped where
+   * it was paused, well behind the others, so it is dropped rather than paused along:
+   * unpausing it with the group would play it out of step.
+   */
+  private async dropHeldMembers(zoneId: number): Promise<number[]> {
+    const group = getGroupByZone(zoneId);
+    if (!group) return [];
+    const released: number[] = [];
+    for (const [memberId, leaderZoneId] of this.heldMembers) {
+      if (leaderZoneId !== group.leader) continue;
+      this.heldMembers.delete(memberId);
+      released.push(memberId);
+    }
+    if (released.length) {
+      this.log.debug('squeezelite group paused or stopped as a whole; releasing held members', {
+        leaderZoneId: group.leader,
+        released,
+      });
+    }
+    await Promise.all(
+      released.map(async (memberId) => {
+        const player = this.participants.get(memberId)?.getPlayer();
+        await player?.stop().catch(() => undefined);
+      }),
+    );
+    return released;
+  }
+
+  public hasStoppedMember(zoneId: number): boolean {
+    const group = getGroupByZone(zoneId);
+    if (!group) return false;
+    return this.getActiveGroupPlayersFor(zoneId).some(
+      ({ zoneId: memberId, player }) =>
+        memberId !== group.leader && player.state === PlayerState.STOPPED,
+    );
   }
 
   public async orchestrateGroupResume(zoneId: number): Promise<boolean> {

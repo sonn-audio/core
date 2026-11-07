@@ -117,6 +117,20 @@ export type HttpPreferences = {
   drainMsAfterEnd?: number;
 };
 
+/** See `ZoneOutput.memberPause`. Each call takes effect at once; the promise covers the player. */
+export interface MemberPauseControl {
+  /** Whether this member was paused on its own and is sitting the group out. */
+  isHeld(): boolean;
+  /** Pause only this member and keep it out of the group until it is released. */
+  hold(): Promise<void>;
+  /**
+   * End the hold. With the leader playing the member rejoins it in step; otherwise there
+   * is nothing to join, so its stale buffer is dropped and it comes along with the group's
+   * next start.
+   */
+  release(leaderPlaying: boolean): Promise<void>;
+}
+
 export interface ZoneOutput {
   readonly type: string;
   play(session: PlaybackSession): Promise<void> | void;
@@ -173,15 +187,15 @@ export interface ZoneOutput {
    */
   supportsNativeGrouping?(): boolean;
   /**
-   * Whether one member of this protocol's group can be paused on its own while the rest
-   * play on, and be brought back by playing it again.
+   * How one member of this protocol's group is paused on its own while the rest play on,
+   * and brought back by playing it again. Null, or absent, when the protocol cannot.
    *
    * A member of such a group has no session of its own: it plays the leader's stream, so
-   * the zone hands its pause and play straight to the output (`pause`/`resume` with no
-   * session) instead of looking for something of its own to pause or restart. An output
-   * that says nothing here leaves member transport to the zone as before.
+   * the zone hands its pause and play straight to this control instead of looking for
+   * something of its own to pause or restart. The protocol keeps the hold itself, since it
+   * is what leaves a held member out of the group's starts; the zone only asks about it.
    */
-  supportsMemberPause?(): boolean;
+  memberPause?(): MemberPauseControl | null;
   /**
    * Optional timing relationship with the device, for outputs that have one to report.
    *

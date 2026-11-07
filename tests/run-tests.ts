@@ -1073,41 +1073,82 @@ test('queue refresh of current item does not wipe live metadata', async () => {
   setNotifier(noopNotifier);
 });
 
-test('a squeezelite member paused on its own stays paused through the next track (#409)', async () => {
-  // A member of a squeezelite group has no session: it plays the leader's stream. Its
-  // pause used to find nothing of its own to pause (or paused the whole group), and the
-  // leader's `play` at the next track was mirrored straight back onto it.
-  const { zoneManager, groupTracker } = await getZoneHarness();
+/**
+ * Stand in for the squeezelite protocol under the zone tests below: the member-pause
+ * control keeps its hold in a set, the way the group controller does, and the transport
+ * calls are only recorded.
+ */
+function stubSqueezeliteMemberPause() {
   const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
-  const proto = SqueezeliteOutput.prototype as unknown as Record<'pause' | 'resume', unknown>;
-  const original = { pause: proto.pause, resume: proto.resume };
+  const proto = SqueezeliteOutput.prototype as unknown as Record<string, unknown>;
+  const names = ['pause', 'resume', 'stop', 'memberPause'] as const;
+  const original = Object.fromEntries(names.map((name) => [name, proto[name]]));
   const calls: string[] = [];
+  const held = new Set<number>();
   proto.pause = async function (this: { zoneId: number }) {
     calls.push(`${this.zoneId}:pause`);
   };
   proto.resume = async function (this: { zoneId: number }) {
     calls.push(`${this.zoneId}:resume`);
   };
-  const LEADER = 31;
-  const MEMBER = 32;
+  proto.stop = async function (this: { zoneId: number }) {
+    calls.push(`${this.zoneId}:stop`);
+    held.delete(this.zoneId);
+  };
+  proto.memberPause = function (this: { zoneId: number }) {
+    const zoneId = this.zoneId;
+    return {
+      isHeld: () => held.has(zoneId),
+      hold: async () => {
+        held.add(zoneId);
+        calls.push(`${zoneId}:hold`);
+      },
+      release: async (leaderPlaying: boolean) => {
+        held.delete(zoneId);
+        calls.push(`${zoneId}:release(${leaderPlaying ? 'leader playing' : 'leader idle'})`);
+      },
+    };
+  };
+  return {
+    calls,
+    held,
+    restore: () => {
+      for (const name of names) proto[name] = original[name];
+    },
+  };
+}
+
+async function setUpSqueezeliteGroup(leader: number, member: number, externalId: string) {
+  const harness = await getZoneHarness();
   const zone = (id: number, name: string): ZoneConfig => ({
     ...createZoneConfig(id, name),
     transports: [{ id: 'squeezelite', playerId: `aa:bb:cc:00:00:${id}` } as never],
   });
+  await harness.zoneManager.replaceAll([zone(leader, 'Living'), zone(member, 'Kitchen')], { spotify: {} });
+  harness.groupTracker.upsertGroup({
+    leader,
+    members: [member],
+    backend: 'internal',
+    externalId,
+    source: 'manual',
+  });
+  return harness;
+}
+
+test('a squeezelite member paused on its own stays paused through the next track (#409)', async () => {
+  // A member of a squeezelite group has no session: it plays the leader's stream. Its
+  // pause used to find nothing of its own to pause (or paused the whole group), and the
+  // leader's `play` at the next track was mirrored straight back onto it.
+  const LEADER = 31;
+  const MEMBER = 32;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409');
   try {
-    await zoneManager.replaceAll([zone(LEADER, 'Living'), zone(MEMBER, 'Kitchen')], { spotify: {} });
-    groupTracker.upsertGroup({
-      leader: LEADER,
-      members: [MEMBER],
-      backend: 'internal',
-      externalId: 'group-409',
-      source: 'manual',
-    });
     zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the member follows the leader');
 
     zoneManager.handleCommand(MEMBER, 'pause');
-    assert.deepEqual(calls, [`${MEMBER}:pause`], 'the pause reaches the member output');
+    assert.deepEqual(stub.calls, [`${MEMBER}:hold`], 'the member alone is paused and held');
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause');
     assert.equal(zoneManager.getState(LEADER)?.mode, 'play', 'the leader plays on');
 
@@ -1117,7 +1158,11 @@ test('a squeezelite member paused on its own stays paused through the next track
     assert.equal(zoneManager.getState(MEMBER)?.title, 'Two', 'while still showing the group');
 
     zoneManager.handleCommand(MEMBER, 'play');
-    assert.deepEqual(calls, [`${MEMBER}:pause`, `${MEMBER}:resume`], 'play brings it back');
+    assert.deepEqual(
+      stub.calls,
+      [`${MEMBER}:hold`, `${MEMBER}:release(leader playing)`],
+      'play brings it back',
+    );
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
 
     // Back in the group: the leader's state is mirrored again.
@@ -1127,44 +1172,110 @@ test('a squeezelite member paused on its own stays paused through the next track
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
   } finally {
     groupTracker.removeGroupByLeader(LEADER);
-    proto.pause = original.pause;
-    proto.resume = original.resume;
+    stub.restore();
   }
 });
 
 test('a pause of the whole squeezelite group is not a member stepping out', async () => {
-  // The grouped pause sends pause to every zone in turn, leader first. By the time the
-  // member's pause arrives the leader is paused, so the member must not be held out of
-  // the group play that follows.
-  const { zoneManager, groupTracker } = await getZoneHarness();
-  const { SqueezeliteOutput } = require('../src/adapters/outputs/squeezelite/squeezeliteOutput') as typeof import('../src/adapters/outputs/squeezelite/squeezeliteOutput');
-  const proto = SqueezeliteOutput.prototype as unknown as Record<'pause' | 'resume', unknown>;
-  const original = { pause: proto.pause, resume: proto.resume };
-  proto.pause = async () => undefined;
-  proto.resume = async () => undefined;
+  // The grouped pause sends pause to every zone in turn. By the time the member's pause
+  // arrives the leader is paused, so the member must not be held out of the group play
+  // that follows.
   const LEADER = 33;
   const MEMBER = 34;
-  const zone = (id: number, name: string): ZoneConfig => ({
-    ...createZoneConfig(id, name),
-    transports: [{ id: 'squeezelite', playerId: `aa:bb:cc:00:00:${id}` } as never],
-  });
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409b');
   try {
-    await zoneManager.replaceAll([zone(LEADER, 'Living'), zone(MEMBER, 'Kitchen')], { spotify: {} });
-    groupTracker.upsertGroup({
-      leader: LEADER,
-      members: [MEMBER],
-      backend: 'internal',
-      externalId: 'group-409b',
-      source: 'manual',
-    });
     zoneManager.applyPatch(LEADER, { mode: 'pause' });
     zoneManager.handleCommand(MEMBER, 'pause');
     zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(stub.held.size, 0);
     assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the group play reaches the member');
   } finally {
     groupTracker.removeGroupByLeader(LEADER);
-    proto.pause = original.pause;
-    proto.resume = original.resume;
+    stub.restore();
+  }
+});
+
+test('a grouped pause that reaches a member before its leader does not hold it (#409)', async () => {
+  // The app sends the grouped pause to its zones in its own order. A member that comes
+  // before the leader finds the leader still playing; that is the group pausing, not the
+  // member stepping out, and holding it kept it out of the grouped play that followed.
+  const LEADER = 35;
+  const MEMBER = 36;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409c');
+  const { createGroupHandlers } = require('../src/adapters/loxone/commands/handlers/groupHandlers') as typeof import('../src/adapters/loxone/commands/handlers/groupHandlers');
+  const handlers = createGroupHandlers(zoneManager, {} as never, {} as never, {} as never);
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One' });
+
+    await handlers.audioGroupedPlayback(`audio/grouped/pause/${MEMBER},${LEADER}`);
+    assert.equal(stub.held.size, 0, 'nothing is held');
+    assert.ok(!stub.calls.includes(`${MEMBER}:hold`), 'the member was not stepped out');
+
+    // However the zones got there, the leader is paused now. When it plays again the
+    // member is part of it, not sitting it out.
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the leader play reaches the member');
+
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    await handlers.audioGroupedPlayback(`audio/grouped/play/${MEMBER},${LEADER}`);
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'and so does the grouped play');
+  } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('a held member played while its leader is not playing waits with the group (#409)', async () => {
+  // Playing a held member rejoins it only when the leader plays; otherwise the output
+  // drops its stale buffer and it comes along with the group's next start. The zone must
+  // say so rather than report `play` for a room that is silent.
+  const LEADER = 37;
+  const MEMBER = 38;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409d');
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    zoneManager.handleCommand(MEMBER, 'pause');
+    assert.ok(stub.held.has(MEMBER));
+
+    // The leader pauses by a path that did not end the hold.
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    zoneManager.handleCommand(MEMBER, 'play');
+    assert.equal(stub.calls.at(-1), `${MEMBER}:release(leader idle)`);
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause', 'waiting with its paused leader');
+
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'and playing with it again');
+  } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('the group mirrors the hold the protocol keeps (#409)', async () => {
+  // The hold lives in one place, the protocol. When it ends there — the whole group was
+  // paused or stopped — the leader's next `play` reaches the member again.
+  const LEADER = 39;
+  const MEMBER = 40;
+  const stub = stubSqueezeliteMemberPause();
+  const { zoneManager, groupTracker } = await setUpSqueezeliteGroup(LEADER, MEMBER, 'group-409e');
+  try {
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    zoneManager.handleCommand(MEMBER, 'pause');
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'Two' }, true);
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause');
+
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    stub.held.delete(MEMBER); // the group pause released it
+    zoneManager.applyPatch(LEADER, { mode: 'play' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play');
+  } finally {
+    groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
   }
 });
 

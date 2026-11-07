@@ -269,7 +269,9 @@ async function audioGroupedPlayback(zoneManager: ZoneManagerFacade, command: str
       continue;
     }
     try {
-      zoneManager.handleCommand(zoneId, mapped);
+      // The zones learn it is the group's command: a member's pause in it is the group
+      // pausing, not that member stepping out on its own (#409).
+      zoneManager.handleCommand(zoneId, mapped, undefined, { groupedTargets: targets });
       players.push({ playerid: zoneId, mode: responseMode });
     } catch {
       // zone refused the action — omit from the result set
