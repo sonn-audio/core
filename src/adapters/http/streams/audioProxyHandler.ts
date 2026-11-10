@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createLogger } from '@/shared/logging/logger';
 import { isLocalRequest } from '@/shared/utils/net';
 import { bestEffort } from '@/shared/bestEffort';
@@ -18,6 +19,24 @@ const MAX_PLAYLIST_HOPS = 3;
 const MAX_PLAYLIST_ENTRIES = 3;
 /** Window size for hosts that refuse open-ended ranges; big enough to keep ahead of playback. */
 const RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
+/** Upstream reads that may fail in a row, without a byte of progress, before we give up. */
+const MAX_UPSTREAM_FAILURES = 3;
+/** Pause before each retry after the first; the first resume goes out at once. */
+const RESUME_BACKOFF_MS = 250;
+/** Silence from upstream this long, while the client is keeping up, is a dead connection. */
+const UPSTREAM_STALL_MS = 20_000;
+
+type PipeOutcome =
+  | { kind: 'end'; written: number }
+  | { kind: 'client-gone'; written: number }
+  | { kind: 'upstream-error'; written: number; error: unknown };
+
+/** Message and socket code of a failed read; undici hides the code under `cause`. */
+function describeReadError(error: unknown): { message: string; causeCode?: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  return typeof cause?.code === 'string' ? { message, causeCode: cause.code } : { message };
+}
 
 /**
  * True only for a playlist ffmpeg can open itself.
@@ -421,9 +440,11 @@ export class AudioProxyHandler {
    * same response body — the client sees a single continuous stream and never learns
    * the fetch underneath was chopped up.
    *
-   * Returns false if even the first bounded window is refused, leaving the caller to
-   * report the original failure; once bytes are on the wire there is no way back, so
-   * a later window failing just ends the response.
+   * A window that breaks off mid-body (googlevideo resets long-lived range responses)
+   * is asked for again from the exact byte already written, so the client never sees
+   * the seam. When upstream keeps failing without progress, or the walk ends short of
+   * the advertised length, the response is destroyed rather than ended: the client
+   * then sees an error it can reconnect on instead of an open connection gone quiet.
    */
   private async streamInBoundedChunks(
     res: ServerResponse,
@@ -437,6 +458,7 @@ export class AudioProxyHandler {
     let pos = startByte;
     let total: number | null = firstRange.total;
     let wroteHead = false;
+    let failures = 0;
     // The opening window is already in hand — fetching it again would cost a request
     // against the same per-video budget that makes this dance necessary.
     let pending: { response: Response; range: { end: number; total: number | null } } | null = {
@@ -445,6 +467,14 @@ export class AudioProxyHandler {
     };
 
     while (total === null || pos < total) {
+      if (res.destroyed) {
+        return; // the client left while we were between windows
+      }
+      if (failures > MAX_UPSTREAM_FAILURES) {
+        this.log.warn('proxy upstream keeps failing; giving up', { target, pos, total, failures });
+        res.destroy();
+        return;
+      }
       let chunk: Response;
       let parsed: { end: number; total: number | null } | null;
       if (pending) {
@@ -452,6 +482,9 @@ export class AudioProxyHandler {
         parsed = pending.range;
         pending = null;
       } else {
+        if (failures > 1) {
+          await delay(RESUME_BACKOFF_MS * (failures - 1));
+        }
         const end = pos + RANGE_CHUNK_BYTES - 1;
         try {
           chunk = await fetch(target, {
@@ -459,18 +492,22 @@ export class AudioProxyHandler {
             redirect: 'follow',
           });
         } catch (error) {
-          this.log.warn('proxy chunk fetch failed', {
-            target,
-            pos,
-            message: error instanceof Error ? error.message : String(error),
-          });
-          break;
+          this.log.warn('proxy chunk fetch failed', { target, pos, ...describeReadError(error) });
+          failures += 1;
+          continue;
         }
-        if (!chunk.ok || !chunk.body) {
+        // Only a partial starting at `pos` continues the body: a 200 is the file again
+        // from byte 0, and splicing that in would garble everything after the seam.
+        if (chunk.status !== 206 || !chunk.body) {
           this.log.warn('proxy chunk rejected mid-stream', { target, pos, status: chunk.status });
-          break;
+          await this.discardBody(chunk, 'discarding rejected window', target);
+          failures += 1;
+          continue;
         }
         parsed = parseContentRange(chunk.headers.get('content-range'));
+        if (failures > 0) {
+          this.log.info('proxy upstream resumed', { target, pos, failures });
+        }
       }
       if (!chunk.body) {
         break;
@@ -498,10 +535,24 @@ export class AudioProxyHandler {
       }
 
       const body = Readable.fromWeb(chunk.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
-      const finished = await this.pipeChunk(body, res);
-      if (!finished) {
+      const piped = await this.pipeChunk(body, res);
+      if (piped.kind === 'client-gone') {
         return; // client went away; nothing left to serve it
       }
+      if (piped.kind === 'upstream-error') {
+        failures = piped.written > 0 ? 1 : failures + 1;
+        this.log.warn('proxy upstream read failed; resuming', {
+          target,
+          pos: pos + piped.written,
+          windowStart: pos,
+          total,
+          failures,
+          ...describeReadError(piped.error),
+        });
+        pos += piped.written;
+        continue;
+      }
+      failures = 0;
 
       const advanced = parsed ? parsed.end + 1 : pos + RANGE_CHUNK_BYTES;
       if (advanced <= pos) {
@@ -518,34 +569,69 @@ export class AudioProxyHandler {
       res.end(JSON.stringify({ error: 'proxy-chunk-failed' }));
       return;
     }
+    if (total !== null && pos < total) {
+      // A clean end here would pass a truncated body off as the whole one.
+      this.log.warn('proxy stream ended short', { target, pos, total });
+      res.destroy();
+      return;
+    }
     res.end();
   }
 
-  /** Pipe one window into the response, keeping it open. False when the client is gone. */
-  private pipeChunk(body: Readable, res: ServerResponse): Promise<boolean> {
+  /**
+   * Pipe one window into the response, keeping it open, and say how it stopped and how
+   * many bytes reached the response before it did.
+   *
+   * An upstream that goes silent for `UPSTREAM_STALL_MS` counts as failed, but only
+   * while the client is keeping up: a paused or slow reader holds the pipe back on
+   * purpose, and that silence is ours, not the host's.
+   */
+  private pipeChunk(body: Readable, res: ServerResponse): Promise<PipeOutcome> {
     return new Promise((resolve) => {
       let settled = false;
-      const done = (ok: boolean): void => {
+      let written = 0;
+      const done = (outcome: PipeOutcome): void => {
         if (settled) return;
         settled = true;
+        clearTimeout(stall);
+        body.removeListener('data', onData);
         body.removeListener('end', onEnd);
         body.removeListener('error', onError);
         res.removeListener('close', onClose);
-        resolve(ok);
+        res.removeListener('drain', onDrain);
+        body.unpipe(res);
+        resolve(outcome);
       };
-      const onEnd = (): void => done(true);
-      const onError = (): void => {
+      const onData = (data: Buffer): void => {
+        written += data.length;
+        stall.refresh();
+      };
+      const onDrain = (): void => {
+        stall.refresh();
+      };
+      const onStall = (): void => {
+        if (res.writableNeedDrain) {
+          stall.refresh();
+          return;
+        }
+        body.destroy(new Error(`no upstream data for ${UPSTREAM_STALL_MS} ms`));
+      };
+      const onEnd = (): void => done({ kind: 'end', written });
+      const onError = (error: unknown): void => {
         body.destroy();
-        done(false);
+        done({ kind: 'upstream-error', written, error });
       };
       const onClose = (): void => {
         body.destroy();
-        done(false);
+        done({ kind: 'client-gone', written });
       };
+      const stall = setTimeout(onStall, UPSTREAM_STALL_MS);
       body.on('end', onEnd);
       body.on('error', onError);
       res.on('close', onClose);
+      res.on('drain', onDrain);
       body.pipe(res, { end: false });
+      body.on('data', onData);
     });
   }
 
