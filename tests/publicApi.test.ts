@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { test } from './testHarness';
 import { ApiHandler, API_ROOT } from '../src/adapters/http/api/apiHandler';
+import { ProviderUnavailableError } from '../src/adapters/content/providerUnavailable';
 import { ApiEventHub } from '../src/adapters/http/api/apiEventHub';
 import { withApiEvents } from '../src/adapters/http/api/apiNotifierTap';
 import { toApiZoneState } from '../src/adapters/http/api/zoneProjection';
@@ -326,6 +327,9 @@ function harness(): Harness {
     ],
     browse: async (id, start, limit) => {
       browseAsks.push({ id, start, limit });
+      if (id === 'refused') {
+        throw new ProviderUnavailableError('spotify@Bianca', 'auth', 401);
+      }
       return { container: null, items: [], start, total: 0 };
     },
     getHealth: () => health,
@@ -2135,4 +2139,17 @@ test('an omitted limit means the default page, not one item', async () => {
     { start: h.browseAsks.at(-1)?.start, limit: h.browseAsks.at(-1)?.limit },
     { start: 40, limit: 50 },
   );
+});
+
+/*
+ * Refused is not empty. A door the service turned away used to come back `200 []`, so a dead
+ * token looked like a library with nothing in it; it is a 502 that names the service and why.
+ */
+test('a service that would not answer is a 502 with the reason, not an empty listing', async () => {
+  const h = harness();
+  const res = await call(h, 'GET', `${API_ROOT}/browse/refused`);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.json().error, 'service-unavailable');
+  assert.equal(res.json().service, 'spotify@Bianca');
+  assert.equal(res.json().reason, 'auth');
 });

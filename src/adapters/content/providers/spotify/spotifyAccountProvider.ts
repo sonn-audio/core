@@ -12,6 +12,7 @@ import { searchSpotifyAccount } from '@/adapters/content/providers/spotify/spoti
 import { createHash } from 'node:crypto';
 import { createLogger, type ComponentLogger } from '@/shared/logging/logger';
 import { safeReadText } from '@/shared/bestEffort';
+import { ProviderUnavailableError, unavailableReasonFor } from '@/adapters/content/providerUnavailable';
 import { resolveSpotifyClientId } from '@/adapters/content/providers/spotify/utils';
 import {
   fetchBrowseCategories as pfBrowseCategories,
@@ -702,7 +703,7 @@ export class SpotifyAccountProvider implements ContentProvider {
     offset: number,
     limit: number,
     fallbackLimit: number,
-    options?: { suppressWarn?: boolean },
+    options?: { suppressWarn?: boolean; required?: boolean },
   ): Promise<{ items: any[]; total?: number }> {
     const safeOffset = Math.max(0, offset || 0);
     const safeLimit = Math.max(1, limit || fallbackLimit);
@@ -715,6 +716,7 @@ export class SpotifyAccountProvider implements ContentProvider {
       const data = await this.request<{ items?: any[]; total?: number }>(url, {
         params: { offset: String(safeOffset + fetched), limit: String(pageLimit) },
         suppressWarn: options?.suppressWarn,
+        required: options?.required,
       });
       if (total === undefined && typeof data?.total === 'number') {
         total = data.total;
@@ -737,7 +739,7 @@ export class SpotifyAccountProvider implements ContentProvider {
     offset: number,
     limit: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/playlists`, offset, limit, 20);
+    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/playlists`, offset, limit, 20, { required: true });
 
     const items = data.items;
     const visible = items.filter((pl) => {
@@ -825,7 +827,7 @@ export class SpotifyAccountProvider implements ContentProvider {
     offset: number,
     limit: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/albums`, offset, limit, 20);
+    const data = await this.fetchPaged(`${SPOTIFY_API_BASE}/me/albums`, offset, limit, 20, { required: true });
     const mapped = data.items
       .map((entry) => entry?.album)
       .filter(Boolean)
@@ -843,6 +845,7 @@ export class SpotifyAccountProvider implements ContentProvider {
       {
         params: { offset: String(Math.max(0, offset || 0)), limit: String(cappedLimit) },
         suppressWarn: true,
+        required: true,
       },
     );
     const items = Array.isArray(data?.items) ? data.items : [];
@@ -866,12 +869,14 @@ export class SpotifyAccountProvider implements ContentProvider {
       return { items: mapped, total: data?.artists?.total ?? mapped.length };
     }
 
-    // Dev-mode/scope fallback: derive artists from saved albums.
+    // Dev-mode/scope fallback: derive artists from saved albums. Required: when this is refused
+    // as well, nothing about the account's library can be read, and that is the answer.
     const albumData = await this.request<{ items?: any[]; total?: number }>(
       `${SPOTIFY_API_BASE}/me/albums`,
       {
         params: { offset: '0', limit: String(cappedLimit) },
         suppressWarn: true,
+        required: true,
       },
     );
     const albumEntries = Array.isArray(albumData?.items) ? albumData.items : [];
@@ -1430,14 +1435,29 @@ export class SpotifyAccountProvider implements ContentProvider {
     return undefined;
   }
 
+  /**
+   * One Web API call. `null` when the service would not answer — unless `required`, in which
+   * case it throws {@link ProviderUnavailableError} so the caller can tell refused from empty.
+   * The doors onto the account's own library are required: a `null` there became `[]`, and an
+   * account whose token had died browsed as a library with nothing saved in it.
+   */
   private async request<T>(
     url: string,
-    options?: { params?: Record<string, string>; method?: string; body?: any; suppressWarn?: boolean },
+    options?: {
+      params?: Record<string, string>;
+      method?: string;
+      body?: any;
+      suppressWarn?: boolean;
+      required?: boolean;
+    },
   ): Promise<T | null> {
     const token = await this.getAccessToken();
     if (!token) {
       this.authError = true;
       this.log.warn('spotify api request skipped, no access token', { url });
+      if (options?.required) {
+        throw new ProviderUnavailableError(this.providerId, 'auth');
+      }
       return null;
     }
 
@@ -1483,6 +1503,13 @@ export class SpotifyAccountProvider implements ContentProvider {
         status: response.status,
         body: response.body,
       });
+      if (options?.required) {
+        throw new ProviderUnavailableError(
+          this.providerId,
+          unavailableReasonFor(response.status),
+          response.status || undefined,
+        );
+      }
       return null;
     }
 

@@ -17,6 +17,7 @@ import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import { decodeBase64Segment, safeJsonParse } from '@/adapters/loxone/commands/utils/payload';
 import { decryptWithAudioCfgKey } from '@/adapters/loxone/commands/handlers/configHandlers';
 import { createLogger } from '@/shared/logging/logger';
+import { ProviderUnavailableError } from '@/adapters/content/providerUnavailable';
 
 const log = createLogger('Loxone', 'ProviderHandlers');
 
@@ -184,7 +185,18 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
       // The app addresses sections by its own slot index; providers publish named
       // nodes. Translate on the way in, and hand the slots back on the way out.
       const folderId = toProviderNode(service, user, rawFolderId);
-      const folder = await contentManager.getServiceFolder(service, user, folderId, start, limit);
+      let folder: Awaited<ReturnType<ContentManager['getServiceFolder']>>;
+      try {
+        folder = await contentManager.getServiceFolder(service, user, folderId, start, limit);
+      } catch (error) {
+        // The Loxone app has no way to show why; an empty folder is the most it can draw. The
+        // public API says what happened — see `ProviderUnavailableError`.
+        if (!(error instanceof ProviderUnavailableError)) {
+          throw error;
+        }
+        log.warn('service folder refused', { service, user, folderId, reason: error.reason });
+        return buildResponse(command, 'getservicefolder', []);
+      }
       if (!folder) {
         return buildResponse(command, 'getservicefolder', []);
       }

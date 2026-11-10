@@ -469,6 +469,7 @@ GET /api/v1/audio-servers           →  { "selfId": "…", "servers": [ … ] }
 GET /api/v1/services                →  { "services": [ … ] }
 GET /api/v1/browse                  →  the root: one entry per service
 GET /api/v1/browse/{id}             →  { "container": …, "items": [ … ], "start": 0, "total": 42 }
+                                                               404 not-found · 502 service-unavailable
 GET /api/v1/items/{id}              →  one item                404 not-found
 GET /api/v1/items/{id}/about        →  a biography, related items       404 when there is none
 GET /api/v1/search?q=…              →  { "items": { "track": [ … ] }, … }
@@ -881,6 +882,21 @@ album cover — every row carried artwork its own container could not — and a 
 to open a record with its sleeve had to reach into the first child and hope. They are filled by
 the provider rather than inferred, so treat them as optional: the local library answers both, a
 streaming service may answer neither, and nothing is fabricated to fill the gap.
+
+### When a service will not answer
+
+```json
+{ "error": "service-unavailable", "service": "spotify", "reason": "auth",
+  "message": "spotify did not answer (auth, 401)" }
+```
+
+A **502** with this body means the service was asked and turned the request away. It is a
+different answer from `200` with an empty `items`: that is a folder with nothing in it, this is a
+folder nobody was allowed to look in. `reason` is one of `auth` (the account's token is dead or
+needs to be linked again), `denied` (the token is fine and the request is not allowed — a Spotify
+app put back into development mode answers this way), `rate-limited`, `unreachable` (no answer at
+all), or `error`. Show the person the reason: "Spotify needs to be linked again" beats a shelf with
+nothing on it. The answer is not cached, so asking again asks the service again.
 
 ### Paging
 

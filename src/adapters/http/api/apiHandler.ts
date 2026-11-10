@@ -60,6 +60,7 @@ import type { ServerLifecycleSnapshot } from '@/domain/server/lifecycle';
 import { serveCover } from '@/adapters/http/streams/serveCover';
 import { COVER_ART_NOW_PLAYING_SIZE, isHttpUrl } from '@/shared/coverArt';
 import { decodeBrowseRef } from '@/domain/media/browseRef';
+import { ProviderUnavailableError } from '@/adapters/content/providerUnavailable';
 
 export type ApiHandlerDeps = {
   eventHub: ApiEventHub;
@@ -1265,7 +1266,23 @@ export class ApiHandler {
       return;
     }
 
-    const result = await this.deps.browse(rawId, start, limit);
+    let result: ApiBrowseResult | null;
+    try {
+      result = await this.deps.browse(rawId, start, limit);
+    } catch (error) {
+      // Refused is not empty. A service that would not answer — a dead token, a rate limit — is
+      // a 502 with the reason, so a client can say what is wrong rather than draw an empty shelf.
+      if (error instanceof ProviderUnavailableError) {
+        this.sendJson(res, 502, {
+          error: 'service-unavailable',
+          service: error.service,
+          reason: error.reason,
+          message: error.message,
+        });
+        return;
+      }
+      throw error;
+    }
     if (!result) {
       this.sendJson(res, 404, { error: 'not-found' });
       return;
