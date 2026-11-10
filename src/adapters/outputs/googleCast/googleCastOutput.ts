@@ -706,9 +706,11 @@ export class GoogleCastOutput implements ZoneOutput {
       if (typeof message === 'string' && message.toLowerCase().includes('request timed out')) {
         this.lastLoadTimeoutAt = Date.now();
       }
+      // A load the receiver cancelled because another one replaced it says nothing about the codec.
+      const cancelled = typeof message === 'string' && message.toLowerCase().includes('load cancelled');
       // A receiver that cannot take the lossless stream says so here. Remember it, so the next session
       // is MP3 rather than another silent start; the device's own evidence outranks our assumption.
-      if (!this.losslessFailed && this.streamProfile() === 'flac') {
+      if (!cancelled && !this.losslessFailed && this.streamProfile() === 'flac') {
         this.losslessFailed = true;
         this.log.warn('Google Cast rejected the lossless stream; falling back to mp3 for this device', {
           zoneId: this.zoneId,
@@ -723,7 +725,7 @@ export class GoogleCastOutput implements ZoneOutput {
         message,
         contentId: media?.contentId,
       });
-      if (typeof message === 'string' && message.toLowerCase().includes('load cancelled')) {
+      if (cancelled) {
         this.metadataLoadCooldownUntil = Date.now() + 3000;
       }
       return false;
