@@ -217,12 +217,17 @@ export class ZoneManager {
       audioManager: this.audioManager,
       applyPatch: (zoneId, patch, force) => this.applyPatch(zoneId, patch, force),
       notifyQueueUpdated: (zoneId, count) => this.notifier.notifyQueueUpdated(zoneId, count),
+      yieldToExternalSource: (zoneId) => {
+        const ctx = this.zoneRepo.get(zoneId);
+        return ctx ? this.endOwnSession(ctx, 'switch_to_external') : false;
+      },
       log: this.log,
     });
     this.stateControllers = new StateControllerManager({
       onStatePatch: (zoneId, patch) => this.externalStateRouter.onStatePatch(zoneId, patch),
       onQueueMirror: (zoneId, items, currentIndex) =>
         this.externalStateRouter.onQueueMirror(zoneId, items, currentIndex),
+      onExternalTakeover: (zoneId, takeover) => this.externalStateRouter.onExternalTakeover(zoneId, takeover),
       configPort,
     });
     this.zoneAudioPrefs = zoneAudioPrefs;
@@ -1168,7 +1173,7 @@ export class ZoneManager {
       for (const memberId of group.members) {
         const ctx = memberId === leaderId ? undefined : this.zoneRepo.get(memberId);
         if (ctx && this.followedLeader(memberId) === leaderId) {
-          this.endOwnSession(ctx);
+          this.endOwnSession(ctx, 'joined_group');
         }
       }
     }
@@ -1176,28 +1181,33 @@ export class ZoneManager {
   }
 
   /**
-   * End a member's own playback — the engine session and the input that fed it — without
-   * touching its speaker, which is about to follow the leader's stream. The zone's own stop
+   * End a zone's own playback — the engine session and the input that fed it — without
+   * touching its speaker, which is now somebody else's: a member about to follow the leader's
+   * stream, or a speaker that switched itself to another source (#430). The zone's own stop
    * would have stopped that player too, and it is not the zone's to stop any more.
    *
-   * Only what is the member's own: a line-in is not released by its audiopath here, since
+   * Only what is the zone's own: a line-in is not released by its audiopath here, since
    * a member mirrors its leader's and the source would be the group's.
+   *
+   * Returns false when the zone had no session or input of its own to end.
+   *
+   * The `switch_to_` reason makes an AirPlay receiver restart and drop its sender, so a phone
+   * streaming into a speaker that went to another source falls back to its own speaker.
    */
-  private endOwnSession(ctx: ZoneContext): void {
+  private endOwnSession(ctx: ZoneContext, reason: 'joined_group' | 'switch_to_external'): boolean {
     const input = ctx.activeInput ?? ctx.inputMode;
     if (!this.audioManager.getSession(ctx.id) && !input) {
-      return;
+      return false;
     }
-    this.log.info('zone joined a group it follows; ending its own session', {
-      zoneId: ctx.id,
-      input,
-    });
+    if (reason === 'joined_group') {
+      this.log.info('zone joined a group it follows; ending its own session', { zoneId: ctx.id, input });
+    }
     // Nothing of the zone's own goes to the speaker from here on, so the stop below is not
     // dispatched to it either.
     ctx.activeOutput = null;
     ctx.activeOutputTypes = new Set();
     if (input === 'airplay') {
-      this.inputsPort.stopAirplaySession(ctx.id, 'joined_group');
+      this.inputsPort.stopAirplaySession(ctx.id, reason);
     }
     if (input === 'musicassistant') {
       void this.inputsPort.switchAway(ctx.id).catch(() => undefined);
@@ -1205,10 +1215,11 @@ export class ZoneManager {
     // Whether the zone played Spotify as an input or from its own queue, a run or a Connect
     // session of its own is let go of: it holds the account, and a Connect device left
     // active is one the account can wake up again later.
-    this.inputsPort.stopSpotifySession(ctx.id, 'joined_group');
+    this.inputsPort.stopSpotifySession(ctx.id, reason);
     ctx.queue.authority = 'local';
     this.playbackCoordinator.setInputMode(ctx, null);
     ctx.player.stop();
+    return true;
   }
 
   public getMetadata(zoneId: number): Record<string, unknown> | undefined {

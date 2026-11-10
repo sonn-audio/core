@@ -1,6 +1,6 @@
 import { createLogger } from '@/shared/logging/logger';
 import type { ZoneConfig } from '@/domain/config/types';
-import type { ZoneStateController } from '@/application/zones/state/StateController';
+import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { InternalStateController } from '@/application/zones/state/InternalStateController';
 import { BeoLinkStateController } from '@/application/zones/state/BeoLinkStateController';
@@ -13,6 +13,7 @@ import type { QueueItem } from '@/ports/types/queueTypes';
 type StateControllerManagerOptions = {
   onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
   onQueueMirror?: (zoneId: number, items: QueueItem[], currentIndex: number) => void;
+  onExternalTakeover?: (zoneId: number, takeover: ExternalTakeover) => void;
   configPort: ConfigPort;
 };
 
@@ -21,11 +22,13 @@ export class StateControllerManager {
   private readonly controllers = new Map<number, ZoneStateController>();
   private readonly onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
   private readonly onQueueMirror?: (zoneId: number, items: QueueItem[], currentIndex: number) => void;
+  private readonly onExternalTakeover?: (zoneId: number, takeover: ExternalTakeover) => void;
   private readonly configPort: ConfigPort;
 
   constructor(options: StateControllerManagerOptions) {
     this.onStatePatch = options.onStatePatch;
     this.onQueueMirror = options.onQueueMirror;
+    this.onExternalTakeover = options.onExternalTakeover;
     this.configPort = options.configPort;
   }
 
@@ -137,6 +140,7 @@ export class StateControllerManager {
         zone,
         configPort: this.configPort,
         onStatePatch: this.onStatePatch,
+        onExternalTakeover: this.onExternalTakeover,
       });
     }
     if (controllerId === 'musicassistant') {

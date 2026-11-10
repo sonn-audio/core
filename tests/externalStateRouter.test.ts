@@ -55,6 +55,7 @@ function buildRouter(opts: { controller?: string } = {}): { router: ExternalStat
     notifyQueueUpdated: (zoneId, queueSize) => {
       fakes.notifiedQueue.push({ zoneId, queueSize });
     },
+    yieldToExternalSource: () => false,
     log: createLogger('Test', 'ExternalStateRouter'),
   });
   return { router, fakes };

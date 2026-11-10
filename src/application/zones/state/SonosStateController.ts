@@ -19,12 +19,14 @@ import { SONOS_OWN_CONTAINER_SERVICE_ID, isOwnStreamUrl } from '@/domain/outputs
 import { buildBaseUrl } from '@/shared/streamUrl';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import { createLogger } from '@/shared/logging/logger';
-import type { ZoneStateController } from '@/application/zones/state/StateController';
+import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
 
 type SonosControllerOptions = {
   zone: ZoneConfig;
   configPort: ConfigPort;
   onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
+  /** The speaker left our stream for a source of its own; see `noteSpeakerSource`. */
+  onExternalTakeover?: (zoneId: number, takeover: ExternalTakeover) => void;
 };
 
 const TIME_TICK_MS = 1000;
@@ -53,6 +55,7 @@ export class SonosStateController implements ZoneStateController {
   private readonly log = createLogger('Zones', 'StateController:Sonos');
   private readonly zone: ZoneConfig;
   private readonly onStatePatch: (zoneId: number, patch: Partial<ZoneState>) => void;
+  private readonly onExternalTakeover: ((zoneId: number, takeover: ExternalTakeover) => void) | null;
   private readonly host: string | null;
   private readonly configPort: ConfigPort;
 
@@ -73,10 +76,14 @@ export class SonosStateController implements ZoneStateController {
   private lastLoggedSnapshotSignature = '';
   private lastTrackMediaUrl: string | null = null;
   private lastTrackTitle: string | null = null;
+  // True once the speaker has been seen on our own stream, until it is seen playing something else.
+  private ownStreamSeen = false;
+  private pendingTakeover: ExternalTakeover | null = null;
 
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
     this.onStatePatch = options.onStatePatch;
+    this.onExternalTakeover = options.onExternalTakeover ?? null;
     this.configPort = options.configPort;
     this.host = resolveSonosHost(this.zone);
   }
@@ -433,6 +440,13 @@ export class SonosStateController implements ZoneStateController {
 
   private emitSnapshotPatch(): void {
     const patch = this.buildSnapshotPatch();
+    const takeover = this.pendingTakeover;
+    this.pendingTakeover = null;
+    if (takeover && this.onExternalTakeover) {
+      // Ahead of the patch: the zone has to let go of its own session first, or ending that
+      // session afterwards reports the zone stopped over the source the speaker is now playing.
+      this.onExternalTakeover(this.zone.id, takeover);
+    }
     if (!patch || Object.keys(patch).length === 0) {
       return;
     }
@@ -478,7 +492,8 @@ export class SonosStateController implements ZoneStateController {
     const container = metadata?.container;
 
     const trackMediaUrl = cleanString(track?.mediaUrl);
-    if (isOwnStream(trackMediaUrl, container, this.ownStreamBaseUrl())) {
+    const ownStream = isOwnStream(trackMediaUrl, container, this.ownStreamBaseUrl());
+    if (ownStream) {
       // Our own stream lives exactly as long as the session that feeds it, so it is never a
       // reload target: once that session ends the URL leads nowhere, and an older external URL
       // still in the cache is not what the zone was last playing either (#418).
@@ -506,6 +521,7 @@ export class SonosStateController implements ZoneStateController {
     const mode = mapPlaybackState(group.playbackState);
     const audiotype = resolveAudiotype(group, track?.mediaUrl ?? '', container?.type ?? '');
     const sourceName = resolveSourceName(audiotype, container?.name ?? '', group.name, this.zone.name);
+    this.noteSpeakerSource(ownStream, trackMediaUrl, mode, sourceName);
     const title = cleanString(track?.name) || cleanString(container?.name) || sourceName;
     const artist = cleanString(track?.artist?.name) || cleanString(metadata?.streamInfo) || '';
     const album = cleanString(track?.album?.name) || '';
@@ -565,6 +581,38 @@ export class SonosStateController implements ZoneStateController {
     }
 
     return patch;
+  }
+
+  /**
+   * Notice the speaker switching itself away from our stream (#430).
+   *
+   * A Sonos soundbar goes to TV audio on its own the moment the TV comes on. Our session went on
+   * regardless, so the next Spotify track was handed to the speaker again and took it back from
+   * the TV. What counts is an edge: the speaker was on our stream, and is now playing (or
+   * buffering) a source that is clearly someone else's. Anything else is not a takeover:
+   *
+   * - our own stream, under any URL of ours (a track change is a new URL on our own host);
+   * - a foreign source seen before our stream ever was: that is the speaker still reporting what
+   *   it played while our play() is switching it over, not a source that took it from us;
+   * - a stopped or paused speaker, which is also how our own pause comes back (#345);
+   * - no URL at all, which the speaker reports for a moment while it loads ours;
+   * - `x-rincon:`, a speaker following a group coordinator, which is how our own grouping looks.
+   */
+  private noteSpeakerSource(ownStream: boolean, mediaUrl: string, mode: ZoneState['mode'], sourceName: string): void {
+    if (ownStream) {
+      this.ownStreamSeen = true;
+      return;
+    }
+    if (!this.ownStreamSeen || mode !== 'play' || !mediaUrl || /^x-rincon:/i.test(mediaUrl)) {
+      return;
+    }
+    this.ownStreamSeen = false;
+    this.pendingTakeover = { mediaUrl, sourceName };
+    this.log.debug('sonos speaker switched away from our stream', {
+      zoneId: this.zone.id,
+      mediaUrl,
+      sourceName,
+    });
   }
 
   private async dispatchCommand(action: 'play' | 'pause' | 'stop' | 'next' | 'previous'): Promise<void> {

@@ -129,6 +129,7 @@ import './sonosEndpointResolution.test';
 import './sonosDiscovery.test';
 import './sonosTransportResilience.test';
 import './externalStateRouter.test';
+import './sonosExternalTakeover.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
 import './inputSourceConfigurator.test';
@@ -1648,6 +1649,74 @@ test('a zone joining a squeezelite group ends its own session but not its player
     member.player.stop = realPlayerStop;
     delete (audioManager as unknown as { getSession?: unknown }).getSession;
     groupTracker.removeGroupByLeader(LEADER);
+    stub.restore();
+  }
+});
+
+test('a zone whose speaker went to another source ends its session but leaves the speaker alone (#430)', async () => {
+  // A Sonos soundbar switches itself to TV audio. The zone's Spotify session went on, and its next
+  // track took the speaker back from the TV. The zone now gives the speaker up the way a stop
+  // would - Spotify is let go of, so the phone stops advancing - except that the speaker, which
+  // is playing the TV now, is not told to stop.
+  const ZONE = 430;
+  const stub = stubSqueezeliteMemberPause();
+  const harness = await getZoneHarness();
+  const { zoneManager, audioManager } = harness;
+  await zoneManager.replaceAll(
+    [{ ...createZoneConfig(ZONE, 'Living'), transports: [{ id: 'squeezelite', playerId: 'aa:bb:cc:00:04:30' } as never] }],
+    { spotify: {} },
+  );
+  const internals = zoneManager as unknown as {
+    zoneRepo: { get: (id: number) => import('../src/application/zones/internal/zoneTypes').ZoneContext | undefined };
+    inputsPort: { stopSpotifySession: (zoneId: number, reason?: string) => void };
+    externalStateRouter: { deps: { yieldToExternalSource: (zoneId: number) => boolean } };
+  };
+  const inputs = internals.inputsPort;
+  const realStopSpotify = inputs.stopSpotifySession;
+  const spotifyStops: string[] = [];
+  inputs.stopSpotifySession = (zoneId, reason) => {
+    spotifyStops.push(`${zoneId}:${reason}`);
+  };
+  let ownSession: { zoneId: number; state: string; source: string } | null = {
+    zoneId: ZONE,
+    state: 'playing',
+    source: 'spotify-connect',
+  };
+  const realGetSession = audioManager.getSession.bind(audioManager);
+  (audioManager as unknown as { getSession: (zoneId: number) => unknown }).getSession = (zoneId) =>
+    zoneId === ZONE ? ownSession : realGetSession(zoneId);
+  const ctx = internals.zoneRepo.get(ZONE)!;
+  const playerStops: number[] = [];
+  const realPlayerStop = ctx.player.stop.bind(ctx.player);
+  ctx.player.stop = (reason?: string) => {
+    playerStops.push(ZONE);
+    ownSession = null;
+    return realPlayerStop(reason);
+  };
+  try {
+    ctx.activeInput = 'spotify';
+    ctx.inputMode = 'spotify';
+    ctx.activeOutput = 'squeezelite';
+    ctx.queue.authority = 'spotify';
+    zoneManager.applyPatch(ZONE, { mode: 'play', title: 'Planet Techno' });
+
+    const yieldToExternalSource = internals.externalStateRouter.deps.yieldToExternalSource;
+    assert.equal(yieldToExternalSource(ZONE), true);
+    assert.deepEqual(spotifyStops, [`${ZONE}:switch_to_external`], 'the Spotify session is let go of');
+    assert.deepEqual(playerStops, [ZONE], 'its own playback ends');
+    assert.equal(ctx.inputMode, null);
+    assert.equal(ctx.queue.authority, 'local');
+    assert.ok(!stub.calls.includes(`${ZONE}:stop`), 'the speaker playing the TV is not stopped');
+
+    spotifyStops.length = 0;
+    playerStops.length = 0;
+    assert.equal(yieldToExternalSource(ZONE), false, 'with nothing of its own left there is nothing to end');
+    assert.deepEqual(spotifyStops, []);
+    assert.deepEqual(playerStops, []);
+  } finally {
+    inputs.stopSpotifySession = realStopSpotify;
+    ctx.player.stop = realPlayerStop;
+    delete (audioManager as unknown as { getSession?: unknown }).getSession;
     stub.restore();
   }
 });

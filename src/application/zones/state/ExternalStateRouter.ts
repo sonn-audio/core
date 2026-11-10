@@ -5,12 +5,18 @@ import type { PlaybackSession } from '@/ports/types/playback';
 import type { ZoneRepository } from '@/application/zones/ZoneRepository';
 import type { QueueItem } from '@/application/zones/internal/zoneTypes';
 import { resolveZoneStateControllerId } from '@/application/zones/state/authorityPolicies';
+import type { ExternalTakeover } from '@/application/zones/state/StateController';
 
 export type ExternalStateRouterDeps = {
   zones: ZoneRepository;
   audioManager: Pick<AudioManager, 'hasActiveLocalSession' | 'getSession' | 'stopPlayback'>;
   applyPatch: (zoneId: number, patch: Partial<ZoneState>, force?: boolean) => void;
   notifyQueueUpdated: (zoneId: number, queueSize: number) => void;
+  /**
+   * End the zone's own session and whatever feeds it, as a stop would, but leave the speaker
+   * alone: it is playing something else now. False when the zone had nothing of its own going.
+   */
+  yieldToExternalSource: (zoneId: number) => boolean;
   log: ComponentLogger;
 };
 
@@ -78,6 +84,26 @@ export class ExternalStateRouter {
       });
     }
     this.deps.applyPatch(zoneId, patch);
+  }
+
+  /**
+   * The speaker switched itself to a source of its own while it was playing ours (#430: a Sonos
+   * soundbar going to TV audio when the TV comes on). The zone gives the speaker up, the way a
+   * stop would, so that the next track of its session is not pushed to the speaker and does not
+   * take it back. It stays that way until somebody picks something for the zone again.
+   */
+  public onExternalTakeover(zoneId: number, takeover: ExternalTakeover): void {
+    const ctx = this.deps.zones.get(zoneId);
+    if (!ctx) return;
+    const controllerId = resolveZoneStateControllerId(ctx.config);
+    if (controllerId === 'internal') return;
+    if (!this.deps.yieldToExternalSource(zoneId)) return;
+    this.deps.log.info('zone yielded its speaker to an external source', {
+      zoneId,
+      controller: controllerId,
+      source: takeover.sourceName,
+      mediaUrl: takeover.mediaUrl,
+    });
   }
 
   public onQueueMirror(zoneId: number, items: QueueItem[], currentIndex: number): void {
