@@ -112,11 +112,18 @@ export class GroupManager {
     }
   }
 
-  public broadcastGroupState(): void {
-    const groups = getAllGroups();
-    const payload: AudioSyncGroupPayload[] = groups
+  /**
+   * The current groups as the `audio_sync_event` list. Built here once so the
+   * change broadcast below and a client's connect snapshot send the same thing.
+   */
+  public getGroupSyncPayload(): AudioSyncGroupPayload[] {
+    return getAllGroups()
       .map((record) => this.buildGroupPayload(record))
       .filter((p): p is AudioSyncGroupPayload => Boolean(p));
+  }
+
+  public broadcastGroupState(): void {
+    const payload = this.getGroupSyncPayload();
 
     if (!payload.length) {
       this.log.debug('no groups to broadcast');
@@ -367,6 +374,9 @@ export class GroupManager {
 }
 
 export type GroupManagerReadPort = Pick<GroupManager, 'getAllGroups'>;
+
+/** The group list a Loxone client is sent on connect, as the change broadcast sends it. */
+export type GroupSyncSnapshotPort = Pick<GroupManager, 'getGroupSyncPayload'>;
 
 /**
  * Grouping as the public API needs it. Kept separate from the read port so a consumer

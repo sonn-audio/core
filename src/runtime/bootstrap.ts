@@ -614,6 +614,7 @@ export function createRuntime(): Runtime {
         serverHeartbeat,
         notifier: loxoneNotifier,
         zoneManager,
+        groups: groupManager,
         configPort,
       });
       loxoneService = service;

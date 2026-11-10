@@ -19,6 +19,7 @@ import type { ConnectionRegistry } from '@/adapters/loxone/ws/connectionRegistry
 import type { ServerHeartbeat } from '@/adapters/loxone/ws/serverHeartbeat';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
+import type { GroupSyncSnapshotPort } from '@/application/groups/groupManager';
 import type { ConfigPort } from '@/ports/ConfigPort';
 
 interface ServerRuntime {
@@ -40,6 +41,8 @@ export interface LoxoneHttpServiceOptions {
    *  sends exactly what the steady-state broadcast does. */
   notifier: LoxoneWsNotifier;
   zoneManager: ZoneManagerFacade;
+  /** The current groups, so the connect snapshot can announce them too. */
+  groups: GroupSyncSnapshotPort;
   configPort: ConfigPort;
 }
 
@@ -210,6 +213,20 @@ export class LoxoneHttpService {
       } catch {
         // connection will be cleaned up via the error/close event
         break;
+      }
+    }
+
+    // Groups are announced only when they change, so one restored from config at
+    // startup — before any client was connected — was never announced at all: the
+    // app showed "No group available" and could not dissolve it. Send the current
+    // list to this client alone, the same list the change broadcast sends. Like
+    // that broadcast, nothing is sent when there are no groups.
+    const groups = this.options.groups.getGroupSyncPayload();
+    if (groups.length) {
+      try {
+        connection.sendUTF(this.options.notifier.serializeAudioSyncEvent(groups));
+      } catch {
+        // connection will be cleaned up via the error/close event
       }
     }
 

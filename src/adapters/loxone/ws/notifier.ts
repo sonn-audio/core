@@ -385,7 +385,12 @@ export class LoxoneWsNotifier {
   }
 
   public notifyAudioSyncEvent(payload: AudioSyncGroupPayload[]): void {
-    this.registry.broadcastMessage(JSON.stringify({ audio_sync_event: payload }));
+    this.registry.broadcastMessage(this.serializeAudioSyncEvent(payload));
+  }
+
+  /** The `audio_sync_event` frame, shared by the broadcast and the connect snapshot. */
+  public serializeAudioSyncEvent(payload: AudioSyncGroupPayload[]): string {
+    return JSON.stringify({ audio_sync_event: payload });
   }
 }
 

@@ -211,6 +211,7 @@ import './squeezelitePlaybackStart.test';
 import './squeezeliteAlertSync.test';
 import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
+import './loxoneConnectGroupSnapshot.test';
 import './adminZoneStates.test';
 import './adminInfo.test';
 import './bundleCompat.test';
