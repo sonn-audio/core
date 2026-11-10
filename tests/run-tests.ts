@@ -174,6 +174,7 @@ import './publicApi.test';
 import './dlnaRendererReflection.test';
 import './dlnaRendererCast.test';
 import './googleCastReconnect.test';
+import './googleCastSupersededLoad.test';
 import './dlnaLineInService.test';
 import './zoneMute.test';
 import './zoneVolumeResume.test';

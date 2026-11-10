@@ -353,6 +353,9 @@ export class GoogleCastOutput implements ZoneOutput {
     }
 
     const token = (this.loadToken += 1);
+    // A newer load replaces this one on the receiver, which cancels ours. Retrying it, or recording
+    // it as the loaded media, would put the stale stream back over the new one (#431).
+    const superseded = (): boolean => this.loadToken !== token;
     this.loadInFlightSignature = signature;
     const pending = (async (): Promise<void> => {
       const startedAt = Date.now();
@@ -370,7 +373,7 @@ export class GoogleCastOutput implements ZoneOutput {
         autoplay: true,
         currentTime: 0,
       });
-      if (!loaded) {
+      if (!loaded && !superseded()) {
         // If the load times out, the cast stack may be in a bad state; reconnect once and retry.
         const shouldReconnect = Date.now() - this.lastLoadTimeoutAt < 3000;
         const canReconnect = Date.now() - this.lastLoadReconnectAt > 10000;
@@ -385,12 +388,17 @@ export class GoogleCastOutput implements ZoneOutput {
         }
 
         await this.ensureReceiver();
-        loaded = await this.loadMedia(media, {
-          autoplay: true,
-          currentTime: 0,
-        });
+        if (!superseded()) {
+          loaded = await this.loadMedia(media, {
+            autoplay: true,
+            currentTime: 0,
+          });
+        }
       }
-      if (!loaded) {
+      if (!loaded || superseded()) {
+        if (superseded()) {
+          this.log.debug('Google Cast load superseded by a newer one', { zoneId: this.zoneId, token });
+        }
         return;
       }
       this.lastLoadSignature = signature;
