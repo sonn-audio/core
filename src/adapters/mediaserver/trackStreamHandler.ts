@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger } from '@/shared/logging/logger';
+import { LIBRARY_AUDIO_MIME_TYPES } from '@/shared/audio/libraryAudioFiles';
 import type { EnginePort, EngineLocalSession } from '@/ports/EnginePort';
 import type { ContentPort } from '@/ports/ContentPort';
 import type { PlaybackSource } from '@/ports/EngineTypes';
@@ -42,9 +43,7 @@ export class TrackStreamHandler {
     res: ServerResponse,
     pathname: string,
   ): Promise<void> {
-    const encoded = pathname
-      .slice('/dlna/track/'.length)
-      .replace(/\.(mp3|m4a|aac|flac|wav)$/i, '');
+    const encoded = stripAudioExtension(pathname.slice('/dlna/track/'.length));
     const objectId = safeDecodeURIComponent(encoded);
     const ref = decodeObjectId(objectId);
     if (!ref || ref.kind !== 'item') {
@@ -339,4 +338,17 @@ function safeDecodeURIComponent(value: string): string {
   } catch {
     return value;
   }
+}
+
+/**
+ * Drops a trailing audio extension from the requested object id. Our own URLs end in `.mp3`; a
+ * renderer may ask for any extension the library knows, so the same list applies here.
+ */
+function stripAudioExtension(value: string): string {
+  const dot = value.lastIndexOf('.');
+  if (dot === -1) {
+    return value;
+  }
+  const ext = value.slice(dot).toLowerCase();
+  return Object.hasOwn(LIBRARY_AUDIO_MIME_TYPES, ext) ? value.slice(0, dot) : value;
 }

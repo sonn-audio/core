@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger } from '@/shared/logging/logger';
+import { LIBRARY_AUDIO_MIME_TYPES } from '@/shared/audio/libraryAudioFiles';
 import type { EnginePort, EngineLocalSession } from '@/ports/EnginePort';
 import type { ContentPort } from '@/ports/ContentPort';
 import type { PlaybackSource } from '@/ports/EngineTypes';
@@ -345,13 +346,8 @@ export function parseRange(
 }
 
 const MIME_BY_EXT: Record<string, string> = {
-  '.mp3': 'audio/mpeg',
-  '.flac': 'audio/flac',
-  '.m4a': 'audio/mp4',
-  '.aac': 'audio/aac',
-  '.ogg': 'audio/ogg',
+  ...LIBRARY_AUDIO_MIME_TYPES,
   '.opus': 'audio/opus',
-  '.wav': 'audio/wav',
   '.wma': 'audio/x-ms-wma',
   '.aif': 'audio/aiff',
   '.aiff': 'audio/aiff',

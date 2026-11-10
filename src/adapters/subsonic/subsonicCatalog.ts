@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { createLogger } from '@/shared/logging/logger';
+import { LIBRARY_AUDIO_MIME_TYPES } from '@/shared/audio/libraryAudioFiles';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { BrowsableService, ContentFolder, ContentFolderItem } from '@/ports/ContentTypes';
@@ -37,13 +38,10 @@ const MP3_BITRATE_BPS = mp3BitrateToBps(audioOutputSettings.mp3Bitrate);
 const MP3_BITRATE_KBPS = Math.max(1, Math.round(MP3_BITRATE_BPS / 1000));
 
 const AUDIO_MIME: Record<string, string> = {
-  mp3: 'audio/mpeg',
-  flac: 'audio/flac',
-  m4a: 'audio/mp4',
-  aac: 'audio/aac',
-  ogg: 'audio/ogg',
+  ...Object.fromEntries(
+    Object.entries(LIBRARY_AUDIO_MIME_TYPES).map(([ext, mime]) => [ext.slice(1), mime]),
+  ),
   opus: 'audio/opus',
-  wav: 'audio/wav',
   wma: 'audio/x-ms-wma',
   aif: 'audio/aiff',
   aiff: 'audio/aiff',

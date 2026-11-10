@@ -8,6 +8,7 @@ import { Jimp, JimpMime } from 'jimp';
 import { createLogger } from '@/shared/logging/logger';
 import { ensureDir, resolveDataDir } from '@/shared/utils/file';
 import { bestEffort, bestEffortSync } from '@/shared/bestEffort';
+import { isLibraryAudioFile, mayLackAudioStream } from '@/shared/audio/libraryAudioFiles';
 import {
   COVER_ART_JPEG_QUALITY,
   COVER_ART_MAX_BYTES,
@@ -107,6 +108,25 @@ interface SafeTags {
   duration?: number;
   /** The file's own audio format, when the parse reported enough of it to be usable. */
   format?: TrackSourceFormat | null;
+  /** Whether the parse found an audio stream; unset when the file could not be parsed at all. */
+  hasAudioStream?: boolean;
+}
+
+/** `music-metadata`'s track type for an audio stream (its `TrackType.audio`, which it does not export). */
+const TRACK_TYPE_AUDIO = 0x02;
+
+/**
+ * Whether a parsed file carries an audio stream.
+ *
+ * `format.hasAudio` cannot answer this: the MP4 parser starts it at `true` and never clears it, so a
+ * video-only `.mp4` reports audio too. The per-stream list is set from the track's own handler and
+ * sample description, and a reported sample rate is the same answer for parsers that list no streams.
+ */
+function hasAudioStream(format: mm.IAudioMetadata['format']): boolean {
+  return (
+    (format.trackInfo ?? []).some((track) => track.type === TRACK_TYPE_AUDIO) ||
+    Boolean(format.sampleRate)
+  );
 }
 
 /**
@@ -442,7 +462,7 @@ export class LocalLibraryProvider {
    */
   public async syncPath(relPath: string): Promise<'added' | 'updated' | 'removed' | 'ignored'> {
     const safeRel = normalizeLibraryRelPath(relPath);
-    if (!safeRel || !isAudioFile(safeRel)) {
+    if (!safeRel || !isLibraryAudioFile(safeRel)) {
       return 'ignored';
     }
 
@@ -475,8 +495,11 @@ export class LocalLibraryProvider {
       return 'ignored';
     }
 
-    await this.addTrack(storageId, safeRel);
+    const indexed = await this.addTrack(storageId, safeRel);
     this.stats = null;
+    if (!indexed) {
+      return existing ? 'removed' : 'ignored';
+    }
     return existing ? 'updated' : 'added';
   }
 
@@ -528,7 +551,7 @@ export class LocalLibraryProvider {
    */
   public queuePathSync(relPath: string, settleMs = PATH_SYNC_SETTLE_MS): void {
     const safeRel = normalizeLibraryRelPath(relPath);
-    if (!safeRel || !isAudioFile(safeRel)) {
+    if (!safeRel || !isLibraryAudioFile(safeRel)) {
       return;
     }
     this.pendingPathSyncs.add(safeRel);
@@ -827,9 +850,10 @@ export class LocalLibraryProvider {
       .sort(compareDirentNames)
       .map((entry) => this.driveFolderItem(storageId, safeRelPath, entry.name));
     const files = entries
-      .filter((entry) => entry.isFile() && isAudioFile(entry.name))
+      .filter((entry) => entry.isFile() && isLibraryAudioFile(entry.name))
       .sort(compareDirentNames)
-      .map((entry) => this.driveTrackItem(storageId, storageRoot, safeRelPath, entry.name));
+      .map((entry) => this.driveTrackItem(storageId, storageRoot, safeRelPath, entry.name))
+      .filter((item): item is ContentFolderItem => item !== null);
     const items = [...folders, ...files];
     const folderName = safeRelPath ? path.basename(safeRelPath) : 'Folders';
     const id = safeRelPath
@@ -1054,7 +1078,7 @@ export class LocalLibraryProvider {
     storageRoot: string,
     parentRelPath: string,
     fileName: string,
-  ): ContentFolderItem {
+  ): ContentFolderItem | null {
     const relPath = path.join(storageRoot, parentRelPath, fileName);
     const stored = bestEffortSync(
       () => this.store.findByStoragePath(storageId, relPath),
@@ -1062,6 +1086,11 @@ export class LocalLibraryProvider {
     );
     if (stored) {
       return this.trackItem(this.normalizeTrack(stored));
+    }
+    // An .mp4 may be a video with no sound; only the scan, which reads its streams, can tell. Until
+    // it has indexed the file, the folder view does not offer it as a track that cannot play.
+    if (mayLackAudioStream(fileName)) {
+      return null;
     }
     const baseInfo = createTrackFromPath(relPath);
     const track: LocalTrack = {
@@ -1098,7 +1127,7 @@ export class LocalLibraryProvider {
     } catch {
       return [];
     }
-    const audioEntries = entries.filter((entry) => entry.isFile() && isAudioFile(entry.name));
+    const audioEntries = entries.filter((entry) => entry.isFile() && isLibraryAudioFile(entry.name));
     const mapped = await Promise.all(
       audioEntries.map(async (entry) => {
         const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
@@ -1383,7 +1412,7 @@ export class LocalLibraryProvider {
         continue;
       }
 
-      if (!entry.isFile() || !isAudioFile(entry.name)) {
+      if (!entry.isFile() || !isLibraryAudioFile(entry.name)) {
         continue;
       }
 
@@ -1393,14 +1422,18 @@ export class LocalLibraryProvider {
     return true;
   }
 
-  private async addTrack(storageId: string, relPath: string): Promise<void> {
+  /**
+   * Indexes one file. Resolves `false` when the file is not a track after all: unreadable, or an
+   * `.mp4` whose streams hold no audio (any row it had is dropped).
+   */
+  private async addTrack(storageId: string, relPath: string): Promise<boolean> {
     const fullPath = path.join(this.baseDir, relPath);
 
     let fileStat: Stats | null = null;
     try {
       fileStat = await fsp.stat(fullPath);
     } catch {
-      return;
+      return false;
     }
 
     // Untouched file: the stored row is still accurate, so skip the expensive
@@ -1419,10 +1452,19 @@ export class LocalLibraryProvider {
       known.size === fileStat.size &&
       known.mtime === Math.floor(fileStat.mtimeMs)
     ) {
-      return;
+      return true;
     }
 
     const metadata = await this.readMetadata(fullPath);
+    // A video with no sound would list as a track that plays nothing. A file the parser could not
+    // read at all is given the benefit of the doubt, exactly as an unreadable .m4a is.
+    if (mayLackAudioStream(relPath) && metadata.hasAudioStream === false) {
+      if (known) {
+        this.store.deleteTracksByAudiopath(known.audiopath);
+      }
+      this.log.debug('skipping file without an audio stream', { relPath });
+      return false;
+    }
     const baseInfo = createTrackFromPath(relPath);
     const artist = metadata.artist || baseInfo.artist;
 
@@ -1456,6 +1498,7 @@ export class LocalLibraryProvider {
       duration: track.duration,
       format: metadata.format,
     });
+    return true;
   }
 
   private async safeEnsureCoverArt(
@@ -1534,6 +1577,7 @@ export class LocalLibraryProvider {
         picture: metadata.common.picture?.[0],
         duration: metadata.format.duration ? Math.round(metadata.format.duration) : undefined,
         format: toTrackSourceFormat(metadata.format),
+        hasAudioStream: hasAudioStream(metadata.format),
       };
     } catch {
       return { title: '', album: '', artist: '', albumArtist: '', compilation: false };
@@ -2194,12 +2238,6 @@ function encodePath(relative: string): string {
     .split(path.sep)
     .map((segment) => encodeURIComponent(segment))
     .join('/');
-}
-
-function isAudioFile(name: string): boolean {
-  return ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav'].includes(
-    path.extname(name).toLowerCase(),
-  );
 }
 
 function createTrackFromPath(relPath: string): Pick<LocalTrack, 'title' | 'album' | 'artist'> {

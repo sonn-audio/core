@@ -115,6 +115,7 @@ import './localLibraryStore.search.test';
 import './localLibraryStore.delete.test';
 import './localLibraryStore.sourceFormat.test';
 import './localLibraryProvider.folders.test';
+import './localLibraryProvider.mp4.test';
 import './localLibraryResolveItem.test';
 import './zonePlayerEndGuard.test';
 import './zonePlayerPreDelayClock.test';

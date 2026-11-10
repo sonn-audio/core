@@ -3,6 +3,7 @@ import type { RadioAdminPort } from '@/ports/RadioAdminPort';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ComponentLogger } from '@/shared/logging/logger';
 import { bestEffort } from '@/shared/bestEffort';
+import { isLibraryAudioFile } from '@/shared/audio/libraryAudioFiles';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { CustomRadioStore } from '@/adapters/content/providers/customRadioStore';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
@@ -352,7 +353,7 @@ async function handleLibraryFilePut(
     deps.sendJson(res, 400, { error: 'invalid-library-upload' });
     return;
   }
-  if (!isAudioUploadName(relativePath)) {
+  if (!isLibraryAudioFile(relativePath)) {
     deps.sendJson(res, 400, { error: 'invalid-audio-extension' });
     return;
   }
@@ -381,11 +382,6 @@ async function handleLibraryFilePut(
       deps.sendJson(res, 500, { error: 'library-upload-failed' });
     }
   }
-}
-
-/** Extensions the library indexes; anything else is refused rather than stored. */
-function isAudioUploadName(name: string): boolean {
-  return /\.(mp3|flac|m4a|aac|ogg|wav)$/i.test(name);
 }
 
 async function handleLibraryTrackDelete(
