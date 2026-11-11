@@ -2,7 +2,6 @@ const audioCfgPrefixLabels: Record<string, string> = {
   'audio/cfg/speakertype/': 'speaker payload',
   'audio/cfg/volumes/': 'volume payload',
   'audio/cfg/playername/': 'player name payload',
-  'audio/cfg/groupopts/': 'group options payload',
   'audio/cfg/playeropts/': 'player options payload',
 };
 

@@ -2,7 +2,7 @@ import type { LoxoneHttpConfig } from '@/config/loxone';
 import type { NotifierPort } from '@/ports/NotifierPort';
 import { LoxoneRouter } from '@/adapters/loxone/commands/router/loxoneRouter';
 import { createSecureHandlers } from '@/adapters/loxone/commands/handlers/secureHandlers';
-import { createPlaceholderHandler } from '@/adapters/loxone/commands/handlers/placeholderHandlers';
+import { createGroupOptsHandler, createPlaceholderHandler } from '@/adapters/loxone/commands/handlers/placeholderHandlers';
 import { createConfigHandlers } from '@/adapters/loxone/commands/handlers/configHandlers';
 import { createProviderHandlers } from '@/adapters/loxone/commands/handlers/providerHandlers';
 import { createZoneHandlers } from '@/adapters/loxone/commands/handlers/zoneHandlers';
@@ -146,7 +146,7 @@ export function registerRoutes(
   router.registerRegex('audio', /^audio\/cfg\/seteq\/\d+\/.+$/, zoneHandlers.audioCfgSetEq);
   router.registerPrefix('audio', 'audio/cfg/restart', configHandlers.restart);
   router.registerPrefix('audio', 'audio/cfg/speakertype', placeholder('speakertype'));
-  router.registerPrefix('audio', 'audio/cfg/groupopts', placeholder('groupopts'));
+  router.registerPrefix('audio', 'audio/cfg/groupopts', createGroupOptsHandler());
   router.registerPrefix('audio', 'audio/cfg/presencemode', placeholder('presencemode'));
   router.registerPrefix('audio', 'audio/cfg/miniserverip', placeholder('miniserverip'));
   router.registerPrefix('audio', 'audio/cfg/miniserverversion', placeholder('miniserverversion'));
