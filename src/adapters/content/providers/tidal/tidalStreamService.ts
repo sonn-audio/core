@@ -11,13 +11,7 @@ import { resolveProxyHost, resolveProxyPort } from '@/shared/urlProxy';
 import { pruneExpiredSessions, type StreamProxyRoute } from '@/shared/streamProxyRoute';
 import { sharedTidalAuth, type TidalApiAccess } from '@/adapters/content/providers/tidal/tidalAuth';
 import { TIDAL_API_BASE } from '@/adapters/content/providers/tidal/tidalAuthClient';
-import {
-  hasContentProtection,
-  JSONAPI_CONTENT_TYPE,
-  OPENAPI_FORMATS,
-  parseTrackManifest,
-  trackManifestUrl,
-} from '@/adapters/content/providers/tidal/tidalOpenApi';
+import { hasContentProtection } from '@/adapters/content/providers/tidal/tidalOpenApi';
 
 const TIDAL_QUALITIES: readonly TidalQuality[] = ['LOW', 'HIGH', 'LOSSLESS', 'HI_RES_LOSSLESS'];
 export const DEFAULT_TIDAL_QUALITY: TidalQuality = 'LOSSLESS';
@@ -28,19 +22,13 @@ const MANIFEST_BTS = 'application/vnd.tidal.bts';
 const MANIFEST_DASH = 'application/dash+xml';
 
 /**
- * The quality a playback answer says it carries, when it is lower than the one asked for: v1's
- * `audioQuality`, or the format of a trackManifests document. TIDAL caps some clients (HIGH, AAC
- * 320, for a client that asked for LOSSLESS); that is recorded, never retried.
+ * The quality a playback answer says it carries (v1's `audioQuality`), when it is lower than the
+ * one asked for. TIDAL caps some clients (HIGH, AAC 320, for a client that asked for LOSSLESS);
+ * that is recorded, never retried.
  */
 export function downgradeOf(asked: TidalQuality, delivered: unknown): TidalQuality | undefined {
   if (typeof delivered !== 'string' || !TIDAL_QUALITIES.includes(delivered as TidalQuality)) return undefined;
   return TIDAL_QUALITIES.indexOf(delivered as TidalQuality) < TIDAL_QUALITIES.indexOf(asked) ? (delivered as TidalQuality) : undefined;
-}
-
-/** The best quality among a trackManifests document's formats. */
-function qualityOfFormats(formats: string[]): TidalQuality | undefined {
-  const qualities = (Object.keys(OPENAPI_FORMATS) as TidalQuality[]).filter((q) => formats.includes(OPENAPI_FORMATS[q]));
-  return qualities.sort((a, b) => TIDAL_QUALITIES.indexOf(b) - TIDAL_QUALITIES.indexOf(a))[0];
 }
 
 export function tidalQualityOf(service: Pick<StreamingServiceConfig, 'tidalQuality'>): TidalQuality {
@@ -98,7 +86,7 @@ type TidalTrackRequest = {
 
 type OutputErrorHandler = (zoneId: number, reason?: string) => void;
 
-/** What a track resolves to, from either API. */
+/** What a track resolves to. */
 type Resolution =
   | TidalManifest
   | { kind: 'refused'; status: number }
@@ -176,20 +164,7 @@ export class TidalStreamService {
     }
 
     const quality = tidalQualityOf(request.bridge);
-    let resolved: Resolution;
-    if (this.auth.api(request.bridge.id) === 'openapi') {
-      // A third-party app's sign-in: v1 playback refuses its token ("Asset is not ready for playback").
-      resolved = await this.resolveOpenApi(request, quality);
-    } else {
-      resolved = await this.resolveV1(request, quality);
-      if (resolved.kind === 'refused') {
-        this.log.info('tidal v1 playback refused this token; trying the official API', {
-          trackId: request.trackId,
-          status: resolved.status,
-        });
-        resolved = await this.resolveOpenApi(request, quality);
-      }
-    }
+    const resolved = await this.resolveV1(request, quality);
 
     switch (resolved.kind) {
       case 'refused':
@@ -251,53 +226,6 @@ export class TidalStreamService {
       await this.noteQuality(request, quality, outcome.playback.audioQuality);
     }
     return manifest;
-  }
-
-  /**
-   * The official API's trackManifests: an MPEG-DASH manifest inline as a `data:` URI. For an app
-   * on TIDAL's third-party tier it is a 30-second preview — played anyway, and said so, since that
-   * is all TIDAL lets such an app have.
-   */
-  private async resolveOpenApi(request: TidalTrackRequest, quality: TidalQuality): Promise<Resolution> {
-    let resolved = await this.fetchTrackManifest(request, quality);
-    if (quality === 'HI_RES_LOSSLESS' && (resolved.kind === 'failed' || resolved.kind === 'drm' || resolved.kind === 'unsupported')) {
-      this.log.info('tidal hi-res manifest not playable; falling back to lossless', { trackId: request.trackId, reason: resolved.kind });
-      resolved = await this.fetchTrackManifest(request, 'LOSSLESS');
-    }
-    return resolved;
-  }
-
-  private async fetchTrackManifest(request: TidalTrackRequest, quality: TidalQuality): Promise<Resolution> {
-    try {
-      const res = await this.auth.fetch(request.bridge.id, trackManifestUrl(request.trackId, quality), {
-        headers: { Accept: JSONAPI_CONTENT_TYPE },
-      });
-      if (!res) return { kind: 'failed' };
-      if (res.status === 401 || res.status === 403) return { kind: 'refused', status: res.status };
-      if (!res.ok) {
-        this.log.warn('tidal track manifest failed', { status: res.status, trackId: request.trackId, quality });
-        return { kind: 'failed' };
-      }
-      const manifest = parseTrackManifest(await res.json());
-      if (manifest.kind === 'unsupported') {
-        this.log.warn('tidal track manifest unusable', { trackId: request.trackId, reason: manifest.reason });
-        return { kind: 'unsupported' };
-      }
-      if (manifest.kind === 'drm') return { kind: 'drm' };
-      const preview = manifest.presentation === 'PREVIEW';
-      if (preview) {
-        this.log.warn('tidal plays only a 30-second preview for this app', {
-          trackId: request.trackId,
-          reason: manifest.previewReason,
-        });
-      }
-      await this.auth.notePreview(request.bridge.id, preview ? manifest.previewReason || 'PREVIEW' : undefined);
-      await this.noteQuality(request, tidalQualityOf(request.bridge), qualityOfFormats(manifest.formats));
-      return { kind: 'dash', manifest: manifest.manifest, mimeType: 'application/dash+xml' };
-    } catch (err) {
-      this.log.warn('tidal track manifest failed', { trackId: request.trackId, message: err instanceof Error ? err.message : String(err) });
-      return { kind: 'failed' };
-    }
   }
 
   /** Record what TIDAL delivered against what the service asks for; a played track always counts. */

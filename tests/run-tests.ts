@@ -73,6 +73,7 @@ import './appleMusicStreamHelpers.test';
 import './amazonMusic.test';
 import './amazonMusicServiceSave.test';
 import './tidalAuth.test';
+import './oauthHelpers.test';
 import './tidalPages.test';
 import './tidalNavigation.test';
 import './audioServersAndBearer.test';

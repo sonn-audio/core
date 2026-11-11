@@ -7,14 +7,12 @@ import type { TidalApiAccess } from '@/adapters/content/providers/tidal/tidalAut
 import { TIDAL_API_BASE, TIDAL_SESSIONS_URL } from '@/adapters/content/providers/tidal/tidalAuthClient';
 import {
   albumFromResource,
-  artistFromResource,
   JSONAPI_CONTENT_TYPE,
   JsonApiDocument,
   OPENAPI_INCLUDES,
   OPENAPI_MIX_COLLECTIONS,
   playlistFromResource,
   relationshipItems,
-  searchFromDocument,
   TIDAL_OPENAPI_BASE,
   trackFromResource,
 } from '@/adapters/content/providers/tidal/tidalOpenApi';
@@ -66,9 +64,6 @@ const RELATED = {
 } as const;
 type RelatedKind = keyof typeof RELATED;
 
-/** v1 refused the token outright: the account is one the official API serves instead. */
-class V1Refused extends Error {}
-
 type FolderResult = { items: ContentFolderItem[]; total?: number };
 type ArtistPage = { topTracks: ContentFolderItem[]; albums: ContentFolderItem[]; singles: ContentFolderItem[] };
 type CollectionKind = 'tracks' | 'albums' | 'artists' | 'playlists';
@@ -98,10 +93,9 @@ interface TidalProviderOptions {
 /**
  * Lightweight Tidal catalog provider that mirrors the Apple Music facade shape (no playback).
  *
- * Two APIs, chosen per account: a third-party app's sign-in (PKCE) reads the official
- * openapi.tidal.com/v2, which is the only one that accepts its token — v1 answers it with 403
- * "Required scopes: r_usr". A device-flow sign-in or a pasted token reads api.tidal.com/v1, as
- * before; should v1 refuse it with a 403 all the same, the provider switches to v2 for good.
+ * The account is a device-flow sign-in or a pasted token, and reads api.tidal.com/v1. The official
+ * openapi.tidal.com/v2 takes the same token and is asked only for what v1 does not have: similar
+ * albums and tracks, and the daily, discovery and new-release mixes.
  */
 export class TidalProvider implements ContentProvider {
   public readonly providerId: string;
@@ -111,8 +105,6 @@ export class TidalProvider implements ContentProvider {
   private readonly serviceId: string;
   private readonly auth: TidalApiAccess;
   private refusalLogged = false;
-  /** Set once v1 refused this account's token; from then on everything goes to v2. */
-  private v1Refused = false;
   /** The account's v1 user id, once `/sessions` said it. */
   private v1User: string | null = null;
   /** Whether the token reads the editorial pages (it needs `r_usr`); unknown until one was asked for. */
@@ -230,14 +222,7 @@ export class TidalProvider implements ContentProvider {
   public async getTrack(trackId: string): Promise<ContentFolderItem | null> {
     const normalized = this.normalizeItemId(trackId, 'track');
     if (!normalized.id) return null;
-    const id = encodeURIComponent(normalized.id);
-    const track = await this.viaApi(
-      () => this.fetchJson<any>(`${TIDAL_API_BASE}/tracks/${id}`),
-      async () => {
-        const doc = await this.fetchDocument(`tracks/${id}`, OPENAPI_INCLUDES.track);
-        return doc?.data.id != null ? trackFromResource(doc, doc.data) : null;
-      },
-    );
+    const track = await this.fetchJson<any>(`${TIDAL_API_BASE}/tracks/${encodeURIComponent(normalized.id)}`);
     if (!track) return null;
     return this.mapTrack(track);
   }
@@ -257,17 +242,7 @@ export class TidalProvider implements ContentProvider {
     const activeTypes =
       requestedTypes.length > 0 ? new Set(requestedTypes) : new Set(['track', 'album', 'artist', 'playlist']);
 
-    if (this.useOpenApi() || this.v1Refused) {
-      await this.searchOpenApi(query, activeTypes, limits, limit, result);
-      return { result, providerId: this.providerId, user: this.providerId.split('@')[1] || this.providerId };
-    }
-
-    try {
-      await this.searchV1(query, activeTypes, limits, limit, result);
-    } catch (err) {
-      if (!(err instanceof V1Refused)) throw err;
-      await this.searchOpenApi(query, activeTypes, limits, limit, result);
-    }
+    await this.searchV1(query, activeTypes, limits, limit, result);
 
     // See AppleMusicProvider.search: the search `user` must equal the account
     // segment in the audiopaths so the native client can browse searched albums.
@@ -296,29 +271,6 @@ export class TidalProvider implements ContentProvider {
     if (activeTypes.has('playlist')) {
       const playlists = await this.fetchSearchResults('playlists', query, limits.playlist ?? limit);
       result.playlists = playlists.map((playlist) => this.mapPlaylist(playlist));
-    }
-  }
-
-  private async searchOpenApi(
-    query: string,
-    activeTypes: Set<string>,
-    limits: Record<string, number>,
-    limit: number,
-    result: ProviderSearchCategories,
-  ): Promise<void> {
-    const kinds = (['track', 'album', 'artist', 'playlist'] as const).filter((k) => activeTypes.has(k));
-    if (!kinds.length) return;
-    const include = kinds.flatMap((k) => OPENAPI_INCLUDES.search[k]);
-    // One request answers every kind: search is a collection taking the query as a filter.
-    const doc = await this.fetchDocument('searchResults', include, { 'filter[query]': query });
-    if (!doc) return;
-    const found = searchFromDocument(doc);
-    const cap = (kind: string) => limits[kind] ?? limit;
-    if (activeTypes.has('track')) result.tracks = found.tracks.slice(0, cap('track')).map((t) => this.mapTrack(t));
-    if (activeTypes.has('album')) result.albums = found.albums.slice(0, cap('album')).map((a) => this.mapAlbum(a));
-    if (activeTypes.has('artist')) result.artists = found.artists.slice(0, cap('artist')).map((a) => this.mapArtist(a));
-    if (activeTypes.has('playlist')) {
-      result.playlists = found.playlists.slice(0, cap('playlist')).map((p) => this.mapPlaylist(p));
     }
   }
 
@@ -559,11 +511,11 @@ export class TidalProvider implements ContentProvider {
   /* ------------------------------------------------------------------------ */
 
   /**
-   * Whether this account reads the pages: never on the official API, and on v1 only when its token
-   * carries `r_usr` — which the first page asked for says, and which is remembered from then on.
+   * Whether this account reads the pages: only when its token carries `r_usr` — which the first
+   * page asked for says, and which is remembered from then on.
    */
   private async pagesAvailable(): Promise<boolean> {
-    if (this.useOpenApi() || this.pagesAccess === 'refused') return false;
+    if (this.pagesAccess === 'refused') return false;
     if (this.pagesAccess === 'ok') return true;
     // Home is the page opened first anyway, so asking it here costs nothing it is cached for.
     return (await this.fetchPage(TIDAL_PAGES[0].path)) !== null;
@@ -583,7 +535,7 @@ export class TidalProvider implements ContentProvider {
 
   /**
    * A request to the page host. Kept apart from {@link fetchJson}: a page TIDAL will not show this
-   * account is left out, and must not move the whole account over to the official API.
+   * account is left out quietly, and remembered as such.
    */
   private async fetchPageJson<T>(path: string, params: Record<string, string>): Promise<T | null> {
     const url = new URL(`${TIDAL_PAGES_BASE}/${path.replace(/^\//, '')}`);
@@ -611,7 +563,7 @@ export class TidalProvider implements ContentProvider {
   /** A page as a folder of its shelves; the shelves' first items come along as sections. */
   private async buildPageFolder(folderId: string, node: TidalPageNode, offset: number, limit: number): Promise<ContentFolder> {
     const spec = TIDAL_PAGES.find((p) => p.node === node)!;
-    const page = this.useOpenApi() ? null : await this.fetchPage(spec.path);
+    const page = await this.fetchPage(spec.path);
     const modules = musicModules(page);
     const links: ContentFolderItem[] = [];
     const sections: ContentFolderSection[] = [];
@@ -641,7 +593,7 @@ export class TidalProvider implements ContentProvider {
     limit: number,
   ): Promise<ContentFolder> {
     const spec = TIDAL_PAGES.find((p) => p.node === node)!;
-    const page = this.useOpenApi() ? null : await this.fetchPage(spec.path);
+    const page = await this.fetchPage(spec.path);
     const found = musicModules(page).find((m) => m.index === index);
     if (!found) return this.listFolder(folderId, spec.name, offset, { items: [], total: 0 });
     await extendModule(found.module, offset + limit, async (path, from, count) => {
@@ -673,12 +625,6 @@ export class TidalProvider implements ContentProvider {
         return null;
       }
       if (!res.ok) {
-        if (res.status === 403 && !this.v1Refused) {
-          // "Required scopes: r_usr": a token the official API serves instead.
-          this.v1Refused = true;
-          this.log.info('tidal v1 catalogue refused this token; using openapi.tidal.com', { serviceId: this.serviceId });
-          throw new V1Refused();
-        }
         this.noteRefusal(res.status);
         return null;
       }
@@ -686,7 +632,6 @@ export class TidalProvider implements ContentProvider {
       const data = (await res.json()) as T;
       return data;
     } catch (err) {
-      if (err instanceof V1Refused) throw err;
       this.log.warn('tidal request failed', { url, message: err instanceof Error ? err.message : String(err) });
       return null;
     }
@@ -733,25 +678,12 @@ export class TidalProvider implements ContentProvider {
     const cached = this.artistPages.get(artistId);
     if (cached && Date.now() - cached.at < ARTIST_PAGE_CACHE_MS) return cached.page;
     const id = encodeURIComponent(artistId);
-    const page = await this.viaApi<ArtistPage>(
-      async () => {
-        const [topTracks, albums, singles] = await Promise.all([
-          this.fetchListV1(`artists/${id}/toptracks`, ARTIST_TOP_TRACKS, 0, {}, (t) => this.mapTrack(t)),
-          this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, {}, (a) => this.mapAlbum(a)),
-          this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, { filter: 'EPSANDSINGLES' }, (a) => this.mapAlbum(a)),
-        ]);
-        return { topTracks: topTracks.items, albums: albums.items, singles: singles.items };
-      },
-      async () => {
-        const [topTracks, records] = await Promise.all([
-          this.walkRelationship(`artists/${id}/relationships/tracks`, OPENAPI_INCLUDES.artistTopTracks, 0, ARTIST_TOP_TRACKS, (doc, r) =>
-            r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null,
-          { collapseBy: 'FINGERPRINT' }),
-          this.fetchArtistRecordsV2(id),
-        ]);
-        return { topTracks: topTracks.items, ...records };
-      },
-    );
+    const [topTracks, albums, singles] = await Promise.all([
+      this.fetchListV1(`artists/${id}/toptracks`, ARTIST_TOP_TRACKS, 0, {}, (t) => this.mapTrack(t)),
+      this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, {}, (a) => this.mapAlbum(a)),
+      this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, { filter: 'EPSANDSINGLES' }, (a) => this.mapAlbum(a)),
+    ]);
+    const page: ArtistPage = { topTracks: topTracks.items, albums: albums.items, singles: singles.items };
     if (this.artistPages.size >= ARTIST_PAGE_CACHE_SIZE) {
       const oldest = this.artistPages.keys().next().value;
       if (oldest !== undefined) this.artistPages.delete(oldest);
@@ -760,26 +692,7 @@ export class TidalProvider implements ContentProvider {
     return page;
   }
 
-  /**
-   * v2 lists an artist's records oldest first, all kinds together: newest first here, and split
-   * on `albumType` the way v1's `filter=EPSANDSINGLES` splits them.
-   */
-  private async fetchArtistRecordsV2(id: string): Promise<{ albums: ContentFolderItem[]; singles: ContentFolderItem[] }> {
-    const records: Array<{ item: ContentFolderItem; type: string; date: string }> = [];
-    await this.walkRelationship(`artists/${id}/relationships/albums`, OPENAPI_INCLUDES.artistAlbums, 0, ARTIST_RECORDS * 2, (doc, r) => {
-      if (r.type !== 'albums') return null;
-      const album = albumFromResource(doc, r);
-      const item = this.mapAlbum(album);
-      records.push({ item, type: album.albumType ?? 'ALBUM', date: album.releaseDate ?? '' });
-      return item;
-    });
-    records.sort((a, b) => b.date.localeCompare(a.date));
-    const pick = (single: boolean) =>
-      records.filter((r) => (r.type === 'ALBUM') !== single).slice(0, ARTIST_RECORDS).map((r) => r.item);
-    return { albums: pick(false), singles: pick(true) };
-  }
-
-  /** A related list, from v1 where it has one and the official API otherwise. */
+  /** A related list: from v1 where it has one, from the official API for similar albums and tracks. */
   private async fetchRelated(kind: RelatedKind, rawId: string, limit: number, offset: number): Promise<FolderResult> {
     const id = encodeURIComponent(rawId);
     const window = Math.min(limit, Math.max(MAX_RELATED - offset, 0));
@@ -787,23 +700,11 @@ export class TidalProvider implements ContentProvider {
     const v2Tracks = (doc: JsonApiDocument, r: ApiResource) => (r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null);
     switch (kind) {
       case 'artist-similar':
-        return this.viaApi(
-          () => this.fetchListV1(`artists/${id}/similar`, window, offset, {}, (a) => this.mapArtist(a)),
-          () =>
-            this.walkRelationship(`artists/${id}/relationships/similarArtists`, OPENAPI_INCLUDES.similarArtists, offset, window, (doc, r) =>
-              r.type === 'artists' ? this.mapArtist(artistFromResource(doc, r)) : null,
-            ),
-        );
+        return this.fetchListV1(`artists/${id}/similar`, window, offset, {}, (a) => this.mapArtist(a));
       case 'artist-radio':
-        return this.viaApi(
-          () => this.fetchListV1(`artists/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t)),
-          () => this.fetchRadioV2(`artists/${id}`, offset, window),
-        );
+        return this.fetchListV1(`artists/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t));
       case 'track-radio':
-        return this.viaApi(
-          () => this.fetchListV1(`tracks/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t)),
-          () => this.fetchRadioV2(`tracks/${id}`, offset, window),
-        );
+        return this.fetchListV1(`tracks/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t));
       // v1 has no similar albums or tracks; the official API has, and takes a v1 account's token too.
       case 'album-similar':
         return this.walkRelationship(`albums/${id}/relationships/similarAlbums`, OPENAPI_INCLUDES.similarAlbums, offset, window, (doc, r) =>
@@ -812,14 +713,6 @@ export class TidalProvider implements ContentProvider {
       case 'track-similar':
         return this.walkRelationship(`tracks/${id}/relationships/similarTracks`, OPENAPI_INCLUDES.similarTracks, offset, window, v2Tracks);
     }
-  }
-
-  /** v2's radio of an artist or a track is a mix: its id from the relationship, its tracks from the mix. */
-  private async fetchRadioV2(owner: string, offset: number, limit: number): Promise<FolderResult> {
-    const doc = await this.fetchDocument(`${owner}/relationships/radio`, []);
-    const mixId = doc?.dataList.find((r) => r.type === 'playlists')?.id;
-    if (mixId == null) return { items: [], total: 0 };
-    return this.fetchPlaylistTracks(String(mixId), limit, offset);
   }
 
   /** The artists TIDAL puts beside this one, for the about panel and the player's artist page. */
@@ -855,20 +748,6 @@ export class TidalProvider implements ContentProvider {
     limit: number,
     offset: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    return this.viaApi(
-      () => this.fetchAlbumTracksV1(albumId, limit, offset),
-      () =>
-        this.walkRelationship(`albums/${encodeURIComponent(albumId)}/relationships/items`, OPENAPI_INCLUDES.albumItems, offset, limit, (doc, r) =>
-          this.mapTrack(trackFromResource(doc, r)),
-        ),
-    );
-  }
-
-  private async fetchAlbumTracksV1(
-    albumId: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ items: ContentFolderItem[]; total?: number }> {
     const url = new URL(`${TIDAL_API_BASE}/albums/${encodeURIComponent(albumId)}/tracks`);
     url.searchParams.set('limit', String(limit));
     url.searchParams.set('offset', String(offset));
@@ -881,21 +760,6 @@ export class TidalProvider implements ContentProvider {
   }
 
   private async fetchPlaylistTracks(
-    playlistId: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    return this.viaApi(
-      () => this.fetchPlaylistTracksV1(playlistId, limit, offset),
-      () =>
-        this.walkRelationship(`playlists/${encodeURIComponent(playlistId)}/relationships/items`, OPENAPI_INCLUDES.playlistItems, offset, limit, (doc, r) =>
-          // A playlist can hold videos too; only tracks play here.
-          r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null,
-        ),
-    );
-  }
-
-  private async fetchPlaylistTracksV1(
     playlistId: string,
     limit: number,
     offset: number,
@@ -928,54 +792,14 @@ export class TidalProvider implements ContentProvider {
 
   /** The account's favourites of one kind, newest first. */
   private fetchCollection(kind: CollectionKind, limit: number, offset: number): Promise<FolderResult> {
-    return this.viaApi(
-      () =>
-        this.fetchUserListV1(`favorites/${kind}`, limit, offset, { order: 'DATE', orderDirection: 'DESC' }, (entry) =>
-          this.mapV1(kind, entry?.item ?? entry),
-        ),
-      () => {
-        switch (kind) {
-          case 'tracks':
-            return this.walkRelationship('userCollectionTracks/me/relationships/items', OPENAPI_INCLUDES.collectionTracks, offset, limit, (doc, r) =>
-              r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null,
-            );
-          case 'albums':
-            return this.walkRelationship('userCollectionAlbums/me/relationships/items', OPENAPI_INCLUDES.collectionAlbums, offset, limit, (doc, r) =>
-              this.mapAlbum(albumFromResource(doc, r)),
-            );
-          case 'artists':
-            return this.walkRelationship('userCollectionArtists/me/relationships/items', OPENAPI_INCLUDES.collectionArtists, offset, limit, (doc, r) =>
-              this.mapArtist(artistFromResource(doc, r)),
-            );
-          case 'playlists':
-            // FLAT: the playlists inside the account's folders, rather than the folders themselves.
-            return this.walkRelationship(
-              'userCollectionPlaylists/me/relationships/items',
-              OPENAPI_INCLUDES.collectionPlaylists,
-              offset,
-              limit,
-              (doc, r) => (r.type === 'playlists' ? this.mapPlaylist(playlistFromResource(doc, r)) : null),
-              { collectionView: 'FLAT' },
-            );
-        }
-      },
+    return this.fetchUserListV1(`favorites/${kind}`, limit, offset, { order: 'DATE', orderDirection: 'DESC' }, (entry) =>
+      this.mapV1(kind, entry?.item ?? entry),
     );
   }
 
   /** The playlists the account owns, most recently changed first. */
   private fetchOwnPlaylists(limit: number, offset: number): Promise<FolderResult> {
-    return this.viaApi(
-      () => this.fetchUserListV1('playlists', limit, offset, {}, (playlist) => this.mapPlaylist(playlist)),
-      () =>
-        this.walkRelationship(
-          'playlists',
-          OPENAPI_INCLUDES.ownPlaylists,
-          offset,
-          limit,
-          (doc, r) => this.mapPlaylist(playlistFromResource(doc, r)),
-          { 'filter[owners.id]': 'me', sort: '-lastModifiedAt' },
-        ),
-    );
+    return this.fetchUserListV1('playlists', limit, offset, {}, (playlist) => this.mapPlaylist(playlist));
   }
 
   /**
@@ -1058,31 +882,16 @@ export class TidalProvider implements ContentProvider {
     };
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* openapi.tidal.com/v2                                                     */
-  /* ------------------------------------------------------------------------ */
-
-  private useOpenApi(): boolean {
-    return this.v1Refused || this.auth.api(this.serviceId) === 'openapi';
-  }
-
-  /** v2 for an account v1 does not serve, v1 otherwise — and v2 after all when v1 refuses. */
-  private async viaApi<T>(v1: () => Promise<T>, openApi: () => Promise<T>): Promise<T> {
-    if (this.useOpenApi()) return openApi();
-    try {
-      return await v1();
-    } catch (err) {
-      if (err instanceof V1Refused) return openApi();
-      throw err;
-    }
-  }
-
   private noteRefusal(status: number): void {
     if ((status === 401 || status === 403) && !this.refusalLogged) {
       this.refusalLogged = true;
       this.log.warn('Tidal refused the catalogue for this account; sign in again', { status, serviceId: this.serviceId });
     }
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* openapi.tidal.com/v2: similar albums and tracks, and the mix collections */
+  /* ------------------------------------------------------------------------ */
 
   private async fetchDocument(
     path: string,

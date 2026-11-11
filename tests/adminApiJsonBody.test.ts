@@ -166,10 +166,8 @@ function createHandler(): AdminApiHandler {
       takeCredentials: () => null,
     },
     tidalAdmin: {
-      clientStatus: () => ({ envConfigured: false, defaultClientId: '', redirectUri: '' }),
+      clientStatus: () => ({ envConfigured: false }),
       startLogin: async () => ({ ok: false, error: 'failed', message: '' }),
-      completeCallback: async () => ({ state: 'pending' }),
-      completePaste: async () => ({ state: 'pending' }),
       loginStatus: () => ({ state: 'pending' }),
       takeSession: () => null,
       logout: async () => {},

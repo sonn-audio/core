@@ -741,8 +741,6 @@ export function createRuntime(): Runtime {
       amazonMusicAdmin,
       tidalAdmin: createTidalAdmin({
         store: configSessionStore(configPort),
-        // The address the Spotify sign-in's callback is built on too.
-        audioServerHost: () => configPort.getConfig().system?.audioserver?.ip?.trim() || '127.0.0.1',
         onSignedOut: resetSharedTidalAuth,
       }),
       validateTuneInUsername,

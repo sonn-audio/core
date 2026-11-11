@@ -1,15 +1,12 @@
-import type { TidalQuality } from '@/domain/config/types';
-
 /**
  * TIDAL's official API (openapi.tidal.com/v2): JSON:API documents, read the way Music Assistant's
  * provider reads them (jsonapi.py, parsers_v2.py).
  *
- * A token minted for a third-party app — sign-in with PKCE through an app from
- * developer.tidal.com — is refused by the v1 catalogue ("Required scopes: r_usr", a scope such an
- * app cannot get) and by v1 playback. So for those accounts the catalogue and playback go through
- * here. To keep the catalogue provider unchanged, resources are turned into the same shapes the v1
- * API returns (`{ id, title, artist: { name }, album: { title } }`), with the artwork as a URL
- * instead of a v1 image id.
+ * The catalogue reads v1; a device-flow token is accepted here too, and this API is asked for what
+ * v1 lacks: similar albums and tracks, and the account's mix collections. To keep the catalogue
+ * provider unchanged, resources are turned into the same shapes the v1 API returns
+ * (`{ id, title, artist: { name }, album: { title } }`), with the artwork as a URL instead of a v1
+ * image id.
  */
 
 export const TIDAL_OPENAPI_BASE = 'https://openapi.tidal.com/v2';
@@ -74,31 +71,14 @@ export class JsonApiDocument {
 
 /** The include paths each request asks for: few enough for the API's cap on included resources. */
 export const OPENAPI_INCLUDES = {
-  search: {
-    track: ['tracks.artists', 'tracks.albums.coverArt'],
-    album: ['albums.coverArt'],
-    artist: ['artists.profileArt'],
-    playlist: ['playlists.coverArt'],
-  },
-  track: ['artists', 'albums', 'albums.coverArt'],
-  albumItems: ['items.artists', 'items.albums.coverArt'],
-  artistAlbums: ['albums.artists', 'albums.coverArt'],
-  artistTopTracks: ['tracks.artists', 'tracks.albums.coverArt'],
-  similarArtists: ['similarArtists.profileArt'],
   similarAlbums: ['similarAlbums.artists', 'similarAlbums.coverArt'],
   similarTracks: ['similarTracks.artists', 'similarTracks.albums.coverArt'],
-  playlistItems: ['items.artists', 'items.albums.coverArt'],
-  collectionTracks: ['items.artists', 'items.albums.coverArt'],
-  collectionAlbums: ['items.artists', 'items.coverArt'],
-  collectionArtists: ['items.profileArt'],
-  collectionPlaylists: ['items.coverArt'],
-  ownPlaylists: ['coverArt'],
   mixes: ['items.coverArt'],
 } as const;
 
 /**
  * The account's mixes: three collections of `MIX` playlists, each read as `<resource>/me/relationships/items`.
- * A third-party app's token reads them (scope recommendations.read); they open like any playlist.
+ * A device-flow token reads them; they open like any playlist.
  */
 export const OPENAPI_MIX_COLLECTIONS = ['userDailyMixes', 'userDiscoveryMixes', 'userNewReleaseMixes'] as const;
 
@@ -124,7 +104,6 @@ export type V1LikeAlbum = {
   /** `YYYY-MM-DD`, when the resource says. */
   releaseDate?: string;
 };
-export type V1LikeArtist = { id: string; name: string; coverUrl: string };
 export type V1LikePlaylist = { uuid: string; title: string; creator: { name: string }; coverUrl: string };
 
 export function trackFromResource(doc: JsonApiDocument, resource: Resource): V1LikeTrack {
@@ -152,37 +131,12 @@ export function albumFromResource(doc: JsonApiDocument, resource: Resource): V1L
   };
 }
 
-export function artistFromResource(doc: JsonApiDocument, resource: Resource): V1LikeArtist {
-  return {
-    id: String(resource.id ?? ''),
-    name: String(resource.attributes?.name ?? 'Artist'),
-    coverUrl: imageUrl(doc, resource, 'profileArt'),
-  };
-}
-
 export function playlistFromResource(doc: JsonApiDocument, resource: Resource): V1LikePlaylist {
   return {
     uuid: String(resource.id ?? ''),
     title: String(resource.attributes?.name ?? 'Playlist'),
     creator: { name: resource.attributes?.playlistType === 'MIX' ? 'TIDAL' : '' },
     coverUrl: imageUrl(doc, resource, 'coverArt'),
-  };
-}
-
-/** The results of `GET /searchResults?filter[query]=…` per kind, in the order Tidal ranked them. */
-export function searchFromDocument(doc: JsonApiDocument): {
-  tracks: V1LikeTrack[];
-  albums: V1LikeAlbum[];
-  artists: V1LikeArtist[];
-  playlists: V1LikePlaylist[];
-} {
-  const root = doc.dataList[0];
-  if (!root) return { tracks: [], albums: [], artists: [], playlists: [] };
-  return {
-    tracks: doc.related(root, 'tracks').map((r) => trackFromResource(doc, r)),
-    albums: doc.related(root, 'albums').map((r) => albumFromResource(doc, r)),
-    artists: doc.related(root, 'artists').map((r) => artistFromResource(doc, r)),
-    playlists: doc.related(root, 'playlists').map((r) => playlistFromResource(doc, r)),
   };
 }
 
@@ -234,74 +188,8 @@ export function parseIsoDuration(value: unknown): number | undefined {
   return Math.floor(Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0));
 }
 
-/* -------------------------------------------------------------------------- */
-/* Playback: trackManifests                                                   */
-/* -------------------------------------------------------------------------- */
-
-/** The format each quality asks for; the API takes the list as repeated `formats` keys. */
-export const OPENAPI_FORMATS: Record<TidalQuality, string> = {
-  LOW: 'HEAACV1',
-  HIGH: 'AACLC',
-  LOSSLESS: 'FLAC',
-  HI_RES_LOSSLESS: 'FLAC_HIRES',
-};
-
-export function trackManifestUrl(trackId: string, quality: TidalQuality): URL {
-  const url = new URL(`${TIDAL_OPENAPI_BASE}/trackManifests/${encodeURIComponent(trackId)}`);
-  url.searchParams.set('manifestType', 'MPEG_DASH');
-  url.searchParams.append('formats', OPENAPI_FORMATS[quality]);
-  // DATA: the MPD comes inline, so nothing else has to be fetched before it is served to ffmpeg.
-  url.searchParams.set('uriScheme', 'DATA');
-  url.searchParams.set('usage', 'PLAYBACK');
-  url.searchParams.set('adaptive', 'false');
-  return url;
-}
-
-export type TidalTrackManifest =
-  | {
-      kind: 'dash';
-      manifest: string;
-      /** `PREVIEW` when Tidal serves a 30-second clip instead of the track. */
-      presentation?: string;
-      /** Why it is a preview, e.g. `FULL_REQUIRES_HIGHER_ACCESS_TIER`. */
-      previewReason?: string;
-      formats: string[];
-    }
-  | { kind: 'drm' }
-  | { kind: 'unsupported'; reason: string };
-
-/** Read a `trackManifests` document: the MPD from its `data:` URI, and whether it is a preview. */
-export function parseTrackManifest(body: unknown): TidalTrackManifest {
-  const doc = new JsonApiDocument((body ?? {}) as JsonApiDocument['raw']);
-  const a = doc.data.attributes ?? {};
-  if (a.drmData) return { kind: 'drm' };
-  const manifest = decodeDataUri(a.uri);
-  if (!manifest) return { kind: 'unsupported', reason: 'no inline manifest' };
-  if (!/<MPD[\s>]/.test(manifest)) return { kind: 'unsupported', reason: 'not an MPEG-DASH manifest' };
-  if (hasContentProtection(manifest)) return { kind: 'drm' };
-  return {
-    kind: 'dash',
-    manifest,
-    presentation: typeof a.trackPresentation === 'string' ? a.trackPresentation : undefined,
-    previewReason: typeof a.previewReason === 'string' ? a.previewReason : undefined,
-    formats: Array.isArray(a.formats) ? a.formats.map(String) : [],
-  };
-}
-
+/** Whether an MPEG-DASH manifest is DRM protected. */
 export function hasContentProtection(mpd: string): boolean {
   return /<(?:\w+:)?ContentProtection\b/i.test(mpd);
 }
 
-/** `data:[<type>][;base64],<payload>` to its text; null for anything else. */
-export function decodeDataUri(uri: unknown): string | null {
-  if (typeof uri !== 'string' || !uri.startsWith('data:')) return null;
-  const comma = uri.indexOf(',');
-  if (comma < 0) return null;
-  const header = uri.slice(5, comma);
-  const payload = uri.slice(comma + 1);
-  try {
-    return /;base64$/i.test(header) ? Buffer.from(payload, 'base64').toString('utf8') : decodeURIComponent(payload);
-  } catch {
-    return null;
-  }
-}

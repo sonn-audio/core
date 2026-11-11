@@ -313,7 +313,6 @@ export class AdminApiHandler {
         tidalAdmin: this.tidalAdmin,
         readJsonBody: (req, res) => readJsonBody(req, res),
         sendJson: (res, status, payload) => sendJson(res, status, payload),
-        sendHtml: (res, status, html) => sendHtml(res, status, html),
       }),
       ...buildYtDlpRoutes({
         log: this.log,

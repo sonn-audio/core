@@ -1,62 +1,26 @@
-import type { StreamingServiceConfig, TidalSession } from '@/domain/config/types';
+import type { StreamingServiceConfig } from '@/domain/config/types';
 import { JSONAPI_CONTENT_TYPE, TIDAL_OPENAPI_BASE } from '@/adapters/content/providers/tidal/tidalOpenApi';
 
 /**
  * The calls Tidal's OAuth server answers, one request each.
  *
- * Two ways to sign in, both checked against TIDAL's own auth SDK (tidal-sdk-web, packages/auth):
- *
- * - Authorization code + PKCE (S256) at login.tidal.com — the flow TIDAL offers third-party apps
- *   registered on developer.tidal.com. The person signs in in a browser tab and is sent to a
- *   redirect URI registered on that app, with a code we exchange at the token endpoint.
- * - The device flow (RFC 8628): we ask for a code, a person approves it at link.tidal.com, and we
- *   poll until they have. TIDAL documents it as "only available for TIDAL internally developed
- *   applications", so any other client is refused at the first call with
- *   `Client is not a Limited Input Device client`. Kept for whoever has such a client.
+ * One way to sign in: the device flow (RFC 8628). We ask for a code, a person approves it at
+ * link.tidal.com, and we poll until they have. TIDAL documents it as "only available for TIDAL
+ * internally developed applications", so any other client is refused at the first call with
+ * `Client is not a Limited Input Device client`. The browser sign-in at login.tidal.com that TIDAL
+ * offers apps from developer.tidal.com is not used: TIDAL gives such an app 30-second previews only.
  *
  * sonn ships no client of its own; it comes from the environment or the service's config — see
  * {@link resolveTidalClient}.
  */
 
 export const TIDAL_AUTH_URL = 'https://auth.tidal.com/v1/oauth2';
-export const TIDAL_LOGIN_URL = 'https://login.tidal.com/authorize';
 export const TIDAL_API_BASE = 'https://api.tidal.com/v1';
 export const TIDAL_SESSIONS_URL = `${TIDAL_API_BASE}/sessions`;
 /** The device flow's scope: the legacy scopes TIDAL's own apps (and Music Assistant) ask for. */
 export const TIDAL_SCOPE = 'r_usr w_usr w_sub';
-/**
- * The scopes a third-party app may ask for at login.tidal.com, as TIDAL's API spec lists them for
- * the Authorization_Code_PKCE scheme (search.write and the legacy r_usr / w_usr left out).
- */
-export const TIDAL_PKCE_SCOPES = [
-  'user.read',
-  'collection.read',
-  'collection.write',
-  'playlists.read',
-  'playlists.write',
-  'search.read',
-  'recommendations.read',
-  'entitlements.read',
-  'playback',
-] as const;
-export const TIDAL_PKCE_SCOPE = TIDAL_PKCE_SCOPES.join(' ');
-
-export type TidalFlow = NonNullable<TidalSession['flow']>;
 
 const DEVICE_CODE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
-
-/**
- * Where login.tidal.com sends the browser back to: a fixed public page, because a Tidal app only
- * accepts redirect URIs registered on it, and a self-hosted server's address varies. The page
- * forwards the browser to this server's callback, which travels in `state` (as for Spotify).
- */
-export const TIDAL_PUBLIC_REDIRECT_URI = 'https://sonn-audio.github.io/callbacks/tidal/';
-
-/**
- * The public client id of sonn's own app on developer.tidal.com. A PKCE client is public: the id
- * is not a secret, and no secret ships with it.
- */
-export const TIDAL_DEFAULT_CLIENT_ID = 'dYPFOHF5tWY1VftL';
 
 export const TIDAL_CLIENT_ID_ENV = 'SONN_TIDAL_CLIENT_ID';
 export const TIDAL_CLIENT_SECRET_ENV = 'SONN_TIDAL_CLIENT_SECRET';
@@ -66,8 +30,8 @@ export type FetchFn = typeof fetch;
 export type TidalClient = {
   clientId: string;
   clientSecret?: string;
-  /** Where it came from: the environment, then the service's config, then sonn's own app. */
-  source: 'env' | 'config' | 'default';
+  /** Where it came from: the environment, then the service's config. */
+  source: 'env' | 'config';
 };
 
 export type TidalDeviceAuthorization = {
@@ -118,7 +82,7 @@ export class TidalAuthError extends Error {
 
 /**
  * The client the sign-in and refresh run as: the environment first, then the service's config.
- * Null when neither names one; {@link tidalClientFor} adds sonn's own app as the last resort.
+ * Null when neither names one: there is no built-in client, so a sign-in needs one first.
  */
 export function resolveTidalClient(
   service?: Pick<StreamingServiceConfig, 'tidalClientId' | 'tidalClientSecret'> | null,
@@ -136,63 +100,8 @@ export function resolveTidalClient(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Authorization code + PKCE                                                  */
-/* -------------------------------------------------------------------------- */
-
-export function buildAuthorizeUrl(input: {
-  client: TidalClient;
-  redirectUri: string;
-  codeChallenge: string;
-  state: string;
-  scope?: string;
-}): string {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: input.client.clientId,
-    redirect_uri: input.redirectUri,
-    scope: input.scope ?? TIDAL_PKCE_SCOPE,
-    code_challenge_method: 'S256',
-    code_challenge: input.codeChallenge,
-    state: input.state,
-  });
-  return `${TIDAL_LOGIN_URL}?${params.toString()}`;
-}
-
-export async function exchangeAuthorizationCode(
-  client: TidalClient,
-  input: { code: string; redirectUri: string; codeVerifier: string },
-  fetchFn: FetchFn = fetch,
-): Promise<TidalTokens> {
-  const res = await postForm(
-    fetchFn,
-    `${TIDAL_AUTH_URL}/token`,
-    client,
-    {
-      client_id: client.clientId,
-      code: input.code,
-      code_verifier: input.codeVerifier,
-      grant_type: 'authorization_code',
-      redirect_uri: input.redirectUri,
-      scope: TIDAL_PKCE_SCOPE,
-    },
-    'pkce',
-  );
-  const body = await readJson(res);
-  if (!res.ok) throw authErrorFrom(res.status, body, 'Tidal did not accept the sign-in code');
-  return tokensFrom(body);
-}
-
-/* -------------------------------------------------------------------------- */
 /* Device flow                                                                */
 /* -------------------------------------------------------------------------- */
-
-/** {@link resolveTidalClient}, or sonn's own public app when nothing names a client. */
-export function tidalClientFor(
-  service?: Pick<StreamingServiceConfig, 'tidalClientId' | 'tidalClientSecret'> | null,
-  env: Record<string, string | undefined> = process.env,
-): TidalClient {
-  return resolveTidalClient(service, env) ?? { clientId: TIDAL_DEFAULT_CLIENT_ID, source: 'default' };
-}
 
 export async function startDeviceAuthorization(
   client: TidalClient,
@@ -250,27 +159,20 @@ export async function pollDeviceToken(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Either flow                                                                */
+/* Refresh and identity                                                       */
 /* -------------------------------------------------------------------------- */
 
 export async function refreshTidalTokens(
   client: TidalClient,
   refreshToken: string,
-  flow: TidalFlow = 'device',
   fetchFn: FetchFn = fetch,
 ): Promise<TidalTokens> {
-  const res = await postForm(
-    fetchFn,
-    `${TIDAL_AUTH_URL}/token`,
-    client,
-    {
-      client_id: client.clientId,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-      scope: flow === 'pkce' ? TIDAL_PKCE_SCOPE : TIDAL_SCOPE,
-    },
-    flow,
-  );
+  const res = await postForm(fetchFn, `${TIDAL_AUTH_URL}/token`, client, {
+    client_id: client.clientId,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+    scope: TIDAL_SCOPE,
+  });
   const body = await readJson(res);
   if (!res.ok) throw authErrorFrom(res.status, body, 'Tidal refused to refresh the sign-in');
   return tokensFrom(body);
@@ -280,16 +182,13 @@ export type TidalIdentity = {
   userId?: string;
   countryCode?: string;
   userName?: string;
-  /** `developerAccessTier` from users/me: `THIRD_PARTY` for an app from developer.tidal.com. */
-  accessTier?: string;
 };
 
 /**
  * Who the token belongs to, and the country whose catalogue it sees.
  *
- * The official API's `users/me` answers any signed-in token with the country, user name and the
- * app's access tier; v1 `/sessions` is the fallback for a token it refuses (a device-flow client
- * with the legacy scopes). For a third-party token v1 answers too, but without a country.
+ * The official API's `users/me` answers a signed-in token with the country and user name; v1
+ * `/sessions` is the fallback for a token it refuses (a device-flow client with the legacy scopes).
  */
 export async function fetchTidalIdentity(accessToken: string, fetchFn: FetchFn = fetch): Promise<TidalIdentity> {
   const me = await fetchFn(`${TIDAL_OPENAPI_BASE}/users/me`, {
@@ -304,7 +203,6 @@ export async function fetchTidalIdentity(accessToken: string, fetchFn: FetchFn =
       userId: data.id != null ? String(data.id) : undefined,
       countryCode: str(attributes.country).toUpperCase() || undefined,
       userName: str(attributes.username) || undefined,
-      accessTier: str(attributes.developerAccessTier) || undefined,
     };
   }
   const v1 = await fetchFn(TIDAL_SESSIONS_URL, {
@@ -320,28 +218,16 @@ export async function fetchTidalIdentity(accessToken: string, fetchFn: FetchFn =
 
 /* -------------------------------------------------------------------------- */
 
-/**
- * The secret, when there is one, goes where each flow's reference client puts it: in the form for
- * the PKCE flow (TIDAL's web SDK), as HTTP Basic for the device flow (Music Assistant). A PKCE
- * client is usually public and has none.
- */
-async function postForm(
-  fetchFn: FetchFn,
-  url: string,
-  client: TidalClient,
-  form: Record<string, string>,
-  flow: TidalFlow = 'device',
-): Promise<Response> {
+/** The secret, when there is one, goes as HTTP Basic, where Music Assistant's device flow puts it. */
+async function postForm(fetchFn: FetchFn, url: string, client: TidalClient, form: Record<string, string>): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
     Accept: 'application/json',
   };
-  const body = { ...form };
   if (client.clientSecret) {
-    if (flow === 'pkce') body.client_secret = client.clientSecret;
-    else headers.Authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString('base64')}`;
+    headers.Authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString('base64')}`;
   }
-  return fetchFn(url, { method: 'POST', headers, body: new URLSearchParams(body).toString() });
+  return fetchFn(url, { method: 'POST', headers, body: new URLSearchParams(form).toString() });
 }
 
 async function readJson(res: Response): Promise<Record<string, unknown>> {
@@ -364,7 +250,7 @@ function tokensFrom(body: Record<string, unknown>): TidalTokens {
     refreshToken: str(body.refresh_token) || undefined,
     expiresIn: positive(body.expires_in, 3600),
     userName: str(user.username) || str(user.email) || undefined,
-    // The PKCE token response names the user at the top level; the device flow's in `user`.
+    // The device flow names the user in `user`; some token responses name it at the top level.
     userId: body.user_id != null ? String(body.user_id) : user.userId != null ? String(user.userId) : undefined,
   };
 }

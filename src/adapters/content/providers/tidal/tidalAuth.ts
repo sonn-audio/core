@@ -3,8 +3,9 @@ import type { StreamingServiceConfig, TidalQuality, TidalSession } from '@/domai
 import { createLogger } from '@/shared/logging/logger';
 import {
   refreshTidalTokens,
-  tidalClientFor,
+  resolveTidalClient,
   TidalAuthError,
+  TIDAL_CLIENT_ID_ENV,
   type FetchFn,
 } from '@/adapters/content/providers/tidal/tidalAuthClient';
 
@@ -31,21 +32,11 @@ export interface TidalApiAccess {
    */
   fetch(serviceId: string, url: URL, init?: RequestInit): Promise<Response | null>;
   /**
-   * Which API the account's token is for: `openapi` (openapi.tidal.com/v2) for a third-party app's
-   * sign-in, `v1` (api.tidal.com/v1, what TIDAL's own apps use) for a device-flow sign-in or a
-   * pasted token.
-   */
-  api(serviceId: string): TidalApiFlavor;
-  /** Remember whether the last track played only as a preview, and why, for the admin UI. */
-  notePreview(serviceId: string, reason: string | undefined): Promise<void>;
-  /**
    * Remember the quality TIDAL delivered when it is lower than the one asked for (undefined when
    * it is not), for the admin UI. Said in the log once, when it changes.
    */
   noteQuality(serviceId: string, delivered: TidalQuality | undefined): Promise<void>;
 }
-
-export type TidalApiFlavor = 'openapi' | 'v1';
 
 /** Where the sessions live: the Tidal services in config. */
 export interface TidalSessionStore {
@@ -133,17 +124,6 @@ export class TidalAuth implements TidalApiAccess {
     return this.fetchFn(url.toString(), withBearer(init, again.accessToken));
   }
 
-  public api(serviceId: string): TidalApiFlavor {
-    const session = this.store.getService(serviceId)?.tidal;
-    return session?.accessToken && session.flow === 'pkce' ? 'openapi' : 'v1';
-  }
-
-  public async notePreview(serviceId: string, reason: string | undefined): Promise<void> {
-    const current = this.store.getService(serviceId)?.tidal;
-    if (!current || current.previewReason === reason) return;
-    await this.store.updateSession(serviceId, (session) => (session ? { ...session, previewReason: reason } : session));
-  }
-
   public async noteQuality(serviceId: string, delivered: TidalQuality | undefined): Promise<void> {
     const service = this.store.getService(serviceId);
     const current = service?.tidal;
@@ -167,9 +147,17 @@ export class TidalAuth implements TidalApiAccess {
     const service = this.store.getService(serviceId);
     const refreshToken = service?.tidal?.refreshToken;
     if (!service || !refreshToken) return false;
-    const client = tidalClientFor(service, this.env);
+    const client = resolveTidalClient(service, this.env);
+    if (!client) {
+      // The client the session signed in with is gone from the environment and the config: a
+      // refresh token is bound to its client, so only a new sign-in helps.
+      const message = `No TIDAL client to refresh the sign-in with; set ${TIDAL_CLIENT_ID_ENV} or the service's client id, then sign in again.`;
+      this.log.warn('tidal token refresh impossible: no client configured', { serviceId });
+      await this.store.updateSession(serviceId, (current) => (current ? { ...current, refreshError: message } : current));
+      return false;
+    }
     try {
-      const tokens = await refreshTidalTokens(client, refreshToken, service.tidal?.flow ?? 'device', this.fetchFn);
+      const tokens = await refreshTidalTokens(client, refreshToken, this.fetchFn);
       const expiresAt = this.now() + tokens.expiresIn * 1000;
       await this.store.updateSession(serviceId, (current) =>
         current
@@ -246,7 +234,5 @@ export function resetSharedTidalAuth(serviceId: string): void {
  */
 export const sharedTidalAuth: TidalApiAccess = {
   fetch: async (serviceId, url, init) => (shared ? shared.fetch(serviceId, url, init) : null),
-  api: (serviceId) => (shared ? shared.api(serviceId) : 'v1'),
-  notePreview: async (serviceId, reason) => shared?.notePreview(serviceId, reason),
   noteQuality: async (serviceId, delivered) => shared?.noteQuality(serviceId, delivered),
 };

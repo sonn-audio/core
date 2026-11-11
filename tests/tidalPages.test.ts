@@ -21,13 +21,11 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function fakeAccess(api: 'openapi' | 'v1', routes: Array<[RegExp, Handler]>) {
+function fakeAccess(routes: Array<[RegExp, Handler]>) {
   const calls: Call[] = [];
   return {
     calls,
     auth: {
-      api: () => api,
-      notePreview: async () => {},
       noteQuality: async () => {},
       fetch: async (_id: string, url: URL) => {
         if (!url.searchParams.has('countryCode')) url.searchParams.set('countryCode', 'NL');
@@ -199,7 +197,7 @@ test('a truncated module is extended through its dataApiPath, up to its total, a
 // ── the root ───────────────────────────────────────────────────────────────────
 
 test('a v1 account whose token reads the pages gets Home, For You, New, Top and Hi-Res at the root', async () => {
-  const { auth, calls } = fakeAccess('v1', PAGE_ROUTES());
+  const { auth, calls } = fakeAccess(PAGE_ROUTES());
   const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
   const root = await provider.getFolder('root', 0, 50);
   assert.deepEqual(root?.items.map((i) => [i.id, i.name]), [
@@ -224,13 +222,8 @@ test('a v1 account whose token reads the pages gets Home, For You, New, Top and 
   assert.equal(calls.length, 1);
 });
 
-test('an account without r_usr gets no pages: the official API is not asked, a refused v1 token is left out quietly', async () => {
-  const pkce = fakeAccess('openapi', []);
-  const root = await new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth: pkce.auth }).getFolder('root', 0, 50);
-  assert.deepEqual(root?.items.map((i) => i.id), ['collection', 'playlists', 'mixes']);
-  assert.equal(pkce.calls.length, 0, 'the root of a third-party sign-in asks Tidal nothing');
-
-  const refused = fakeAccess('v1', [
+test('an account without r_usr gets no pages: a refused token is left out quietly', async () => {
+  const refused = fakeAccess([
     ...PAGE_ROUTES({ home: () => json(403, { status: 403, subStatus: 1002, userMessage: 'Required scopes: r_usr' }) }),
     [/api\.tidal\.com\/v1\/sessions/, () => json(200, { userId: 4242 })],
     [/api\.tidal\.com\/v1\/users\/4242\/playlists/, () => json(200, { totalNumberOfItems: 0, items: [] })],
@@ -240,7 +233,7 @@ test('an account without r_usr gets no pages: the official API is not asked, a r
   assert.deepEqual(v1Root?.items.map((i) => i.id), ['collection', 'playlists', 'mixes']);
   await provider.getFolder('root', 0, 50);
   assert.equal(refused.calls.length, 1, 'the refusal is remembered');
-  // A refused page does not move the account to the official API: its library stays on v1.
+  // Its library stays on v1.
   await provider.getFolder('playlists', 0, 50);
   assert.ok(refused.calls.slice(1).every((c) => c.url.host === 'api.tidal.com'));
 });
@@ -248,7 +241,7 @@ test('an account without r_usr gets no pages: the official API is not asked, a r
 // ── pages and shelves ──────────────────────────────────────────────────────────
 
 test('a page is a folder of its shelves, with their first items as sections', async () => {
-  const { auth } = fakeAccess('v1', PAGE_ROUTES());
+  const { auth } = fakeAccess(PAGE_ROUTES());
   const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
   const home = await provider.getFolder('tidal:home', 0, 50);
   assert.equal(home?.name, 'Home');
@@ -284,7 +277,7 @@ test('a page is a folder of its shelves, with their first items as sections', as
 });
 
 test('a truncated shelf pages through its dataApiPath and keeps what it fetched', async () => {
-  const { auth, calls } = fakeAccess('v1', PAGE_ROUTES());
+  const { auth, calls } = fakeAccess(PAGE_ROUTES());
   const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
   const first = await provider.getFolder('page-module:home:0', 0, 3);
   assert.deepEqual(first?.items.map((i) => i.audiopath), ['tidal:album:1', 'tidal:album:2', 'tidal:album:3']);
@@ -300,14 +293,14 @@ test('a truncated shelf pages through its dataApiPath and keeps what it fetched'
   assert.equal(calls.filter((c) => c.url.pathname.includes('/pages/data/')).length, 2, 'the first three are not fetched again');
 
   // When the rest cannot be fetched, the shelf promises only what it holds.
-  const failing = fakeAccess('v1', PAGE_ROUTES({ data: () => json(500, {}) }));
+  const failing = fakeAccess(PAGE_ROUTES({ data: () => json(500, {}) }));
   const short = await new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth: failing.auth }).getFolder('page-module:home:0', 0, 50);
   assert.equal(short?.items.length, 2);
   assert.equal(short?.totalitems, 2);
 });
 
 test('a page TIDAL refuses is an empty folder, not an error', async () => {
-  const { auth } = fakeAccess('v1', PAGE_ROUTES());
+  const { auth } = fakeAccess(PAGE_ROUTES());
   const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
   await provider.getFolder('root', 0, 50);
   const page = await provider.getFolder('new-music', 0, 50);
@@ -323,7 +316,7 @@ test('a page TIDAL refuses is an empty folder, not an error', async () => {
 const EMPTY_MIX_COLLECTION: Handler = () => json(200, { data: [], links: { self: '/x' } });
 
 test('a v1 account lists its mixes from the My Mixes page and the official API, and a mix opens through v1', async () => {
-  const { auth, calls } = fakeAccess('v1', [
+  const { auth, calls } = fakeAccess([
     ...PAGE_ROUTES(),
     [/openapi\.tidal\.com\/v2\/userDailyMixes/, () =>
       json(200, {

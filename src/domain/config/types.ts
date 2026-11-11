@@ -409,7 +409,7 @@ export interface AmazonMusicCredentials {
 export type TidalQuality = 'LOW' | 'HIGH' | 'LOSSLESS' | 'HI_RES_LOSSLESS';
 
 /**
- * A signed-in Tidal account.
+ * A Tidal account signed in through the device flow (a code approved at link.tidal.com).
  *
  * The access token lives for hours, the refresh token for much longer; the refresh writes the new
  * access token back here, so a restart picks up where the last refresh left off.
@@ -426,18 +426,6 @@ export interface TidalSession {
   userName?: string;
   /** Why the last refresh was refused, when it was; the account has to sign in again. */
   refreshError?: string;
-  /**
-   * How it signed in: `pkce` (authorization code at login.tidal.com, a third-party app's flow) or
-   * `device` (link.tidal.com code). A refresh asks for the same scopes the sign-in did.
-   */
-  flow?: 'pkce' | 'device';
-  /**
-   * The app's `developerAccessTier` from users/me. `THIRD_PARTY` (an app from developer.tidal.com)
-   * is only given 30-second previews to play.
-   */
-  accessTier?: string;
-  /** Why the last track played as a preview (e.g. FULL_REQUIRES_HIGHER_ACCESS_TIER); unset once one plays in full. */
-  previewReason?: string;
   /**
    * The quality TIDAL actually delivered for the last track, when it was lower than the service's
    * `tidalQuality` (e.g. `HIGH`, AAC 320, while `LOSSLESS` was asked — what TIDAL caps some clients
@@ -480,9 +468,9 @@ export interface StreamingServiceConfig {
   /** Tidal country code if provider === 'tidal'; a fallback for when the session names none. */
   tidalCountryCode?: string;
   /**
-   * The Tidal client the sign-in runs as: an app registered on developer.tidal.com (secret
-   * optional; it signs in with PKCE), or a client allowed the device flow. The
-   * SONN_TIDAL_CLIENT_ID / SONN_TIDAL_CLIENT_SECRET environment variables take precedence.
+   * The Tidal client the device sign-in runs as: one TIDAL allows the device flow (secret
+   * optional). There is no built-in client. The SONN_TIDAL_CLIENT_ID / SONN_TIDAL_CLIENT_SECRET
+   * environment variables take precedence.
    */
   tidalClientId?: string;
   tidalClientSecret?: string;

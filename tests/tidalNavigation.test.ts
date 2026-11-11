@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from './testHarness';
 import { TidalProvider } from '../src/adapters/content/providers/tidal/tidalProvider';
 
-// An artist's page and what TIDAL puts beside an artist, an album and a track, through v1 for a
-// device-flow account and through openapi.tidal.com/v2 for a third-party sign-in. Shapes follow
-// live answers of both APIs; ids, names and image ids are made up.
+// An artist's page and what TIDAL puts beside an artist, an album and a track, for a device-flow
+// account: through v1, and through openapi.tidal.com/v2 for the similar albums and tracks v1 lacks.
+// Shapes follow live answers of both APIs; ids, names and image ids are made up.
 
 type Handler = (url: URL) => Response;
 
@@ -12,13 +12,11 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function fakeAccess(api: 'openapi' | 'v1', routes: Array<[RegExp, Handler]>) {
+function fakeAccess(routes: Array<[RegExp, Handler]>) {
   const calls: URL[] = [];
   return {
     calls,
     auth: {
-      api: () => api,
-      notePreview: async () => {},
       noteQuality: async () => {},
       fetch: async (_id: string, url: URL) => {
         if (!url.searchParams.has('countryCode')) url.searchParams.set('countryCode', 'NL');
@@ -60,7 +58,7 @@ const V1_ROUTES: Array<[RegExp, Handler]> = [
 ];
 
 test('a v1 artist page lists top tracks, albums, singles, then similar artists and the radio, with sections', async () => {
-  const access = fakeAccess('v1', V1_ROUTES);
+  const access = fakeAccess(V1_ROUTES);
   const artist = await provider(access).getFolder('tidal:artist:77', 0, 50);
   assert.deepEqual(paths(artist?.items), [
     'tidal:track:1',
@@ -98,7 +96,7 @@ test('a v1 artist page lists top tracks, albums, singles, then similar artists a
 });
 
 test('a v1 account reads similar artists and the artist and track radios from v1', async () => {
-  const access = fakeAccess('v1', V1_ROUTES);
+  const access = fakeAccess(V1_ROUTES);
   const tidal = provider(access);
   const similar = await tidal.getFolder('artist-similar:77', 0, 20);
   assert.equal(similar?.name, 'Similar Artists');
@@ -118,7 +116,7 @@ test('a v1 account reads similar artists and the artist and track radios from v1
 });
 
 test('an album ends with an entry into its similar albums, on its last page only', async () => {
-  const access = fakeAccess('v1', V1_ROUTES);
+  const access = fakeAccess(V1_ROUTES);
   const tidal = provider(access);
   const first = await tidal.getFolder('tidal:album:21', 0, 2);
   assert.deepEqual(paths(first?.items), ['tidal:track:1', 'tidal:track:3']);
@@ -149,19 +147,10 @@ const v2Track = (id: string, title: string) => ({
 });
 const INCLUDED = [
   v2Artist('77', 'The Band'),
-  v2Artist('78', 'Friend'),
   v2Album('21', 'Newest LP', 'ALBUM', '2025-04-11'),
-  v2Album('22', 'Debut LP', 'ALBUM', '2015-05-05'),
-  v2Album('31', 'A Single', 'SINGLE', '2026-11-10'),
-  v2Album('32', 'An EP', 'EP', '2021-08-31'),
   v2Album('60', 'Kindred Record', 'ALBUM', '2024-01-01'),
-  v2Track('1', 'Hit'),
-  v2Track('2', 'Other Hit'),
-  v2Track('41', 'Radio One'),
   v2Track('70', 'Kindred Song'),
-  { id: '00aa11bb22cc33dd44ee55ff6677aa', type: 'playlists', attributes: { name: 'The Band', playlistType: 'MIX' }, relationships: {} },
   art('art21'),
-  art('art78'),
 ];
 
 /** A relationship answer: its linkage, the shared `included`, and a cursor when there is a next page. */
@@ -174,70 +163,12 @@ const relationship = (pages: Array<Array<[string, string]>>): Handler => (url) =
 };
 
 const V2_ROUTES: Array<[RegExp, Handler]> = [
-  [/\/v2\/artists\/77\/relationships\/tracks/, relationship([[['1', 'tracks'], ['2', 'tracks']]])],
-  // Oldest first, every kind together, over two pages.
-  [/\/v2\/artists\/77\/relationships\/albums/, relationship([[['22', 'albums'], ['32', 'albums']], [['21', 'albums'], ['31', 'albums']]])],
-  [/\/v2\/artists\/77\/relationships\/similarArtists/, relationship([[['78', 'artists']]])],
-  [/\/v2\/artists\/77\/relationships\/radio/, relationship([[['00aa11bb22cc33dd44ee55ff6677aa', 'playlists']]])],
-  [/\/v2\/tracks\/1\/relationships\/radio/, relationship([[['00aa11bb22cc33dd44ee55ff6677aa', 'playlists']]])],
-  [/\/v2\/playlists\/00aa11bb22cc33dd44ee55ff6677aa\/relationships\/items/, relationship([[['41', 'tracks'], ['v-1', 'videos']]])],
-  [/\/v2\/albums\/21\/relationships\/items/, relationship([[['1', 'tracks']], [['2', 'tracks']]])],
   [/\/v2\/albums\/21\/relationships\/similarAlbums/, relationship([[['60', 'albums']]])],
   [/\/v2\/tracks\/1\/relationships\/similarTracks/, relationship([[['70', 'tracks']]])],
 ];
 
-test('a v2 artist page splits the records by type, newest first, and takes ten top tracks collapsed by fingerprint', async () => {
-  const access = fakeAccess('openapi', V2_ROUTES);
-  const artist = await provider(access).getFolder('tidal:artist:77', 0, 50);
-  assert.deepEqual(paths(artist?.items), [
-    'tidal:track:1',
-    'tidal:track:2',
-    'tidal:album:21',
-    'tidal:album:22',
-    'tidal:album:31',
-    'tidal:album:32',
-    'artist-similar:77',
-    'artist-radio:77',
-  ]);
-  assert.equal(artist?.items[2]?.coverurl, 'https://resources.tidal.com/images/art21/320x320.jpg');
-  assert.deepEqual(artist?.sections?.map((s) => [s.name, paths(s.items)]), [
-    ['Top Tracks', ['tidal:track:1', 'tidal:track:2']],
-    ['Albums', ['tidal:album:21', 'tidal:album:22']],
-    ['Singles & EPs', ['tidal:album:31', 'tidal:album:32']],
-    ['More', ['artist-similar:77', 'artist-radio:77']],
-  ]);
-  const top = access.calls.find((u) => u.pathname.endsWith('/relationships/tracks'))!;
-  assert.equal(top.searchParams.get('collapseBy'), 'FINGERPRINT');
-  assert.equal(top.searchParams.get('include'), 'tracks.artists,tracks.albums.coverArt');
-  assert.ok(access.calls.every((u) => u.host === 'openapi.tidal.com'));
-});
-
-test('a v2 account reads similar artists, albums and tracks, and plays a radio from its mix', async () => {
-  const access = fakeAccess('openapi', V2_ROUTES);
-  const tidal = provider(access);
-  const similar = await tidal.getFolder('artist-similar:77', 0, 20);
-  assert.deepEqual(similar?.items.map((i) => [i.audiopath, i.name, i.coverurl]), [['tidal:artist:78', 'Friend', 'https://resources.tidal.com/images/art78/320x320.jpg']]);
-  assert.equal(access.calls[0]!.searchParams.get('include'), 'similarArtists.profileArt');
-
-  const radio = await tidal.getFolder('artist-radio:77', 0, 20);
-  assert.deepEqual(paths(radio?.items), ['tidal:track:41'], 'the mix\'s tracks, not its videos');
-  const trackRadio = await tidal.getFolder('track-radio:1', 0, 20);
-  assert.deepEqual(paths(trackRadio?.items), ['tidal:track:41']);
-
-  const albums = await tidal.getFolder('album-similar:21', 0, 20);
-  assert.equal(albums?.name, 'Similar Albums');
-  assert.deepEqual(paths(albums?.items), ['tidal:album:60']);
-  const tracks = await tidal.getFolder('track-similar:1', 0, 20);
-  assert.equal(tracks?.name, 'Similar Tracks');
-  assert.deepEqual(tracks?.items.map((i) => [i.audiopath, i.name, i.artist]), [['tidal:track:70', 'Kindred Song', 'The Band']]);
-
-  const album = await tidal.getFolder('tidal:album:21', 0, 50);
-  assert.deepEqual(paths(album?.items), ['tidal:track:1', 'tidal:track:2', 'album-similar:21'], 'after the cursor ran out');
-  assert.deepEqual(await tidal.getRelatedArtists('tidal:artist:77', 8).then((items) => items.map((i) => i.name)), ['Friend']);
-});
-
 test('a v1 account reads similar albums and tracks from the official API, which v1 has none of', async () => {
-  const access = fakeAccess('v1', [...V1_ROUTES, ...V2_ROUTES]);
+  const access = fakeAccess([...V1_ROUTES, ...V2_ROUTES]);
   const tidal = provider(access);
   assert.deepEqual(paths((await tidal.getFolder('album-similar:21', 0, 20))?.items), ['tidal:album:60']);
   assert.deepEqual(paths((await tidal.getFolder('track-similar:1', 0, 20))?.items), ['tidal:track:70']);

@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { StoragePort } from '@/ports/StoragePort';
 import { defaultMacId } from '@/shared/utils/mac';
 import { defaultLocalIp } from '@/shared/utils/net';
+import { createLogger } from '@/shared/logging/logger';
 import { OPENAI_TTS_FORMATS } from '@/domain/config/types';
 import type {
   AudioServerConfig,
@@ -235,6 +236,7 @@ export function normalizeContent(config: AudioServerConfig): boolean {
     config.content.spotify.bridges = [];
     changed = true;
   }
+  if (normalizeTidalSessions(config.content.streamingServices)) changed = true;
   if (!config.content.tts) {
     config.content.tts = defaults.tts;
     return true;
@@ -248,6 +250,36 @@ export function normalizeContent(config: AudioServerConfig): boolean {
   if (tts.fallbackToInternal === undefined) {
     tts.fallbackToInternal = true;
     changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Tidal signs in through the device flow only. A session left by the removed browser sign-in
+ * (`flow: 'pkce'`, an app on TIDAL's third-party tier, which only ever got 30-second previews) is
+ * dropped, so the account reads as signed out and asks for a new device sign-in; its client and
+ * any pasted token stay. The fields only that sign-in wrote are dropped from any other session.
+ * Said in the log once: the result is saved, so the next load finds nothing to do.
+ */
+function normalizeTidalSessions(services: AudioServerConfig['content']['streamingServices']): boolean {
+  let changed = false;
+  for (const service of services ?? []) {
+    const session = service?.tidal as (Record<string, unknown> & object) | undefined;
+    if (!session || typeof session !== 'object') continue;
+    if (session.flow === 'pkce') {
+      delete service.tidal;
+      changed = true;
+      createLogger('Config', 'Tidal').warn('tidal browser sign-in session dropped; sign in again with the device flow', {
+        serviceId: service.id,
+      });
+      continue;
+    }
+    for (const key of ['flow', 'accessTier', 'previewReason']) {
+      if (key in session) {
+        delete session[key];
+        changed = true;
+      }
+    }
   }
   return changed;
 }
