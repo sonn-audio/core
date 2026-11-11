@@ -438,6 +438,12 @@ export interface TidalSession {
   accessTier?: string;
   /** Why the last track played as a preview (e.g. FULL_REQUIRES_HIGHER_ACCESS_TIER); unset once one plays in full. */
   previewReason?: string;
+  /**
+   * The quality TIDAL actually delivered for the last track, when it was lower than the service's
+   * `tidalQuality` (e.g. `HIGH`, AAC 320, while `LOSSLESS` was asked — what TIDAL caps some clients
+   * at). Unset once a track plays at the quality asked for.
+   */
+  deliveredQuality?: TidalQuality;
 }
 
 export interface StreamingServiceConfig {

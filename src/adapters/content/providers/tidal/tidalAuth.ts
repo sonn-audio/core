@@ -1,5 +1,5 @@
 import type { ConfigPort } from '@/ports/ConfigPort';
-import type { StreamingServiceConfig, TidalSession } from '@/domain/config/types';
+import type { StreamingServiceConfig, TidalQuality, TidalSession } from '@/domain/config/types';
 import { createLogger } from '@/shared/logging/logger';
 import {
   refreshTidalTokens,
@@ -38,6 +38,11 @@ export interface TidalApiAccess {
   api(serviceId: string): TidalApiFlavor;
   /** Remember whether the last track played only as a preview, and why, for the admin UI. */
   notePreview(serviceId: string, reason: string | undefined): Promise<void>;
+  /**
+   * Remember the quality TIDAL delivered when it is lower than the one asked for (undefined when
+   * it is not), for the admin UI. Said in the log once, when it changes.
+   */
+  noteQuality(serviceId: string, delivered: TidalQuality | undefined): Promise<void>;
 }
 
 export type TidalApiFlavor = 'openapi' | 'v1';
@@ -139,6 +144,20 @@ export class TidalAuth implements TidalApiAccess {
     await this.store.updateSession(serviceId, (session) => (session ? { ...session, previewReason: reason } : session));
   }
 
+  public async noteQuality(serviceId: string, delivered: TidalQuality | undefined): Promise<void> {
+    const service = this.store.getService(serviceId);
+    const current = service?.tidal;
+    if (!current || current.deliveredQuality === delivered) return;
+    if (delivered) {
+      this.log.info('tidal delivers a lower quality than asked for this client', {
+        serviceId,
+        asked: service?.tidalQuality ?? 'LOSSLESS',
+        delivered,
+      });
+    }
+    await this.store.updateSession(serviceId, (session) => (session ? { ...session, deliveredQuality: delivered } : session));
+  }
+
   /** Forget the refresh bookkeeping for an account, e.g. after it signed in anew. */
   public reset(serviceId: string): void {
     this.lastAttempt.delete(serviceId);
@@ -229,4 +248,5 @@ export const sharedTidalAuth: TidalApiAccess = {
   fetch: async (serviceId, url, init) => (shared ? shared.fetch(serviceId, url, init) : null),
   api: (serviceId) => (shared ? shared.api(serviceId) : 'v1'),
   notePreview: async (serviceId, reason) => shared?.notePreview(serviceId, reason),
+  noteQuality: async (serviceId, delivered) => shared?.noteQuality(serviceId, delivered),
 };

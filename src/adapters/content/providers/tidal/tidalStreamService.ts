@@ -14,6 +14,7 @@ import { TIDAL_API_BASE } from '@/adapters/content/providers/tidal/tidalAuthClie
 import {
   hasContentProtection,
   JSONAPI_CONTENT_TYPE,
+  OPENAPI_FORMATS,
   parseTrackManifest,
   trackManifestUrl,
 } from '@/adapters/content/providers/tidal/tidalOpenApi';
@@ -25,6 +26,22 @@ export const TIDAL_PLAYBACK_REFUSED = "Tidal refused playback for this app's tok
 /** manifestMimeType values the playbackinfopostpaywall endpoint returns. */
 const MANIFEST_BTS = 'application/vnd.tidal.bts';
 const MANIFEST_DASH = 'application/dash+xml';
+
+/**
+ * The quality a playback answer says it carries, when it is lower than the one asked for: v1's
+ * `audioQuality`, or the format of a trackManifests document. TIDAL caps some clients (HIGH, AAC
+ * 320, for a client that asked for LOSSLESS); that is recorded, never retried.
+ */
+export function downgradeOf(asked: TidalQuality, delivered: unknown): TidalQuality | undefined {
+  if (typeof delivered !== 'string' || !TIDAL_QUALITIES.includes(delivered as TidalQuality)) return undefined;
+  return TIDAL_QUALITIES.indexOf(delivered as TidalQuality) < TIDAL_QUALITIES.indexOf(asked) ? (delivered as TidalQuality) : undefined;
+}
+
+/** The best quality among a trackManifests document's formats. */
+function qualityOfFormats(formats: string[]): TidalQuality | undefined {
+  const qualities = (Object.keys(OPENAPI_FORMATS) as TidalQuality[]).filter((q) => formats.includes(OPENAPI_FORMATS[q]));
+  return qualities.sort((a, b) => TIDAL_QUALITIES.indexOf(b) - TIDAL_QUALITIES.indexOf(a))[0];
+}
 
 export function tidalQualityOf(service: Pick<StreamingServiceConfig, 'tidalQuality'>): TidalQuality {
   const q = service.tidalQuality;
@@ -230,6 +247,9 @@ export class TidalStreamService {
     }
     if (outcome.kind === 'refused') return { kind: 'refused', status: outcome.status };
     if (outcome.kind !== 'ok' || !manifest) return { kind: 'failed' };
+    if (manifest.kind === 'direct' || manifest.kind === 'dash') {
+      await this.noteQuality(request, quality, outcome.playback.audioQuality);
+    }
     return manifest;
   }
 
@@ -272,11 +292,20 @@ export class TidalStreamService {
         });
       }
       await this.auth.notePreview(request.bridge.id, preview ? manifest.previewReason || 'PREVIEW' : undefined);
+      await this.noteQuality(request, tidalQualityOf(request.bridge), qualityOfFormats(manifest.formats));
       return { kind: 'dash', manifest: manifest.manifest, mimeType: 'application/dash+xml' };
     } catch (err) {
       this.log.warn('tidal track manifest failed', { trackId: request.trackId, message: err instanceof Error ? err.message : String(err) });
       return { kind: 'failed' };
     }
+  }
+
+  /** Record what TIDAL delivered against what the service asks for; a played track always counts. */
+  private async noteQuality(request: TidalTrackRequest, asked: TidalQuality, delivered: unknown): Promise<void> {
+    if (typeof delivered !== 'string' || !delivered) return;
+    await this.auth.noteQuality(request.bridge.id, downgradeOf(asked, delivered)).catch((err: unknown) => {
+      this.log.debug('tidal quality not recorded', { message: err instanceof Error ? err.message : String(err) });
+    });
   }
 
   private reportPlaybackError(zoneId: number | undefined, reason: string, suppressErrors = false): void {

@@ -531,6 +531,63 @@ test('hi-res refused outright also falls back to lossless, but not further', asy
   assert.equal(errors[0]?.reason, 'tidal playback info unavailable');
 });
 
+// What a device-flow client TIDAL caps answers for LOSSLESS: AAC 320, said in `audioQuality`.
+const BTS_AAC = {
+  trackId: 123,
+  assetPresentation: 'FULL',
+  audioMode: 'STEREO',
+  audioQuality: 'HIGH',
+  manifestMimeType: 'application/vnd.tidal.bts',
+  manifest: b64(JSON.stringify({ mimeType: 'audio/mp4', codecs: 'mp4a.40.2', encryptionType: 'NONE', urls: ['https://sp-ad-cf.audio.tidal.com/x.mp4'] })),
+};
+
+test('a lower quality than asked is played once, recorded on the account, and cleared when the asked one comes', async () => {
+  let delivered = 'HIGH';
+  const { stream, calls, store } = streamHarness('LOSSLESS', () => json(200, { ...BTS_AAC, audioQuality: delivered }));
+  const result = await stream.startStreamForAudiopath(1, 'tidal:track:123');
+  assert.deepEqual(result.playbackSource, { kind: 'url', url: 'https://sp-ad-cf.audio.tidal.com/x.mp4' });
+  assert.equal(calls.length, 1, 'the downgrade is not retried');
+  assert.equal(store.services[0]!.tidal!.deliveredQuality, 'HIGH');
+
+  await stream.startStreamForAudiopath(1, 'tidal:track:124');
+  assert.equal(calls.length, 2);
+  assert.equal(store.services[0]!.tidal!.deliveredQuality, 'HIGH');
+
+  delivered = 'LOSSLESS';
+  await stream.startStreamForAudiopath(1, 'tidal:track:125');
+  assert.equal(store.services[0]!.tidal!.deliveredQuality, undefined);
+});
+
+test('the delivered quality is written to the account only when it changes', async () => {
+  const store = memoryStore([{ ...tidalService({ expiresAt: Date.now() + 3600_000, flow: 'device' }), tidalQuality: 'LOSSLESS' }]);
+  let writes = 0;
+  const counting = { ...store, updateSession: async (...args: Parameters<typeof store.updateSession>) => (writes++, store.updateSession(...args)) };
+  const auth = new TidalAuth({ store: counting, fetchFn: (() => assert.fail('no request')) as unknown as FetchFn, env: NO_ENV });
+  await auth.noteQuality('bridge-tidal-1', 'HIGH');
+  await auth.noteQuality('bridge-tidal-1', 'HIGH');
+  await auth.noteQuality('bridge-tidal-1', undefined);
+  await auth.noteQuality('bridge-tidal-1', undefined);
+  assert.equal(writes, 2);
+  assert.equal('deliveredQuality' in store.services[0]!.tidal! && store.services[0]!.tidal!.deliveredQuality, undefined);
+});
+
+test('the quality record compares against the configured quality, through a hi-res fallback and on trackManifests', async () => {
+  const hiRes = streamHarness('HI_RES_LOSSLESS', (q) => json(200, q === 'HI_RES_LOSSLESS' ? DASH_DRM : { ...BTS, audioQuality: 'LOSSLESS' }));
+  await hiRes.stream.startStreamForAudiopath(1, 'tidal:track:123');
+  assert.equal(hiRes.store.services[0]!.tidal!.deliveredQuality, 'LOSSLESS');
+
+  const asAsked = streamHarness('HIGH', () => json(200, BTS_AAC));
+  await asAsked.stream.startStreamForAudiopath(1, 'tidal:track:123');
+  assert.equal(asAsked.store.services[0]!.tidal!.deliveredQuality, undefined, 'HIGH asked, HIGH delivered');
+
+  const openapi = streamHarness('HI_RES_LOSSLESS', () => json(401, {}), {
+    flow: 'pkce',
+    manifest: (formats) => json(200, manifestDoc(formats === 'FLAC_HIRES' ? DRM_XML : DASH_XML, { formats: ['FLAC'] })),
+  });
+  await openapi.stream.startStreamForAudiopath(1, 'tidal:track:123');
+  assert.equal(openapi.store.services[0]!.tidal!.deliveredQuality, 'LOSSLESS');
+});
+
 test('a third-party sign-in plays from trackManifests, and a preview is played and recorded', async () => {
   const { stream, calls, errors, store } = streamHarness('LOSSLESS', () => json(401, {}), {
     flow: 'pkce',
@@ -677,6 +734,7 @@ function fakeAccess(api: 'openapi' | 'v1', routes: Array<[RegExp, Handler]>) {
     auth: {
       api: () => api,
       notePreview: async () => {},
+      noteQuality: async () => {},
       fetch: async (_id: string, url: URL, init?: RequestInit) => fetchFn(url.toString(), init),
     },
   };

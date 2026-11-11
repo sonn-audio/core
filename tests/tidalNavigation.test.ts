@@ -19,6 +19,7 @@ function fakeAccess(api: 'openapi' | 'v1', routes: Array<[RegExp, Handler]>) {
     auth: {
       api: () => api,
       notePreview: async () => {},
+      noteQuality: async () => {},
       fetch: async (_id: string, url: URL) => {
         if (!url.searchParams.has('countryCode')) url.searchParams.set('countryCode', 'NL');
         calls.push(url);
