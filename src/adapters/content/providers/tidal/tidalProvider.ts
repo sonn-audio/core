@@ -1,4 +1,4 @@
-import type { ContentFolder, ContentFolderItem, ContentServiceAccount, PlaylistEntry } from '@/ports/ContentTypes';
+import type { ContentFolder, ContentFolderItem, ContentFolderSection, ContentServiceAccount, PlaylistEntry } from '@/ports/ContentTypes';
 import { FileType } from '@/domain/zones/enums';
 import { createLogger } from '@/shared/logging/logger';
 import { DEFAULT_MIN_SEARCH_LIMIT } from '@/adapters/content/utils/searchLimits';
@@ -18,12 +18,30 @@ import {
   TIDAL_OPENAPI_BASE,
   trackFromResource,
 } from '@/adapters/content/providers/tidal/tidalOpenApi';
+import {
+  extendModule,
+  isMixId,
+  mixImageUrl,
+  moduleItems,
+  moduleTotal,
+  musicModules,
+  PAGE_PARAMS,
+  type PageItem,
+  type RawPage,
+  TIDAL_MY_MIXES_PAGE,
+  TIDAL_PAGES,
+  TIDAL_PAGES_BASE,
+  type TidalPageNode,
+} from '@/adapters/content/providers/tidal/tidalPages';
 
 /** Pages of a cursor-paginated relationship walked at most to reach an offset. */
 const MAX_OPENAPI_PAGES = 20;
 
 /** Mixes listed at most per mix collection; an account has a handful of each. */
 const MAX_MIXES_PER_COLLECTION = 50;
+
+/** How long a fetched page is served from memory: TIDAL reshuffles them a few times a day. */
+const PAGE_CACHE_MS = 15 * 60 * 1000;
 
 /** v1 refused the token outright: the account is one the official API serves instead. */
 class V1Refused extends Error {}
@@ -73,6 +91,9 @@ export class TidalProvider implements ContentProvider {
   private v1Refused = false;
   /** The account's v1 user id, once `/sessions` said it. */
   private v1User: string | null = null;
+  /** Whether the token reads the editorial pages (it needs `r_usr`); unknown until one was asked for. */
+  private pagesAccess: 'unknown' | 'ok' | 'refused' = 'unknown';
+  private readonly pageCache = new Map<string, { at: number; page: RawPage }>();
 
   constructor(options: TidalProviderOptions) {
     this.providerId = options.providerId;
@@ -114,6 +135,10 @@ export class TidalProvider implements ContentProvider {
     switch (normalized.type) {
       case 'root':
         return this.buildRootFolder(offset);
+      case 'page':
+        return this.buildPageFolder(folderId, normalized.node, offset, limit || 50);
+      case 'pageModule':
+        return this.buildModuleFolder(folderId, normalized.node, normalized.index, offset, limit || 50);
       case 'collection':
         return this.listFolder(folderId, 'My Collection', offset, {
           items: (Object.keys(COLLECTION_NAMES) as CollectionKind[]).map((kind) =>
@@ -279,10 +304,13 @@ export class TidalProvider implements ContentProvider {
   /* Mapping helpers                                                          */
   /* ------------------------------------------------------------------------ */
 
-  private buildRootFolder(offset: number): ContentFolder {
-    const items = [this.folderLink('collection', 'My Collection'), this.folderLink('playlists', 'My Playlists')];
-    // Mixes are read from the official API only; v1 has them as page modules, not as a resource.
-    if (this.useOpenApi()) items.push(this.folderLink('mixes', 'Mixes'));
+  private async buildRootFolder(offset: number): Promise<ContentFolder> {
+    const items: ContentFolderItem[] = [];
+    // TIDAL's editorial pages, for a token v1 reads them for (it needs `r_usr`).
+    if (await this.pagesAvailable()) {
+      for (const page of TIDAL_PAGES) items.push(this.folderLink(page.node, page.name));
+    }
+    items.push(this.folderLink('collection', 'My Collection'), this.folderLink('playlists', 'My Playlists'), this.folderLink('mixes', 'Mixes'));
     return {
       id: 'root',
       name: this.displayLabel,
@@ -341,6 +369,8 @@ export class TidalProvider implements ContentProvider {
     folderId: string,
   ):
     | { type: 'root' }
+    | { type: 'page'; node: TidalPageNode }
+    | { type: 'pageModule'; node: TidalPageNode; index: number }
     | { type: 'collection' }
     | { type: 'collectionKind'; kind: CollectionKind }
     | { type: 'playlists' }
@@ -354,6 +384,11 @@ export class TidalProvider implements ContentProvider {
     if (lower === 'root' || lower === 'start') {
       return { type: 'root' };
     }
+    const page = TIDAL_PAGES.find((p) => p.node === lower);
+    if (page) return { type: 'page', node: page.node };
+    const moduleMatch = lower.match(/^page-module:([a-z-]+):(\d+)$/);
+    const modulePage = moduleMatch ? TIDAL_PAGES.find((p) => p.node === moduleMatch[1]) : undefined;
+    if (modulePage) return { type: 'pageModule', node: modulePage.node, index: Number(moduleMatch![2]) };
     if (lower === 'collection') return { type: 'collection' };
     if (lower === 'playlists') return { type: 'playlists' };
     if (lower === 'mixes') return { type: 'mixes' };
@@ -377,7 +412,7 @@ export class TidalProvider implements ContentProvider {
   private mapTrack(track: any): ContentFolderItem {
     const id = String(track?.id ?? '');
     const name = String(track?.title ?? 'Track');
-    const artist = track?.artist?.name ?? '';
+    const artist = track?.artist?.name ?? artistNames(track?.artists);
     const album = track?.album?.title ?? '';
     const cover = track?.coverUrl || buildImageUrl(track?.album?.cover, 320);
     return {
@@ -400,7 +435,7 @@ export class TidalProvider implements ContentProvider {
   private mapAlbum(album: any): ContentFolderItem {
     const id = String(album?.id ?? '');
     const name = String(album?.title ?? 'Album');
-    const artist = album?.artist?.name ?? '';
+    const artist = album?.artist?.name ?? artistNames(album?.artists);
     const cover = album?.coverUrl || buildImageUrl(album?.cover, 320);
     return {
       id: this.makeUri('album', id),
@@ -437,7 +472,7 @@ export class TidalProvider implements ContentProvider {
   private mapPlaylist(playlist: any): ContentFolderItem {
     const id = String(playlist?.uuid ?? playlist?.id ?? '');
     const name = String(playlist?.title ?? 'Playlist');
-    const owner = playlist?.creator?.name ?? playlist?.creator?.username ?? '';
+    const owner = playlist?.creator?.name || playlist?.creator?.username || (playlist?.type === 'EDITORIAL' ? 'TIDAL' : '');
     const cover = playlist?.coverUrl || buildImageUrl(playlist?.squareImage, 320);
     return {
       id: this.makeUri('playlist', id),
@@ -451,6 +486,139 @@ export class TidalProvider implements ContentProvider {
       kind: 'playlist',
       tag: 'playlist',
       provider: 'tidal',
+    };
+  }
+
+  /** A mix opens and plays like a playlist; its id tells it apart when it is opened. */
+  private mapMix(mix: any): ContentFolderItem {
+    return this.mapPlaylist({
+      uuid: String(mix?.id ?? mix?.mixId ?? ''),
+      title: typeof mix?.title === 'string' && mix.title.trim() ? mix.title : 'Mix',
+      creator: { name: 'TIDAL' },
+      coverUrl: mixImageUrl(mix ?? {}),
+    });
+  }
+
+  private mapPageItem(entry: PageItem): ContentFolderItem {
+    switch (entry.kind) {
+      case 'track':
+        return this.mapTrack(entry.item);
+      case 'album':
+        return this.mapAlbum(entry.item);
+      case 'artist':
+        return this.mapArtist(entry.item);
+      case 'playlist':
+        return this.mapPlaylist(entry.item);
+      case 'mix':
+        return this.mapMix(entry.item);
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Editorial pages (tidal.com/v1/pages/*)                                    */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Whether this account reads the pages: never on the official API, and on v1 only when its token
+   * carries `r_usr` — which the first page asked for says, and which is remembered from then on.
+   */
+  private async pagesAvailable(): Promise<boolean> {
+    if (this.useOpenApi() || this.pagesAccess === 'refused') return false;
+    if (this.pagesAccess === 'ok') return true;
+    // Home is the page opened first anyway, so asking it here costs nothing it is cached for.
+    return (await this.fetchPage(TIDAL_PAGES[0].path)) !== null;
+  }
+
+  /** A page, from memory while it is fresh. Null when TIDAL refused or failed it; it is then left out. */
+  private async fetchPage(path: string): Promise<RawPage | null> {
+    const cached = this.pageCache.get(path);
+    if (cached && Date.now() - cached.at < PAGE_CACHE_MS) return cached.page;
+    const page = await this.fetchPageJson<RawPage>(path, {});
+    if (page && Array.isArray(page.rows)) {
+      this.pageCache.set(path, { at: Date.now(), page });
+      return page;
+    }
+    return null;
+  }
+
+  /**
+   * A request to the page host. Kept apart from {@link fetchJson}: a page TIDAL will not show this
+   * account is left out, and must not move the whole account over to the official API.
+   */
+  private async fetchPageJson<T>(path: string, params: Record<string, string>): Promise<T | null> {
+    const url = new URL(`${TIDAL_PAGES_BASE}/${path.replace(/^\//, '')}`);
+    for (const [key, value] of Object.entries({ ...PAGE_PARAMS, ...params })) url.searchParams.set(key, value);
+    try {
+      const res = await this.auth.fetch(this.serviceId, url);
+      if (!res) return null;
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          if (this.pagesAccess !== 'refused') this.log.info('tidal pages are not available to this account', { status: res.status, serviceId: this.serviceId });
+          if (this.pagesAccess === 'unknown') this.pagesAccess = 'refused';
+        } else {
+          this.log.debug('tidal page request failed', { path: url.pathname, status: res.status });
+        }
+        return null;
+      }
+      this.pagesAccess = 'ok';
+      return (await res.json()) as T;
+    } catch (err) {
+      this.log.warn('tidal page request failed', { path: url.pathname, message: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+  }
+
+  /** A page as a folder of its shelves; the shelves' first items come along as sections. */
+  private async buildPageFolder(folderId: string, node: TidalPageNode, offset: number, limit: number): Promise<ContentFolder> {
+    const spec = TIDAL_PAGES.find((p) => p.node === node)!;
+    const page = this.useOpenApi() ? null : await this.fetchPage(spec.path);
+    const modules = musicModules(page);
+    const links: ContentFolderItem[] = [];
+    const sections: ContentFolderSection[] = [];
+    for (const { index, title, module } of modules) {
+      const items = moduleItems(module).map((entry) => this.mapPageItem(entry));
+      const id = `page-module:${node}:${index}`;
+      links.push({ ...this.folderLink(id, title), items: moduleTotal(module), coverurl: items[0]?.coverurl, thumbnail: items[0]?.coverurl });
+      sections.push({ id, name: title, items });
+    }
+    return {
+      id: folderId,
+      name: spec.name,
+      service: 'tidal',
+      start: offset,
+      totalitems: links.length,
+      items: links.slice(offset, offset + limit),
+      ...(offset === 0 && sections.length ? { sections } : {}),
+    };
+  }
+
+  /** One shelf, extended past what the page embedded through its `dataApiPath`, as far as it is paged. */
+  private async buildModuleFolder(
+    folderId: string,
+    node: TidalPageNode,
+    index: number,
+    offset: number,
+    limit: number,
+  ): Promise<ContentFolder> {
+    const spec = TIDAL_PAGES.find((p) => p.node === node)!;
+    const page = this.useOpenApi() ? null : await this.fetchPage(spec.path);
+    const found = musicModules(page).find((m) => m.index === index);
+    if (!found) return this.listFolder(folderId, spec.name, offset, { items: [], total: 0 });
+    await extendModule(found.module, offset + limit, async (path, from, count) => {
+      const more = await this.fetchPageJson<{ items?: unknown[] }>(path, { offset: String(from), limit: String(count) });
+      return Array.isArray(more?.items) ? more.items : null;
+    });
+    const all = moduleItems(found.module);
+    const total = moduleTotal(found.module);
+    const fetched = found.module.pagedList?.items?.length ?? all.length;
+    return {
+      id: folderId,
+      name: found.title,
+      service: 'tidal',
+      start: offset,
+      // When the rest could not be fetched, what there is is all that is promised.
+      totalitems: fetched >= Math.min(offset + limit, total) ? total : all.length,
+      items: all.slice(offset, offset + limit).map((entry) => this.mapPageItem(entry)),
     };
   }
 
@@ -572,6 +740,7 @@ export class TidalProvider implements ContentProvider {
     limit: number,
     offset: number,
   ): Promise<{ items: ContentFolderItem[]; total?: number }> {
+    if (isMixId(playlistId)) return this.fetchMixTracksV1(playlistId, limit, offset);
     const url = new URL(`${TIDAL_API_BASE}/playlists/${encodeURIComponent(playlistId)}/tracks`);
     url.searchParams.set('limit', String(limit));
     url.searchParams.set('offset', String(offset));
@@ -581,6 +750,20 @@ export class TidalProvider implements ContentProvider {
       items: items.map((entry: any) => this.mapTrack(entry?.item ?? entry)),
       total: typeof data?.totalNumberOfItems === 'number' ? data.totalNumberOfItems : undefined,
     };
+  }
+
+  /**
+   * A mix's tracks from v1 (`mixes/{id}/items`). A mix is not a v1 playlist; it answers its whole
+   * track list at once, whatever the limit, so the window is cut here.
+   */
+  private async fetchMixTracksV1(mixId: string, limit: number, offset: number): Promise<FolderResult> {
+    const url = new URL(`${TIDAL_API_BASE}/mixes/${encodeURIComponent(mixId)}/items`);
+    url.searchParams.set('limit', String(Math.max(offset + limit, 100)));
+    const data = await this.fetchJson<any>(url.toString());
+    const tracks = (Array.isArray(data?.items) ? data.items : [])
+      .filter((entry: any) => String(entry?.type ?? 'track').toLowerCase() === 'track' && entry?.item)
+      .map((entry: any) => this.mapTrack(entry.item));
+    return { items: tracks.slice(offset, offset + limit), total: tracks.length };
   }
 
   /** The account's favourites of one kind, newest first. */
@@ -635,11 +818,25 @@ export class TidalProvider implements ContentProvider {
     );
   }
 
-  /** The account's daily, discovery and new-release mixes, as one list of playlists. */
+  /**
+   * The account's mixes, as one list of playlists: on v1 the "My Mixes" page, then the daily,
+   * discovery and new-release mixes the official API lists (it takes a device-flow token too).
+   */
   private async fetchMixes(limit: number, offset: number): Promise<FolderResult> {
-    if (!this.useOpenApi()) return { items: [], total: 0 };
     const all: ContentFolderItem[] = [];
     const seen = new Set<string>();
+    if (await this.pagesAvailable()) {
+      const page = await this.fetchPage(TIDAL_MY_MIXES_PAGE);
+      for (const { module } of musicModules(page)) {
+        for (const entry of moduleItems(module)) {
+          if (entry.kind !== 'mix' && entry.kind !== 'playlist') continue;
+          const item = this.mapPageItem(entry);
+          if (seen.has(item.id)) continue;
+          seen.add(item.id);
+          all.push(item);
+        }
+      }
+    }
     for (const collection of OPENAPI_MIX_COLLECTIONS) {
       const { items } = await this.walkRelationship(
         `${collection}/me/relationships/items`,
@@ -785,6 +982,13 @@ export class TidalProvider implements ContentProvider {
     // pages on.
     return { items, total: more ? Math.max(collected.length, offset + items.length) + 1 : collected.length };
   }
+}
+
+function artistNames(artists: unknown): string {
+  return (Array.isArray(artists) ? artists : [])
+    .map((a) => (typeof a?.name === 'string' ? a.name : ''))
+    .filter(Boolean)
+    .join(', ');
 }
 
 function buildImageUrl(coverId: string | null | undefined, size = 320): string {

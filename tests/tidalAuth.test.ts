@@ -771,7 +771,7 @@ const COLLECTION_ROUTES: Array<[RegExp, Handler]> = [
   [/\/v2\/userCollectionPlaylists\/me\/relationships\/items/, pagedRelationship('userCollectionPlaylists/me/relationships/items', [[{ id: 'aaaa-1111', type: 'playlists' }], [{ id: 'bbbb-2222', type: 'playlists' }]])],
 ];
 
-test('the Tidal root offers the collection, the own playlists and, on the official API, the mixes', async () => {
+test('the Tidal root offers the collection, the own playlists and the mixes', async () => {
   const openapi = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth: fakeAccess('openapi', []).auth });
   const root = await openapi.getFolder('root', 0, 50);
   assert.deepEqual(root?.items.map((i) => [i.id, i.name, i.kind]), [
@@ -784,10 +784,10 @@ test('the Tidal root offers the collection, the own playlists and, on the offici
   const collection = await openapi.getFolder('tidal:collection', 0, 50);
   assert.deepEqual(collection?.items.map((i) => i.id), ['collection-tracks', 'collection-albums', 'collection-artists', 'collection-playlists']);
 
-  const { auth, calls } = fakeAccess('v1', []);
+  // A v1 account's root asks for Home once, to know whether to offer the pages (tidalPages.test.ts).
+  const { auth } = fakeAccess('v1', [[/tidal\.com\/v1\/pages\/home/, () => json(403, {})]]);
   const v1 = await new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth }).getFolder('start', 0, 50);
-  assert.deepEqual(v1?.items.map((i) => i.id), ['collection', 'playlists'], 'v1 has no mixes resource');
-  assert.equal(calls.length, 0, 'the root itself asks Tidal nothing');
+  assert.deepEqual(v1?.items.map((i) => i.id), ['collection', 'playlists', 'mixes']);
 });
 
 test('each collection folder reads its v2 collection and pages across the cursor', async () => {
@@ -916,9 +916,9 @@ test('a v1 account whose favourites v1 refuses reads them from openapi instead',
   const albums = await provider.getFolder('collection-albums', 0, 5);
   assert.deepEqual(albums?.items.map((i) => i.audiopath), ['tidal:album:8001', 'tidal:album:8002']);
   assert.ok(calls.some((c) => c.url.includes('openapi.tidal.com/v2/userCollectionAlbums')));
-  // Now on the official API, the root offers the mixes too.
+  // Now on the official API, the root offers no pages.
   const root = await provider.getFolder('root', 0, 50);
-  assert.ok(root?.items.some((i) => i.id === 'mixes'));
+  assert.deepEqual(root?.items.map((i) => i.id), ['collection', 'playlists', 'mixes']);
 });
 
 // ── saving the service ─────────────────────────────────────────────────────────
