@@ -35,7 +35,7 @@ export interface LoxoneHttpConfig {
 // The two formats are not interchangeable: FIRMWARE_VERSION_NUMBER is the
 // LWSS / UDP discovery firmware string, MDNS_VERSION is the (zero-padded)
 // version advertised over Bonjour.
-const FIRMWARE_VERSION_NUMBER = '17.1.05.05';
+const FIRMWARE_VERSION_NUMBER = '17.3.11.10';
 const MDNS_VERSION = '16.00.09.16';
 
 const DEFAULT_FIRMWARE_VERSION = `LWSS V ${FIRMWARE_VERSION_NUMBER}`;
