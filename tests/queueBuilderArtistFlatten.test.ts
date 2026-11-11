@@ -216,3 +216,20 @@ for (const service of ['deezer', 'tidal', 'ytmusic', 'soundcloud']) {
     assert.deepEqual(calls, ['playlist:p.9']);
   });
 }
+
+test('an album listing that ends with an entry into its similar albums queues only the tracks', async () => {
+  const albumPath = 'tidal:album:al.5';
+  const { qc } = makeNativeQueueController('tidal', (folderId) =>
+    folderId === 'album:al.5'
+      ? makeFolder([
+        nativeTrack('tidal', 't.1', 'Album al.5'),
+        nativeTrack('tidal', 't.2', 'Album al.5'),
+        { id: 'album-similar:al.5', name: 'Similar Albums', type: 1, kind: 'category', items: 0 },
+      ])
+      : null,
+  );
+
+  const queue = await qc.buildQueueForUri(albumPath, 'Zone', undefined, albumPath);
+
+  assert.deepEqual(queue.map((item) => item.audiopath), ['tidal:track:t.1', 'tidal:track:t.2']);
+});

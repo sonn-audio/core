@@ -74,6 +74,7 @@ import './amazonMusic.test';
 import './amazonMusicServiceSave.test';
 import './tidalAuth.test';
 import './tidalPages.test';
+import './tidalNavigation.test';
 import './audioServersAndBearer.test';
 import './outputFactory.airplay.test';
 import './outputFactory.sendspin.test';

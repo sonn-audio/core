@@ -423,8 +423,10 @@ export class QueueController {
       }
     }
     // If nothing was expanded (all items were already tracks, or no container
-    // yielded tracks), keep the original list so behaviour is never worse.
-    return expandedAny ? tracks : items;
+    // yielded tracks), keep the original list so behaviour is never worse — but
+    // not the entries into other folders a listing can end with (an album's
+    // "Similar Albums"): those are navigation and play nothing.
+    return expandedAny ? tracks : items.filter((item) => item.kind !== 'category');
   }
 
   /**

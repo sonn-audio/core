@@ -43,10 +43,34 @@ const MAX_MIXES_PER_COLLECTION = 50;
 /** How long a fetched page is served from memory: TIDAL reshuffles them a few times a day. */
 const PAGE_CACHE_MS = 15 * 60 * 1000;
 
+/** How long an artist's page is kept, so paging through it does not ask for it again. */
+const ARTIST_PAGE_CACHE_MS = 5 * 60 * 1000;
+const ARTIST_PAGE_CACHE_SIZE = 20;
+
+/** Top tracks on an artist's page; the rest of the page is records. */
+const ARTIST_TOP_TRACKS = 10;
+
+/** Records of each kind on an artist's page. */
+const ARTIST_RECORDS = 50;
+
+/** Related items listed at most: similar artists, albums and tracks, a radio. */
+const MAX_RELATED = 100;
+
+/** The related lists, by the node prefix they are browsed under and the name they are shown with. */
+const RELATED = {
+  'artist-similar': 'Similar Artists',
+  'artist-radio': 'Artist Radio',
+  'album-similar': 'Similar Albums',
+  'track-radio': 'Track Radio',
+  'track-similar': 'Similar Tracks',
+} as const;
+type RelatedKind = keyof typeof RELATED;
+
 /** v1 refused the token outright: the account is one the official API serves instead. */
 class V1Refused extends Error {}
 
 type FolderResult = { items: ContentFolderItem[]; total?: number };
+type ArtistPage = { topTracks: ContentFolderItem[]; albums: ContentFolderItem[]; singles: ContentFolderItem[] };
 type CollectionKind = 'tracks' | 'albums' | 'artists' | 'playlists';
 type ApiResource = Parameters<typeof trackFromResource>[1];
 
@@ -94,6 +118,7 @@ export class TidalProvider implements ContentProvider {
   /** Whether the token reads the editorial pages (it needs `r_usr`); unknown until one was asked for. */
   private pagesAccess: 'unknown' | 'ok' | 'refused' = 'unknown';
   private readonly pageCache = new Map<string, { at: number; page: RawPage }>();
+  private readonly artistPages = new Map<string, { at: number; page: ArtistPage }>();
 
   constructor(options: TidalProviderOptions) {
     this.providerId = options.providerId;
@@ -158,6 +183,12 @@ export class TidalProvider implements ContentProvider {
         return this.listFolder(folderId, 'Mixes', offset, await this.fetchMixes(limit || 50, offset));
       case 'albumItem': {
         const result = await this.fetchAlbumTracks(normalized.id, limit || 50, offset);
+        // After the last track: the albums TIDAL puts beside this one (on the next page when this
+        // one is full).
+        if (typeof result.total === 'number' && offset + result.items.length >= result.total) {
+          if (result.items.length < (limit || 50)) result.items.push(this.relatedLink('album-similar', normalized.id));
+          result.total += 1;
+        }
         return {
           id: folderId,
           name: 'Album',
@@ -167,16 +198,11 @@ export class TidalProvider implements ContentProvider {
           items: result.items,
         };
       }
-      case 'artistItem': {
-        const result = await this.fetchArtistAlbums(normalized.id, limit || 50, offset);
-        return {
-          id: folderId,
-          name: 'Artist',
-          service: 'tidal',
-          start: offset,
-          totalitems: typeof result.total === 'number' ? result.total : result.items.length,
-          items: result.items,
-        };
+      case 'artistItem':
+        return this.buildArtistFolder(folderId, normalized.id, offset, limit || 50);
+      case 'related': {
+        const result = await this.fetchRelated(normalized.kind, normalized.id, limit || 50, offset);
+        return this.listFolder(folderId, RELATED[normalized.kind], offset, { ...result, total: Math.min(result.total ?? 0, MAX_RELATED) });
       }
       case 'playlistItem': {
         const result = await this.fetchPlaylistTracks(normalized.id, limit || 50, offset);
@@ -325,6 +351,14 @@ export class TidalProvider implements ContentProvider {
     return { id, name, type: FileType.Folder, kind: 'category', items: 0 };
   }
 
+  /**
+   * An entry into one of an item's related lists. A folder without an audiopath on purpose: playing
+   * the artist or album it sits in must not queue another artist's music.
+   */
+  private relatedLink(kind: RelatedKind, id: string): ContentFolderItem {
+    return this.folderLink(`${kind}:${id}`, RELATED[kind]);
+  }
+
   private listFolder(id: string, name: string, offset: number, result: FolderResult): ContentFolder {
     return {
       id,
@@ -377,6 +411,7 @@ export class TidalProvider implements ContentProvider {
     | { type: 'mixes' }
     | { type: 'albumItem'; id: string }
     | { type: 'artistItem'; id: string }
+    | { type: 'related'; kind: RelatedKind; id: string }
     | { type: 'playlistItem'; id: string }
     | { type: 'unknown' } {
     const raw = this.stripProviderPrefix(folderId || 'root').trim();
@@ -394,6 +429,11 @@ export class TidalProvider implements ContentProvider {
     if (lower === 'mixes') return { type: 'mixes' };
     const kind = lower.match(/^collection-(tracks|albums|artists|playlists)$/)?.[1] as CollectionKind | undefined;
     if (kind) return { type: 'collectionKind', kind };
+    const relatedMatch = raw.match(/(?:^|:)((?:artist|album|track)-(?:similar|radio)):(.+)$/i);
+    const relatedKind = relatedMatch?.[1]?.toLowerCase();
+    if (relatedKind && relatedKind in RELATED) {
+      return { type: 'related', kind: relatedKind as RelatedKind, id: relatedMatch![2] ?? '' };
+    }
     const albumMatch = raw.match(/(?:^|:)album:(.+)$/i);
     if (albumMatch) {
       return { type: 'albumItem', id: albumMatch[1] ?? '' };
@@ -660,6 +700,156 @@ export class TidalProvider implements ContentProvider {
     return Array.isArray(data?.items) ? data.items : [];
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Artists, and what TIDAL puts beside an item                              */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * An artist's page, shaped like Spotify's: their top tracks, then their albums, then their
+   * singles and EPs, as one list a client can play through — followed by the entries into similar
+   * artists and the artist's radio — and the same split into sections for a client that groups.
+   */
+  private async buildArtistFolder(folderId: string, artistId: string, offset: number, limit: number): Promise<ContentFolder> {
+    const page = await this.fetchArtistPage(artistId);
+    const links = [this.relatedLink('artist-similar', artistId), this.relatedLink('artist-radio', artistId)];
+    const all = [...page.topTracks, ...page.albums, ...page.singles, ...links];
+    const sections: ContentFolderSection[] = [];
+    if (page.topTracks.length) sections.push({ id: 'artist-top-tracks', name: 'Top Tracks', items: page.topTracks });
+    if (page.albums.length) sections.push({ id: 'artist-albums', name: 'Albums', items: page.albums });
+    if (page.singles.length) sections.push({ id: 'artist-singles', name: 'Singles & EPs', items: page.singles });
+    sections.push({ id: 'artist-more', name: 'More', items: links });
+    return {
+      id: folderId,
+      name: 'Artist',
+      service: 'tidal',
+      start: offset,
+      totalitems: all.length,
+      items: all.slice(offset, offset + limit),
+      ...(offset === 0 ? { sections } : {}),
+    };
+  }
+
+  private async fetchArtistPage(artistId: string): Promise<ArtistPage> {
+    const cached = this.artistPages.get(artistId);
+    if (cached && Date.now() - cached.at < ARTIST_PAGE_CACHE_MS) return cached.page;
+    const id = encodeURIComponent(artistId);
+    const page = await this.viaApi<ArtistPage>(
+      async () => {
+        const [topTracks, albums, singles] = await Promise.all([
+          this.fetchListV1(`artists/${id}/toptracks`, ARTIST_TOP_TRACKS, 0, {}, (t) => this.mapTrack(t)),
+          this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, {}, (a) => this.mapAlbum(a)),
+          this.fetchListV1(`artists/${id}/albums`, ARTIST_RECORDS, 0, { filter: 'EPSANDSINGLES' }, (a) => this.mapAlbum(a)),
+        ]);
+        return { topTracks: topTracks.items, albums: albums.items, singles: singles.items };
+      },
+      async () => {
+        const [topTracks, records] = await Promise.all([
+          this.walkRelationship(`artists/${id}/relationships/tracks`, OPENAPI_INCLUDES.artistTopTracks, 0, ARTIST_TOP_TRACKS, (doc, r) =>
+            r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null,
+          { collapseBy: 'FINGERPRINT' }),
+          this.fetchArtistRecordsV2(id),
+        ]);
+        return { topTracks: topTracks.items, ...records };
+      },
+    );
+    if (this.artistPages.size >= ARTIST_PAGE_CACHE_SIZE) {
+      const oldest = this.artistPages.keys().next().value;
+      if (oldest !== undefined) this.artistPages.delete(oldest);
+    }
+    this.artistPages.set(artistId, { at: Date.now(), page });
+    return page;
+  }
+
+  /**
+   * v2 lists an artist's records oldest first, all kinds together: newest first here, and split
+   * on `albumType` the way v1's `filter=EPSANDSINGLES` splits them.
+   */
+  private async fetchArtistRecordsV2(id: string): Promise<{ albums: ContentFolderItem[]; singles: ContentFolderItem[] }> {
+    const records: Array<{ item: ContentFolderItem; type: string; date: string }> = [];
+    await this.walkRelationship(`artists/${id}/relationships/albums`, OPENAPI_INCLUDES.artistAlbums, 0, ARTIST_RECORDS * 2, (doc, r) => {
+      if (r.type !== 'albums') return null;
+      const album = albumFromResource(doc, r);
+      const item = this.mapAlbum(album);
+      records.push({ item, type: album.albumType ?? 'ALBUM', date: album.releaseDate ?? '' });
+      return item;
+    });
+    records.sort((a, b) => b.date.localeCompare(a.date));
+    const pick = (single: boolean) =>
+      records.filter((r) => (r.type === 'ALBUM') !== single).slice(0, ARTIST_RECORDS).map((r) => r.item);
+    return { albums: pick(false), singles: pick(true) };
+  }
+
+  /** A related list, from v1 where it has one and the official API otherwise. */
+  private async fetchRelated(kind: RelatedKind, rawId: string, limit: number, offset: number): Promise<FolderResult> {
+    const id = encodeURIComponent(rawId);
+    const window = Math.min(limit, Math.max(MAX_RELATED - offset, 0));
+    if (window <= 0) return { items: [], total: MAX_RELATED };
+    const v2Tracks = (doc: JsonApiDocument, r: ApiResource) => (r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null);
+    switch (kind) {
+      case 'artist-similar':
+        return this.viaApi(
+          () => this.fetchListV1(`artists/${id}/similar`, window, offset, {}, (a) => this.mapArtist(a)),
+          () =>
+            this.walkRelationship(`artists/${id}/relationships/similarArtists`, OPENAPI_INCLUDES.similarArtists, offset, window, (doc, r) =>
+              r.type === 'artists' ? this.mapArtist(artistFromResource(doc, r)) : null,
+            ),
+        );
+      case 'artist-radio':
+        return this.viaApi(
+          () => this.fetchListV1(`artists/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t)),
+          () => this.fetchRadioV2(`artists/${id}`, offset, window),
+        );
+      case 'track-radio':
+        return this.viaApi(
+          () => this.fetchListV1(`tracks/${id}/radio`, window, offset, {}, (t) => this.mapTrack(t)),
+          () => this.fetchRadioV2(`tracks/${id}`, offset, window),
+        );
+      // v1 has no similar albums or tracks; the official API has, and takes a v1 account's token too.
+      case 'album-similar':
+        return this.walkRelationship(`albums/${id}/relationships/similarAlbums`, OPENAPI_INCLUDES.similarAlbums, offset, window, (doc, r) =>
+          r.type === 'albums' ? this.mapAlbum(albumFromResource(doc, r)) : null,
+        );
+      case 'track-similar':
+        return this.walkRelationship(`tracks/${id}/relationships/similarTracks`, OPENAPI_INCLUDES.similarTracks, offset, window, v2Tracks);
+    }
+  }
+
+  /** v2's radio of an artist or a track is a mix: its id from the relationship, its tracks from the mix. */
+  private async fetchRadioV2(owner: string, offset: number, limit: number): Promise<FolderResult> {
+    const doc = await this.fetchDocument(`${owner}/relationships/radio`, []);
+    const mixId = doc?.dataList.find((r) => r.type === 'playlists')?.id;
+    if (mixId == null) return { items: [], total: 0 };
+    return this.fetchPlaylistTracks(String(mixId), limit, offset);
+  }
+
+  /** The artists TIDAL puts beside this one, for the about panel and the player's artist page. */
+  public async getRelatedArtists(folderId: string, limit: number): Promise<ContentFolderItem[]> {
+    const normalized = this.normalizeFolderId(folderId);
+    if (normalized.type !== 'artistItem' || !normalized.id) return [];
+    const { items } = await this.fetchRelated('artist-similar', normalized.id, Math.max(1, Math.min(limit, MAX_RELATED)), 0);
+    return items;
+  }
+
+  /** One window of a v1 list (`limit`/`offset`, with `totalNumberOfItems`). */
+  private async fetchListV1(
+    path: string,
+    limit: number,
+    offset: number,
+    params: Record<string, string>,
+    map: (entry: any) => ContentFolderItem,
+  ): Promise<FolderResult> {
+    const url = new URL(`${TIDAL_API_BASE}/${path}`);
+    url.searchParams.set('limit', String(limit));
+    url.searchParams.set('offset', String(offset));
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    const data = await this.fetchJson<any>(url.toString());
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return {
+      items: items.filter(Boolean).map(map),
+      total: typeof data?.totalNumberOfItems === 'number' ? data.totalNumberOfItems : offset + items.length,
+    };
+  }
+
   private async fetchAlbumTracks(
     albumId: string,
     limit: number,
@@ -686,36 +876,6 @@ export class TidalProvider implements ContentProvider {
     const items = Array.isArray(data?.items) ? data.items : [];
     return {
       items: items.map((track: any) => this.mapTrack(track)),
-      total: typeof data?.totalNumberOfItems === 'number' ? data.totalNumberOfItems : undefined,
-    };
-  }
-
-  private async fetchArtistAlbums(
-    artistId: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    return this.viaApi(
-      () => this.fetchArtistAlbumsV1(artistId, limit, offset),
-      () =>
-        this.walkRelationship(`artists/${encodeURIComponent(artistId)}/relationships/albums`, OPENAPI_INCLUDES.artistAlbums, offset, limit, (doc, r) =>
-          this.mapAlbum(albumFromResource(doc, r)),
-        ),
-    );
-  }
-
-  private async fetchArtistAlbumsV1(
-    artistId: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ items: ContentFolderItem[]; total?: number }> {
-    const url = new URL(`${TIDAL_API_BASE}/artists/${encodeURIComponent(artistId)}/albums`);
-    url.searchParams.set('limit', String(limit));
-    url.searchParams.set('offset', String(offset));
-    const data = await this.fetchJson<any>(url.toString());
-    const items = Array.isArray(data?.items) ? data.items : [];
-    return {
-      items: items.map((album: any) => this.mapAlbum(album)),
       total: typeof data?.totalNumberOfItems === 'number' ? data.totalNumberOfItems : undefined,
     };
   }

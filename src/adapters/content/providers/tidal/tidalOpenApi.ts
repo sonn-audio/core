@@ -83,6 +83,10 @@ export const OPENAPI_INCLUDES = {
   track: ['artists', 'albums', 'albums.coverArt'],
   albumItems: ['items.artists', 'items.albums.coverArt'],
   artistAlbums: ['albums.artists', 'albums.coverArt'],
+  artistTopTracks: ['tracks.artists', 'tracks.albums.coverArt'],
+  similarArtists: ['similarArtists.profileArt'],
+  similarAlbums: ['similarAlbums.artists', 'similarAlbums.coverArt'],
+  similarTracks: ['similarTracks.artists', 'similarTracks.albums.coverArt'],
   playlistItems: ['items.artists', 'items.albums.coverArt'],
   collectionTracks: ['items.artists', 'items.albums.coverArt'],
   collectionAlbums: ['items.artists', 'items.coverArt'],
@@ -110,7 +114,16 @@ export type V1LikeTrack = {
   album: { title: string };
   coverUrl: string;
 };
-export type V1LikeAlbum = { id: string; title: string; artist: { name: string }; coverUrl: string };
+export type V1LikeAlbum = {
+  id: string;
+  title: string;
+  artist: { name: string };
+  coverUrl: string;
+  /** `ALBUM`, `EP` or `SINGLE`, when the resource says. */
+  albumType?: string;
+  /** `YYYY-MM-DD`, when the resource says. */
+  releaseDate?: string;
+};
 export type V1LikeArtist = { id: string; name: string; coverUrl: string };
 export type V1LikePlaylist = { uuid: string; title: string; creator: { name: string }; coverUrl: string };
 
@@ -134,6 +147,8 @@ export function albumFromResource(doc: JsonApiDocument, resource: Resource): V1L
     title: withVersion(a.title, a.version) || 'Album',
     artist: { name: artistNames(doc, resource) },
     coverUrl: imageUrl(doc, resource, 'coverArt'),
+    ...(typeof a.albumType === 'string' ? { albumType: a.albumType } : {}),
+    ...(typeof a.releaseDate === 'string' ? { releaseDate: a.releaseDate } : {}),
   };
 }
 
