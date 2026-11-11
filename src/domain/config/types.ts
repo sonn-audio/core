@@ -405,6 +405,41 @@ export interface AmazonMusicCredentials {
   tier?: 'unlimited' | 'prime' | 'free';
 }
 
+/** The stream qualities Tidal's playback endpoint knows, lowest first. */
+export type TidalQuality = 'LOW' | 'HIGH' | 'LOSSLESS' | 'HI_RES_LOSSLESS';
+
+/**
+ * A signed-in Tidal account.
+ *
+ * The access token lives for hours, the refresh token for much longer; the refresh writes the new
+ * access token back here, so a restart picks up where the last refresh left off.
+ */
+export interface TidalSession {
+  accessToken: string;
+  refreshToken: string;
+  /** When the access token expires, in ms since the epoch. */
+  expiresAt: number;
+  userId?: string;
+  /** The account's country, from Tidal's session; the catalogue is per country. */
+  countryCode?: string;
+  /** The account's user name, when Tidal said it at sign-in. */
+  userName?: string;
+  /** Why the last refresh was refused, when it was; the account has to sign in again. */
+  refreshError?: string;
+  /**
+   * How it signed in: `pkce` (authorization code at login.tidal.com, a third-party app's flow) or
+   * `device` (link.tidal.com code). A refresh asks for the same scopes the sign-in did.
+   */
+  flow?: 'pkce' | 'device';
+  /**
+   * The app's `developerAccessTier` from users/me. `THIRD_PARTY` (an app from developer.tidal.com)
+   * is only given 30-second previews to play.
+   */
+  accessTier?: string;
+  /** Why the last track played as a preview (e.g. FULL_REQUIRES_HIGHER_ACCESS_TIER); unset once one plays in full. */
+  previewReason?: string;
+}
+
 export interface StreamingServiceConfig {
   id: string;
   label: string;
@@ -431,10 +466,24 @@ export interface StreamingServiceConfig {
   userToken?: string;
   /** Optional Deezer ARL cookie if provider === 'deezer' */
   deezerArl?: string;
-  /** Optional Tidal access token if provider === 'tidal' */
+  /**
+   * Optional Tidal access token if provider === 'tidal', pasted by hand. Used only while there is
+   * no signed-in {@link tidal} session; it is never refreshed.
+   */
   tidalAccessToken?: string;
-  /** Optional Tidal country code if provider === 'tidal' */
+  /** Tidal country code if provider === 'tidal'; a fallback for when the session names none. */
   tidalCountryCode?: string;
+  /**
+   * The Tidal client the sign-in runs as: an app registered on developer.tidal.com (secret
+   * optional; it signs in with PKCE), or a client allowed the device flow. The
+   * SONN_TIDAL_CLIENT_ID / SONN_TIDAL_CLIENT_SECRET environment variables take precedence.
+   */
+  tidalClientId?: string;
+  tidalClientSecret?: string;
+  /** Stream quality to ask Tidal for; LOSSLESS when unset. */
+  tidalQuality?: TidalQuality;
+  /** The signed-in Tidal account when provider === 'tidal'; written by the sign-in flow. */
+  tidal?: TidalSession;
   /**
    * Optional SoundCloud OAuth token if provider === 'soundcloud'. Public
    * browse/search/charts and preview playback work without it; a token unlocks

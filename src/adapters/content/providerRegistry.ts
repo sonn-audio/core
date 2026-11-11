@@ -3,6 +3,7 @@ import type { ContentProvider } from '@/adapters/content/ContentProvider';
 import { AppleMusicProvider } from '@/adapters/content/providers/applemusic/appleMusicProvider';
 import { DeezerProvider } from '@/adapters/content/providers/deezer/deezerProvider';
 import { TidalProvider } from '@/adapters/content/providers/tidal/tidalProvider';
+import { sharedTidalAuth } from '@/adapters/content/providers/tidal/tidalAuth';
 import { MusicAssistantBridgeProvider } from '@/adapters/content/providers/musicassistant/musicAssistantBridgeProvider';
 import { YtMusicProvider } from '@/adapters/content/providers/ytmusic/ytmusicProvider';
 import { scheduleYtMusicCookieCheck } from '@/adapters/content/providers/ytmusic/ytmusicAuthState';
@@ -112,8 +113,8 @@ export const CONTENT_PROVIDERS: readonly ProviderDefinition[] = [
         providerId,
         serviceNativePrefix,
         label,
-        accessToken: bridge.tidalAccessToken,
-        countryCode: bridge.tidalCountryCode,
+        serviceId: bridge.id,
+        auth: sharedTidalAuth,
       }),
   },
   {

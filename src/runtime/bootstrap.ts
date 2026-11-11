@@ -30,6 +30,8 @@ import { ytMusicAdmin } from '@/adapters/content/providers/ytmusic/ytmusicAdmin'
 import { soloistAdmin } from '@/adapters/inputs/spotify/soloist/soloistAdmin';
 import { appleMusicAdmin } from '@/adapters/content/providers/applemusic/appleMusicAdmin';
 import { amazonMusicAdmin } from '@/adapters/content/providers/amazonmusic/amazonMusicAdmin';
+import { createTidalAdmin } from '@/adapters/content/providers/tidal/tidalAdmin';
+import { configSessionStore, resetSharedTidalAuth } from '@/adapters/content/providers/tidal/tidalAuth';
 import { validateTuneInUsername } from '@/adapters/content/providers/tunein/tuneinAdmin';
 import { radioAdmin } from '@/adapters/content/providers/radiobrowser/radioAdmin';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
@@ -737,6 +739,12 @@ export function createRuntime(): Runtime {
       soloistAdmin,
       appleMusicAdmin,
       amazonMusicAdmin,
+      tidalAdmin: createTidalAdmin({
+        store: configSessionStore(configPort),
+        // The address the Spotify sign-in's callback is built on too.
+        audioServerHost: () => configPort.getConfig().system?.audioserver?.ip?.trim() || '127.0.0.1',
+        onSignedOut: resetSharedTidalAuth,
+      }),
       validateTuneInUsername,
       radioAdmin,
       onReinitialize: handleReinitialize,

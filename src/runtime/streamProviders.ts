@@ -8,6 +8,7 @@ import { DeezerStreamService } from '@/adapters/content/providers/deezer/deezerS
 import { DeezerStreamResolver } from '@/adapters/content/providers/deezer/deezerStreamResolver';
 import { TidalStreamService } from '@/adapters/content/providers/tidal/tidalStreamService';
 import { TidalStreamResolver } from '@/adapters/content/providers/tidal/tidalStreamResolver';
+import { configureTidalAuth } from '@/adapters/content/providers/tidal/tidalAuth';
 import { YtMusicStreamService } from '@/adapters/content/providers/ytmusic/ytmusicStreamService';
 import { YtMusicStreamResolver } from '@/adapters/content/providers/ytmusic/ytmusicStreamResolver';
 import { YoutubeStreamService } from '@/adapters/content/providers/youtube/youtubeStreamService';
@@ -53,7 +54,10 @@ export function createStreamProviders(
 
   const appleMusic = new AppleMusicStreamService(onOutputError, configPort);
   const deezer = new DeezerStreamService(onOutputError, configPort);
-  const tidal = new TidalStreamService(onOutputError, configPort);
+  // One token keeper for every Tidal account, shared by the catalogue and playback so a refresh by
+  // one is seen by the other.
+  const tidalAuth = configureTidalAuth(configPort);
+  const tidal = new TidalStreamService(onOutputError, configPort, tidalAuth);
   const ytmusic = new YtMusicStreamService(onOutputError, configPort);
   const youtube = new YoutubeStreamService(onOutputError, configPort);
   const soundcloud = new SoundCloudStreamService(onOutputError, configPort);

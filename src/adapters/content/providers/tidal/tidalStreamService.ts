@@ -1,6 +1,6 @@
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
-import type { StreamingServiceConfig } from '@/domain/config/types';
+import type { StreamingServiceConfig, TidalQuality } from '@/domain/config/types';
 import type { PlaybackSource } from '@/ports/EngineTypes';
 import { parseTrackAudiopath } from '@/domain/zones/audiopath';
 import { findBridgeForProviderKey } from '@/adapters/content/providers/bridgeLookup';
@@ -9,8 +9,64 @@ import { type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { resolveProxyHost, resolveProxyPort } from '@/shared/urlProxy';
 import { pruneExpiredSessions, type StreamProxyRoute } from '@/shared/streamProxyRoute';
+import { sharedTidalAuth, type TidalApiAccess } from '@/adapters/content/providers/tidal/tidalAuth';
+import { TIDAL_API_BASE } from '@/adapters/content/providers/tidal/tidalAuthClient';
+import {
+  hasContentProtection,
+  JSONAPI_CONTENT_TYPE,
+  parseTrackManifest,
+  trackManifestUrl,
+} from '@/adapters/content/providers/tidal/tidalOpenApi';
 
-const TIDAL_API_BASE = 'https://api.tidal.com/v1';
+const TIDAL_QUALITIES: readonly TidalQuality[] = ['LOW', 'HIGH', 'LOSSLESS', 'HI_RES_LOSSLESS'];
+export const DEFAULT_TIDAL_QUALITY: TidalQuality = 'LOSSLESS';
+export const TIDAL_PLAYBACK_REFUSED = "Tidal refused playback for this app's token";
+
+/** manifestMimeType values the playbackinfopostpaywall endpoint returns. */
+const MANIFEST_BTS = 'application/vnd.tidal.bts';
+const MANIFEST_DASH = 'application/dash+xml';
+
+export function tidalQualityOf(service: Pick<StreamingServiceConfig, 'tidalQuality'>): TidalQuality {
+  const q = service.tidalQuality;
+  return q && TIDAL_QUALITIES.includes(q) ? q : DEFAULT_TIDAL_QUALITY;
+}
+
+/**
+ * What a playback-info response resolves to.
+ *
+ * BTS manifests are base64 JSON with plain file URLs (LOW to LOSSLESS); DASH manifests are base64
+ * MPDs (hi-res), which ffmpeg needs at a URL it can fetch more than once.
+ */
+export type TidalManifest =
+  | { kind: 'direct'; url: string }
+  | { kind: 'dash'; manifest: string; mimeType: string }
+  | { kind: 'drm' }
+  | { kind: 'unsupported' };
+
+export function resolveTidalManifest(playback: {
+  manifest?: unknown;
+  manifestMimeType?: unknown;
+}): TidalManifest {
+  const manifest = decodeManifest(typeof playback.manifest === 'string' ? playback.manifest : null);
+  if (!manifest) return { kind: 'unsupported' };
+  const mimeType = typeof playback.manifestMimeType === 'string' ? playback.manifestMimeType : '';
+  const trimmed = manifest.trim();
+  if (mimeType === MANIFEST_BTS || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { encryptionType?: unknown };
+      if (typeof parsed.encryptionType === 'string' && parsed.encryptionType !== 'NONE') return { kind: 'drm' };
+    } catch {
+      return { kind: 'unsupported' };
+    }
+    const url = extractDirectUrlFromManifest(trimmed);
+    return url ? { kind: 'direct', url } : { kind: 'unsupported' };
+  }
+  if (mimeType === MANIFEST_DASH || trimmed.startsWith('<?xml') || trimmed.startsWith('<MPD')) {
+    if (hasContentProtection(trimmed) || /widevine/i.test(trimmed)) return { kind: 'drm' };
+    return { kind: 'dash', manifest: trimmed, mimeType: mimeType || MANIFEST_DASH };
+  }
+  return { kind: 'unsupported' };
+}
 
 type TidalPlaybackResult = {
   playbackSource: PlaybackSource | null;
@@ -25,6 +81,18 @@ type TidalTrackRequest = {
 
 type OutputErrorHandler = (zoneId: number, reason?: string) => void;
 
+/** What a track resolves to, from either API. */
+type Resolution =
+  | TidalManifest
+  | { kind: 'refused'; status: number }
+  | { kind: 'failed' };
+
+type PlaybackInfoOutcome =
+  | { kind: 'ok'; playback: Record<string, unknown> }
+  /** 401/403 after the one refresh the auth does: Tidal will not play for this token. */
+  | { kind: 'refused'; status: number }
+  | { kind: 'failed'; status?: number };
+
 type TidalProxySession = {
   id: string;
   manifest: string;
@@ -38,9 +106,15 @@ export class TidalStreamService {
   private readonly bridgesById = new Map<string, StreamingServiceConfig>();
   private readonly proxySessions = new Map<string, TidalProxySession>();
   private readonly configPort: ConfigPort;
+  private readonly auth: TidalApiAccess;
 
-  constructor(private readonly notifyOutputError: OutputErrorHandler, configPort: ConfigPort) {
+  constructor(
+    private readonly notifyOutputError: OutputErrorHandler,
+    configPort: ConfigPort,
+    auth: TidalApiAccess = sharedTidalAuth,
+  ) {
     this.configPort = configPort;
+    this.auth = auth;
   }
 
   public configureFromConfig(): void {
@@ -84,39 +158,50 @@ export class TidalStreamService {
       return { playbackSource: null };
     }
 
-    const playback = await this.fetchPlaybackInfo(request);
-    if (!playback) {
-      this.reportPlaybackError(zoneId, 'tidal playback info unavailable', suppressErrors);
-      return { playbackSource: null };
+    const quality = tidalQualityOf(request.bridge);
+    let resolved: Resolution;
+    if (this.auth.api(request.bridge.id) === 'openapi') {
+      // A third-party app's sign-in: v1 playback refuses its token ("Asset is not ready for playback").
+      resolved = await this.resolveOpenApi(request, quality);
+    } else {
+      resolved = await this.resolveV1(request, quality);
+      if (resolved.kind === 'refused') {
+        this.log.info('tidal v1 playback refused this token; trying the official API', {
+          trackId: request.trackId,
+          status: resolved.status,
+        });
+        resolved = await this.resolveOpenApi(request, quality);
+      }
     }
 
-    const manifest = decodeManifest(playback.manifest);
-    if (!manifest) {
-      this.reportPlaybackError(zoneId, 'tidal manifest decode failed', suppressErrors);
-      return { playbackSource: null };
-    }
-
-    const directUrl = extractDirectUrlFromManifest(manifest);
-    if (directUrl) {
-      return { playbackSource: { kind: 'url', url: directUrl } };
-    }
-
-    if (!manifest.trim().startsWith('<?xml')) {
-      this.log.warn('tidal manifest format not supported', { zoneId });
-      this.reportPlaybackError(zoneId, 'tidal manifest unsupported', suppressErrors);
-      return { playbackSource: null };
-    }
-
-    if (/widevine|cenc|dashif/i.test(manifest)) {
-      this.log.warn('tidal manifest appears DRM protected', { zoneId });
+    switch (resolved.kind) {
+      case 'refused':
+        this.log.warn(TIDAL_PLAYBACK_REFUSED, { zoneId, trackId: request.trackId, status: resolved.status });
+        this.reportPlaybackError(zoneId, TIDAL_PLAYBACK_REFUSED, suppressErrors);
+        return { playbackSource: null };
+      case 'failed':
+        this.reportPlaybackError(zoneId, 'tidal playback info unavailable', suppressErrors);
+        return { playbackSource: null };
+      case 'direct':
+        return { playbackSource: { kind: 'url', url: resolved.url } };
+      case 'drm':
+        this.log.warn('tidal stream is DRM protected', { zoneId, trackId: request.trackId, quality });
+        this.reportPlaybackError(zoneId, 'tidal stream is DRM protected', suppressErrors);
+        return { playbackSource: null };
+      case 'unsupported':
+        this.log.warn('tidal manifest format not supported', { zoneId, trackId: request.trackId });
+        this.reportPlaybackError(zoneId, 'tidal manifest unsupported', suppressErrors);
+        return { playbackSource: null };
+      case 'dash':
+        break;
     }
 
     const sessionId = randomUUID();
     pruneExpiredSessions(this.proxySessions);
     this.proxySessions.set(sessionId, {
       id: sessionId,
-      manifest,
-      mimeType: playback.manifestMimeType || 'application/dash+xml',
+      manifest: resolved.manifest,
+      mimeType: resolved.mimeType,
       createdAt: Date.now(),
     });
     const url = `http://${resolveProxyHost()}:${resolveProxyPort()}/tidal/${sessionId}/manifest.mpd`;
@@ -127,6 +212,71 @@ export class TidalStreamService {
         inputFormat: 'dash',
       },
     };
+  }
+
+  /** v1 playbackinfopostpaywall: BTS (a file URL) up to lossless, DASH for hi-res. */
+  private async resolveV1(request: TidalTrackRequest, quality: TidalQuality): Promise<Resolution> {
+    let outcome = await this.fetchPlaybackInfo(request, quality);
+    let manifest = outcome.kind === 'ok' ? resolveTidalManifest(outcome.playback) : null;
+    // Hi-res comes as DASH and is not offered (or offered encrypted) for every track, app or
+    // subscription: ask once more for lossless rather than play nothing.
+    if (quality === 'HI_RES_LOSSLESS' && (outcome.kind === 'failed' || manifest?.kind === 'drm' || manifest?.kind === 'unsupported')) {
+      this.log.info('tidal hi-res not playable; falling back to lossless', {
+        trackId: request.trackId,
+        reason: outcome.kind === 'ok' ? manifest?.kind : `http ${outcome.status ?? 'error'}`,
+      });
+      outcome = await this.fetchPlaybackInfo(request, 'LOSSLESS');
+      manifest = outcome.kind === 'ok' ? resolveTidalManifest(outcome.playback) : null;
+    }
+    if (outcome.kind === 'refused') return { kind: 'refused', status: outcome.status };
+    if (outcome.kind !== 'ok' || !manifest) return { kind: 'failed' };
+    return manifest;
+  }
+
+  /**
+   * The official API's trackManifests: an MPEG-DASH manifest inline as a `data:` URI. For an app
+   * on TIDAL's third-party tier it is a 30-second preview — played anyway, and said so, since that
+   * is all TIDAL lets such an app have.
+   */
+  private async resolveOpenApi(request: TidalTrackRequest, quality: TidalQuality): Promise<Resolution> {
+    let resolved = await this.fetchTrackManifest(request, quality);
+    if (quality === 'HI_RES_LOSSLESS' && (resolved.kind === 'failed' || resolved.kind === 'drm' || resolved.kind === 'unsupported')) {
+      this.log.info('tidal hi-res manifest not playable; falling back to lossless', { trackId: request.trackId, reason: resolved.kind });
+      resolved = await this.fetchTrackManifest(request, 'LOSSLESS');
+    }
+    return resolved;
+  }
+
+  private async fetchTrackManifest(request: TidalTrackRequest, quality: TidalQuality): Promise<Resolution> {
+    try {
+      const res = await this.auth.fetch(request.bridge.id, trackManifestUrl(request.trackId, quality), {
+        headers: { Accept: JSONAPI_CONTENT_TYPE },
+      });
+      if (!res) return { kind: 'failed' };
+      if (res.status === 401 || res.status === 403) return { kind: 'refused', status: res.status };
+      if (!res.ok) {
+        this.log.warn('tidal track manifest failed', { status: res.status, trackId: request.trackId, quality });
+        return { kind: 'failed' };
+      }
+      const manifest = parseTrackManifest(await res.json());
+      if (manifest.kind === 'unsupported') {
+        this.log.warn('tidal track manifest unusable', { trackId: request.trackId, reason: manifest.reason });
+        return { kind: 'unsupported' };
+      }
+      if (manifest.kind === 'drm') return { kind: 'drm' };
+      const preview = manifest.presentation === 'PREVIEW';
+      if (preview) {
+        this.log.warn('tidal plays only a 30-second preview for this app', {
+          trackId: request.trackId,
+          reason: manifest.previewReason,
+        });
+      }
+      await this.auth.notePreview(request.bridge.id, preview ? manifest.previewReason || 'PREVIEW' : undefined);
+      return { kind: 'dash', manifest: manifest.manifest, mimeType: 'application/dash+xml' };
+    } catch (err) {
+      this.log.warn('tidal track manifest failed', { trackId: request.trackId, message: err instanceof Error ? err.message : String(err) });
+      return { kind: 'failed' };
+    }
   }
 
   private reportPlaybackError(zoneId: number | undefined, reason: string, suppressErrors = false): void {
@@ -150,39 +300,31 @@ export class TidalStreamService {
     return { providerId: parsed.providerKey, trackId: parsed.id, bridge };
   }
 
-  private buildHeaders(bridge: StreamingServiceConfig): Record<string, string> {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-    };
-    const token = bridge.tidalAccessToken?.trim();
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    return headers;
-  }
-
-  private async fetchPlaybackInfo(request: TidalTrackRequest): Promise<any | null> {
-    const token = request.bridge.tidalAccessToken?.trim();
-    if (!token) {
-      return null;
-    }
+  private async fetchPlaybackInfo(request: TidalTrackRequest, quality: TidalQuality): Promise<PlaybackInfoOutcome> {
     const url = new URL(`${TIDAL_API_BASE}/tracks/${encodeURIComponent(request.trackId)}/playbackinfopostpaywall`);
-    url.searchParams.set('audioquality', 'LOSSLESS');
+    url.searchParams.set('audioquality', quality);
     url.searchParams.set('playbackmode', 'STREAM');
     url.searchParams.set('assetpresentation', 'FULL');
-    if (request.bridge.tidalCountryCode) {
-      url.searchParams.set('countryCode', request.bridge.tidalCountryCode);
-    }
+    // No surround pipeline here, so never ask for the Atmos asset.
+    url.searchParams.set('immersiveaudio', 'false');
     try {
-      const res = await fetch(url.toString(), { headers: this.buildHeaders(request.bridge) });
-      if (!res.ok) {
-        this.log.warn('tidal playback info failed', { status: res.status, trackId: request.trackId });
-        return null;
+      // The auth refreshes once on a 401 and retries; a refusal after that is final.
+      const res = await this.auth.fetch(request.bridge.id, url);
+      if (!res) {
+        this.log.warn('tidal playback without a sign-in or token', { serviceId: request.bridge.id });
+        return { kind: 'failed' };
       }
-      return await res.json();
+      if (res.status === 401 || res.status === 403) {
+        return { kind: 'refused', status: res.status };
+      }
+      if (!res.ok) {
+        this.log.warn('tidal playback info failed', { status: res.status, trackId: request.trackId, quality });
+        return { kind: 'failed', status: res.status };
+      }
+      return { kind: 'ok', playback: (await res.json()) as Record<string, unknown> };
     } catch (err) {
       this.log.warn('tidal playback info failed', { trackId: request.trackId, message: err instanceof Error ? err.message : String(err) });
-      return null;
+      return { kind: 'failed' };
     }
   }
 
@@ -212,7 +354,9 @@ export class TidalStreamService {
       res.end();
       return;
     }
-    res.writeHead(200, { 'Content-Type': session.mimeType });
+    // ffmpeg may come back for the manifest (a seek, a restart): keep it from being pruned meanwhile.
+    session.createdAt = Date.now();
+    res.writeHead(200, { 'Content-Type': session.mimeType, 'Cache-Control': 'no-cache' });
     res.end(session.manifest);
   }
 }

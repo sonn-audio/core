@@ -178,6 +178,10 @@ export function isPublicAdminApiRoute(pathname: string, method: string): boolean
   if (pathname === '/auth/logout' && method === 'POST') return true;
   if (pathname === '/auth/me' && method === 'GET') return true;
   if (/^\/spotify\/auth\/callback/.test(pathname)) return true;
+  // Like Spotify's: the browser arrives here from the public redirect page after login.tidal.com;
+  // only a request carrying the state key of a sign-in this server started (random, server-side,
+  // minutes-lived) gets anywhere.
+  if (pathname === '/tidal/auth/callback' && method === 'GET') return true;
   // Read-only list of peer audioservers (LAN-local, low-sensitivity) — the
   // player reads this to discover/switch servers without an admin login.
   if (pathname === '/audioservers' && method === 'GET') return true;

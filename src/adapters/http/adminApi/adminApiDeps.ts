@@ -1,5 +1,6 @@
 import type { AppleMusicAdminPort } from '@/ports/AppleMusicAdminPort';
 import type { AmazonMusicAdminPort } from '@/ports/AmazonMusicAdminPort';
+import type { TidalAdminPort } from '@/ports/TidalAdminPort';
 import type { TuneInUsernameCheck } from '@/adapters/content/providers/tunein/tuneinAdmin';
 import type { SoloistAdminPort } from '@/ports/SoloistAdminPort';
 import type { YtMusicAdminPort } from '@/ports/YtMusicAdminPort';
@@ -45,6 +46,8 @@ export type AdminSurfaceDeps = {
   appleMusicAdmin: AppleMusicAdminPort;
   /** Amazon Music's sign-in; see AmazonMusicAdminPort. */
   amazonMusicAdmin: AmazonMusicAdminPort;
+  /** Tidal's sign-in; see TidalAdminPort. */
+  tidalAdmin: TidalAdminPort;
   /** Whether a TuneIn username resolves; see the TuneIn admin module. */
   validateTuneInUsername: (username: string) => Promise<TuneInUsernameCheck>;
   /** Finding a radio station, and hearing one; see RadioAdminPort. */
@@ -98,6 +101,7 @@ export function createAdminApiDeps(
   return {
     appleMusicAdmin: deps.appleMusicAdmin,
     amazonMusicAdmin: deps.amazonMusicAdmin,
+    tidalAdmin: deps.tidalAdmin,
     validateTuneInUsername: deps.validateTuneInUsername,
     radioAdmin: deps.radioAdmin,
     soloistAdmin: deps.soloistAdmin,

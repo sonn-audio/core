@@ -1,6 +1,7 @@
 import type { SoloistAdminPort } from '@/ports/SoloistAdminPort';
 import type { YtMusicAdminPort } from '@/ports/YtMusicAdminPort';
 import type { AmazonMusicAdminPort } from '@/ports/AmazonMusicAdminPort';
+import type { TidalAdminPort } from '@/ports/TidalAdminPort';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ComponentLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
@@ -10,7 +11,7 @@ import type { SpotifyInputService } from '@/adapters/inputs/spotify/spotifyInput
 import type { SpotifyServiceManagerProvider } from '@/adapters/content/providers/spotifyServiceManager';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
 import type { MusicAssistantStreamService } from '@/adapters/inputs/musicassistant/musicAssistantStreamService';
-import type { StreamingServiceConfig } from '@/domain/config/types';
+import type { StreamingServiceConfig, TidalQuality } from '@/domain/config/types';
 import {
   buildSpotifyAuthLink,
   deleteSpotifyAccount,
@@ -44,6 +45,8 @@ export type SpotifyHandlerDeps = {
   ytMusicAdmin: YtMusicAdminPort;
   /** Hands over the device registration an Amazon Music sign-in produced, when one is saved. */
   amazonMusicAdmin: AmazonMusicAdminPort;
+  /** Hands over the session a Tidal sign-in produced, when one is saved. */
+  tidalAdmin: TidalAdminPort;
   log: ComponentLogger;
   configPort: ConfigPort;
   notifier: NotifierPort;
@@ -56,6 +59,8 @@ export type SpotifyHandlerDeps = {
   readBinaryBody: (req: IncomingMessage, res: ServerResponse, maxBytes: number) => Promise<Buffer | null>;
   sendJson: (res: ServerResponse, status: number, body: unknown) => void;
 };
+
+const TIDAL_QUALITIES: readonly TidalQuality[] = ['LOW', 'HIGH', 'LOSSLESS', 'HI_RES_LOSSLESS'];
 
 export function buildSpotifyRoutes(deps: SpotifyHandlerDeps): Route[] {
   return [
@@ -309,6 +314,22 @@ async function handleStreamingServiceCreate(
       return;
     }
   }
+  // A Tidal sign-in is held server-side like Amazon's and collected the same way. Unlike Amazon, a
+  // Tidal service can also run on a pasted token, so none is required here.
+  let tidalSession: StreamingServiceConfig['tidal'];
+  if (provider === 'tidal') {
+    const loginId = typeof (body as { tidalLoginId?: unknown } | null)?.tidalLoginId === 'string'
+      ? String((body as { tidalLoginId: string }).tidalLoginId)
+      : '';
+    tidalSession = loginId ? deps.tidalAdmin.takeSession(loginId) ?? undefined : undefined;
+    if (loginId && !tidalSession) {
+      deps.sendJson(res, 400, {
+        error: 'tidal-login-required',
+        message: 'This sign-in has expired or did not finish. Sign in to Tidal again.',
+      });
+      return;
+    }
+  }
   const defaultLabel =
     provider === 'applemusic'
       ? 'Apple Music'
@@ -359,6 +380,15 @@ async function handleStreamingServiceCreate(
       typeof body?.tidalCountryCode === 'string' && body.tidalCountryCode.trim()
         ? body.tidalCountryCode.trim().toUpperCase()
         : undefined,
+    tidalClientId:
+      typeof body?.tidalClientId === 'string' && body.tidalClientId.trim() ? body.tidalClientId.trim() : undefined,
+    tidalClientSecret:
+      typeof body?.tidalClientSecret === 'string' && body.tidalClientSecret.trim()
+        ? body.tidalClientSecret.trim()
+        : undefined,
+    tidalQuality: TIDAL_QUALITIES.includes(body?.tidalQuality as TidalQuality)
+      ? (body?.tidalQuality as TidalQuality)
+      : undefined,
     ytmusicCookie:
       typeof body?.ytmusicCookie === 'string' && body.ytmusicCookie.trim()
         ? body.ytmusicCookie.trim()
@@ -382,6 +412,9 @@ async function handleStreamingServiceCreate(
   // explicit undefined would erase the registration it already has.
   if (amazonMusicCredentials) {
     bridge.amazonMusic = amazonMusicCredentials;
+  }
+  if (tidalSession) {
+    bridge.tidal = tidalSession;
   }
 
   try {
