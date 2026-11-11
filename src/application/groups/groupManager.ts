@@ -15,6 +15,7 @@ import {
 import type { AudioSyncEventPlayer } from '@/application/groups/types/audioSyncEventPlayer';
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
 import type { GroupRecord } from '@/application/groups/types/groupRecord';
+import type { FixedGroupDefinition } from '@/ports/types/groups';
 
 type GroupChangeEvent = 'new' | 'update' | 'remove';
 
@@ -70,6 +71,12 @@ export class GroupManager {
               }
             });
           }
+          // A fixed group was never announced as a dynamic one, so there is nothing to retract.
+          if (record?.source === 'fixed') {
+            this.refreshZoneEmit(leader);
+            record.members.forEach((memberId) => this.refreshZoneEmit(memberId));
+            break;
+          }
           const groupId = record?.externalId ?? `group-${leader}`;
           const emptyPayload: AudioSyncGroupPayload = {
             group: groupId,
@@ -115,9 +122,14 @@ export class GroupManager {
   /**
    * The current groups as the `audio_sync_event` list. Built here once so the
    * change broadcast below and a client's connect snapshot send the same thing.
+   *
+   * Fixed groups are left out: the event only knows `type: 'dynamic'`, and the app already
+   * shows a fixed group from the Miniserver's structure. Announcing it here as well would put
+   * a dynamic group on top of the app's own fixed one.
    */
   public getGroupSyncPayload(): AudioSyncGroupPayload[] {
     return getAllGroups()
+      .filter((record) => record.source !== 'fixed')
       .map((record) => this.buildGroupPayload(record))
       .filter((p): p is AudioSyncGroupPayload => Boolean(p));
   }
@@ -309,6 +321,11 @@ export class GroupManager {
       this.log.debug('no group found for identifier', { identifier });
       return;
     }
+    if (record.source === 'fixed') {
+      // Configured in Loxone Config; only a new config from the Miniserver changes it.
+      this.log.info('fixed group cannot be dissolved here', { identifier, leader: record.leader });
+      return;
+    }
 
     const removed = removeGroupByLeader(record.leader);
     if (!removed) {
@@ -320,7 +337,27 @@ export class GroupManager {
     }
   }
 
-  public upsert(record: Omit<GroupRecord, 'updatedAt'>): void {
+  public upsert(input: Omit<GroupRecord, 'updatedAt'>): void {
+    let record = input;
+    if (record.source !== 'fixed') {
+      // A zone in a fixed group stays there: it cannot lead or join another group.
+      const leaderGroup = getGroupByZone(record.leader);
+      if (leaderGroup?.source === 'fixed') {
+        this.log.info('zone is in a fixed group; group not changed', {
+          leader: record.leader,
+          fixedGroup: leaderGroup.externalId,
+        });
+        return;
+      }
+      const members = record.members.filter((zoneId) => getGroupByZone(zoneId)?.source !== 'fixed');
+      if (members.length !== record.members.length) {
+        this.log.info('zones in a fixed group left out of the group', {
+          leader: record.leader,
+          leftOut: record.members.filter((zoneId) => !members.includes(zoneId)),
+        });
+        record = { ...record, members };
+      }
+    }
     const previous = getGroupByLeader(record.leader);
     const { changed } = upsertGroup(record);
     if (changed) {
@@ -351,6 +388,84 @@ export class GroupManager {
     return getAllGroups();
   }
 
+  /**
+   * Bring the tracked fixed groups in line with the Miniserver's config.
+   *
+   * Called with the full list every time a config arrives (and at startup from the stored
+   * one): groups no longer in it are removed, new ones are created, changed membership is
+   * applied. The players then follow their leader through the same machinery as a dynamic
+   * group, which matters because the Loxone app sends every command for a fixed group to its
+   * first player only.
+   *
+   * A zone can only be in one group, and the fixed group wins: a dynamic group that holds one
+   * of its zones lets go of it, and is dissolved when its leader is one of them or fewer than
+   * two zones are left. Dynamic groups that share no zone with a fixed group are not touched.
+   */
+  public reconcileFixedGroups(definitions: readonly FixedGroupDefinition[]): void {
+    const claimed = new Set<number>();
+    const wanted = new Map<string, FixedGroupDefinition>();
+    for (const definition of definitions) {
+      const zones = Array.from(
+        new Set([definition.leader, ...definition.members].filter((id) => Number.isInteger(id) && id > 0)),
+      );
+      if (zones.length < 2 || !definition.externalId || wanted.has(definition.externalId)) {
+        continue;
+      }
+      const taken = zones.filter((zoneId) => claimed.has(zoneId));
+      if (taken.length) {
+        this.log.warn('fixed group skipped: zones already in another fixed group', {
+          externalId: definition.externalId,
+          zones: taken,
+        });
+        continue;
+      }
+      zones.forEach((zoneId) => claimed.add(zoneId));
+      wanted.set(definition.externalId, { externalId: definition.externalId, leader: zones[0]!, members: zones });
+    }
+
+    for (const record of getAllGroups()) {
+      if (record.source !== 'fixed') continue;
+      const next = record.externalId ? wanted.get(record.externalId) : undefined;
+      if (!next || next.leader !== record.leader) {
+        removeGroupByLeader(record.leader);
+      }
+    }
+
+    for (const record of getAllGroups()) {
+      if (record.source === 'fixed') continue;
+      const remaining = record.members.filter((zoneId) => !claimed.has(zoneId));
+      if (remaining.length === record.members.length) continue;
+      if (claimed.has(record.leader) || remaining.length < 2) {
+        this.log.info('dynamic group dissolved: its zones are in a fixed group', {
+          leader: record.leader,
+          externalId: record.externalId,
+        });
+        removeGroupByLeader(record.leader);
+        if (record.source === 'manual') {
+          void this.unpersistGroup(record.leader);
+        }
+        continue;
+      }
+      this.upsert({
+        leader: record.leader,
+        members: remaining,
+        backend: record.backend,
+        externalId: record.externalId,
+        source: record.source,
+      });
+    }
+
+    for (const definition of wanted.values()) {
+      this.upsert({
+        leader: definition.leader,
+        members: definition.members,
+        backend: 'Loxone',
+        externalId: definition.externalId,
+        source: 'fixed',
+      });
+    }
+  }
+
   private persistGroup(leader: number, members: number[], externalId: string): Promise<AudioServerConfig> {
     return this.configPort.updateConfig((cfg) => {
       if (!cfg.groups) cfg.groups = { mixedGroupEnabled: false, powerGroups: [], audioGroups: [] };
@@ -374,6 +489,9 @@ export class GroupManager {
 }
 
 export type GroupManagerReadPort = Pick<GroupManager, 'getAllGroups'>;
+
+/** What the Loxone config service needs to apply the Miniserver's fixed groups. */
+export type FixedGroupsPort = Pick<GroupManager, 'reconcileFixedGroups'>;
 
 /** The group list a Loxone client is sent on connect, as the change broadcast sends it. */
 export type GroupSyncSnapshotPort = Pick<GroupManager, 'getGroupSyncPayload'>;

@@ -106,6 +106,20 @@ async function audioCfgDynamicGroup(
   if (!leaderState) {
     return buildResponse(command, 'dgroup_update', { success: false, error: 'leader-missing' });
   }
+  // A Loxone fixed group is configured in Loxone Config, not made with dgroup: its id cannot
+  // be regrouped and its leader cannot lead a dynamic group. Its other players are left out
+  // of the new group by the group manager.
+  const fixed = [groupTracker.getGroupByExternalId(groupIdRaw), groupTracker.getGroupByZone(leader)].find(
+    (group) => group?.source === 'fixed',
+  );
+  if (fixed) {
+    createLogger('Groups', 'Handlers').info('dgroup update refused: fixed group', {
+      groupIdRaw,
+      leader,
+      fixedGroup: fixed.externalId,
+    });
+    return buildResponse(command, 'dgroup_update', { success: false, error: 'fixed-group' });
+  }
   const allowMixedGroup = configPort.getConfig()?.groups?.mixedGroupEnabled === true;
   const leaderProtocol = resolveOutputProtocol(zoneManager, leader);
   const memberProtocols = members.map((memberId) => ({

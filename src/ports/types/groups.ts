@@ -11,7 +11,27 @@ export interface AudioSyncGroupPayload {
   type: 'dynamic';
 }
 
-export type GroupSource = 'manual' | 'backend';
+/**
+ * Where a group comes from.
+ *
+ * - `manual`: made by a user (Loxone app, public API) and kept in `groups.audioGroups`.
+ * - `backend`: reported by an outside system that keeps it itself.
+ * - `fixed`: a Loxone fixed group ("Audio Player Gruppe fixed"), configured in Loxone Config
+ *   and handed to us in the Miniserver's audioserver config. The Miniserver is its source of
+ *   truth: it is never persisted, never announced as a dynamic group, and no ungroup command
+ *   dissolves it. See `GroupManager.reconcileFixedGroups`.
+ */
+export type GroupSource = 'manual' | 'backend' | 'fixed';
+
+/** A fixed group as the Miniserver's config describes it, already narrowed to our zones. */
+export interface FixedGroupDefinition {
+  /** The group's uuid in the Loxone config. */
+  externalId: string;
+  /** The first of its players that is one of our zones. */
+  leader: number;
+  /** All of its players that are our zones, leader first. */
+  members: number[];
+}
 
 /**
  * Single audio group definition tracked in memory.

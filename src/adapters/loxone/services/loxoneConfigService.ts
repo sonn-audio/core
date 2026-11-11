@@ -8,6 +8,8 @@ import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { NotifierPort } from '@/ports/NotifierPort';
+import type { FixedGroupsPort } from '@/application/groups/groupManager';
+import { extractFixedGroupsFromLoxoneConfig } from '@/adapters/loxone/services/loxoneFixedGroups';
 
 type RawConfigPayload = {
   raw: unknown;
@@ -25,6 +27,7 @@ export class LoxoneConfigService {
     private readonly configPort: ConfigPort,
     private readonly contentManager: ContentManager,
     private readonly notifier: NotifierPort,
+    private readonly fixedGroups: FixedGroupsPort | null = null,
   ) {}
 
   private get zones(): ZoneManagerFacade {
@@ -61,8 +64,37 @@ export class LoxoneConfigService {
       await this.zones.replaceAll(cfg.zones, cfg.inputs, cfg.groups ?? null);
       this.content.refreshFromConfig();
     });
+    this.applyFixedGroups();
 
     return crc32;
+  }
+
+  /**
+   * Applies the fixed groups of the stored Miniserver config (`rawAudioConfig`).
+   *
+   * Runs after every setconfig, and at startup: the Miniserver only sends its config again
+   * when the CRC differs, so after a restart the stored copy is all there is.
+   */
+  public applyFixedGroups(): void {
+    if (!this.fixedGroups) {
+      return;
+    }
+    try {
+      const cfg = this.config.getConfig();
+      const macId = cfg.system?.audioserver?.macId?.trim().toUpperCase();
+      const stored = cfg.rawAudioConfig;
+      const raw = stored?.raw ?? stored?.rawString ?? null;
+      const definitions = macId && raw ? extractFixedGroupsFromLoxoneConfig(raw, macId) : [];
+      if (definitions.length) {
+        this.log.info('applying fixed groups', {
+          groups: definitions.map((group) => ({ id: group.externalId, players: group.members })),
+        });
+      }
+      this.fixedGroups.reconcileFixedGroups(definitions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.warn('applying fixed groups failed', { message });
+    }
   }
 
   public async applyVolumePreset(players: unknown[]): Promise<number> {

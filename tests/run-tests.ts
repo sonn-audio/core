@@ -215,6 +215,7 @@ import './squeezeliteAlertSync.test';
 import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
 import './loxoneConnectGroupSnapshot.test';
+import './loxoneFixedGroups.test';
 import './adminZoneStates.test';
 import './adminInfo.test';
 import './bundleCompat.test';
@@ -1783,6 +1784,43 @@ test("a squeezelite member's own playback does not reach the speaker that follow
     groupTracker.removeGroupByLeader(LEADER);
     stub.restore();
   }
+});
+
+test('the players of a Loxone fixed group follow the leader the app drives (#434)', async () => {
+  // The Loxone app sends every command for a fixed group to its first player only; the
+  // other players hear nothing from it. They play along through the same group following a
+  // dynamic group uses.
+  const LEADER = 14;
+  const MEMBER = 15;
+  const harness = await getZoneHarness();
+  const { zoneManager, groupManager, groupTracker } = harness;
+  await zoneManager.replaceAll([createZoneConfig(LEADER, 'Living'), createZoneConfig(MEMBER, 'Kitchen')], {
+    spotify: {},
+  });
+  try {
+    zoneManager.applyPatch(LEADER, { volume: 40 });
+    zoneManager.applyPatch(MEMBER, { volume: 20 });
+    groupManager.reconcileFixedGroups([
+      { externalId: '2197102c-0107-dfc5-ffff4decce15e82a', leader: LEADER, members: [LEADER, MEMBER] },
+    ]);
+    assert.equal(groupTracker.getGroupByZone(MEMBER)?.source, 'fixed');
+    assert.deepEqual(zoneManager.getGroupMembership(MEMBER), { leader: LEADER, members: [LEADER, MEMBER] });
+
+    zoneManager.applyPatch(LEADER, { mode: 'play', title: 'One', artist: 'Someone' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'play', 'the member plays with the leader');
+    assert.equal(zoneManager.getState(MEMBER)?.title, 'One', 'and shows what the group plays');
+
+    zoneManager.applyPatch(LEADER, { mode: 'pause' });
+    assert.equal(zoneManager.getState(MEMBER)?.mode, 'pause');
+
+    // The leader's own volume stays the leader's: the member keeps its level, so the
+    // two rooms keep the balance they were set to.
+    zoneManager.applyPatch(LEADER, { volume: 60 });
+    assert.equal(zoneManager.getState(MEMBER)?.volume, 20);
+  } finally {
+    groupManager.reconcileFixedGroups([]);
+  }
+  assert.equal(groupTracker.getGroupByZone(MEMBER), undefined, 'gone once the config no longer has it');
 });
 
 test('group join/leave emits audio sync payloads', async () => {

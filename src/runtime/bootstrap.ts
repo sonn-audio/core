@@ -465,6 +465,7 @@ export function createRuntime(): Runtime {
     configPort,
     contentManager,
     ports.notifier,
+    groupManager,
   );
   outputHandlers = zoneManager.getOutputHandlers();
 
@@ -569,6 +570,12 @@ export function createRuntime(): Runtime {
     if (persistedGroups.length) {
       log.info('restored persisted audio groups', { count: persistedGroups.length });
     }
+    // Loxone fixed groups are not persisted: they come from the Miniserver's config, which it
+    // does not send again while the CRC is unchanged, so they are applied from the stored copy.
+    // Without the Loxone connection there is no Miniserver to own them.
+    if (loxoneEnabled) {
+      loxoneConfigService.applyFixedGroups();
+    }
 
     lineInMetadataService.start();
     sendspinLineInService.start();
@@ -636,6 +643,8 @@ export function createRuntime(): Runtime {
         await configPort.updateConfig((cfg) => {
           cfg.system.audioserver.loxoneEnabled = true;
         });
+        // Connected at runtime: the startup pass above did not apply the fixed groups.
+        loxoneConfigService.applyFixedGroups();
       }
       await notifyMiniserverStartup(storedConfig);
       log.info('loxone subsystem enabled');
@@ -653,6 +662,8 @@ export function createRuntime(): Runtime {
         await configPort.updateConfig((cfg) => {
           cfg.system.audioserver.loxoneEnabled = false;
         });
+        // Disconnected by the user: the Miniserver no longer owns these zones' grouping.
+        groupManager.reconcileFixedGroups([]);
       }
       log.info('loxone subsystem disabled');
     }
