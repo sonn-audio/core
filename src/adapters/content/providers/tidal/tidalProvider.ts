@@ -1,14 +1,18 @@
 import type { ContentFolder, ContentFolderItem, ContentServiceAccount, PlaylistEntry } from '@/ports/ContentTypes';
+import { FileType } from '@/domain/zones/enums';
 import { createLogger } from '@/shared/logging/logger';
 import { DEFAULT_MIN_SEARCH_LIMIT } from '@/adapters/content/utils/searchLimits';
 import type { ContentProvider, ProviderSearchCategories, ProviderSearchResult } from '@/adapters/content/ContentProvider';
 import type { TidalApiAccess } from '@/adapters/content/providers/tidal/tidalAuth';
-import { TIDAL_API_BASE } from '@/adapters/content/providers/tidal/tidalAuthClient';
+import { TIDAL_API_BASE, TIDAL_SESSIONS_URL } from '@/adapters/content/providers/tidal/tidalAuthClient';
 import {
   albumFromResource,
+  artistFromResource,
   JSONAPI_CONTENT_TYPE,
   JsonApiDocument,
   OPENAPI_INCLUDES,
+  OPENAPI_MIX_COLLECTIONS,
+  playlistFromResource,
   relationshipItems,
   searchFromDocument,
   TIDAL_OPENAPI_BASE,
@@ -18,8 +22,26 @@ import {
 /** Pages of a cursor-paginated relationship walked at most to reach an offset. */
 const MAX_OPENAPI_PAGES = 20;
 
+/** Mixes listed at most per mix collection; an account has a handful of each. */
+const MAX_MIXES_PER_COLLECTION = 50;
+
 /** v1 refused the token outright: the account is one the official API serves instead. */
 class V1Refused extends Error {}
+
+type FolderResult = { items: ContentFolderItem[]; total?: number };
+type CollectionKind = 'tracks' | 'albums' | 'artists' | 'playlists';
+type ApiResource = Parameters<typeof trackFromResource>[1];
+
+/**
+ * The account's sections, by the node names they are browsed under. The Loxone app reaches them
+ * through its slot table (`loxoneServiceFolders`); every other consumer by these names.
+ */
+const COLLECTION_NAMES: Record<CollectionKind, string> = {
+  tracks: 'Tracks',
+  albums: 'Albums',
+  artists: 'Artists',
+  playlists: 'Playlists',
+};
 
 interface TidalProviderOptions {
   providerId: string;
@@ -49,6 +71,8 @@ export class TidalProvider implements ContentProvider {
   private refusalLogged = false;
   /** Set once v1 refused this account's token; from then on everything goes to v2. */
   private v1Refused = false;
+  /** The account's v1 user id, once `/sessions` said it. */
+  private v1User: string | null = null;
 
   constructor(options: TidalProviderOptions) {
     this.providerId = options.providerId;
@@ -90,6 +114,23 @@ export class TidalProvider implements ContentProvider {
     switch (normalized.type) {
       case 'root':
         return this.buildRootFolder(offset);
+      case 'collection':
+        return this.listFolder(folderId, 'My Collection', offset, {
+          items: (Object.keys(COLLECTION_NAMES) as CollectionKind[]).map((kind) =>
+            this.folderLink(`collection-${kind}`, COLLECTION_NAMES[kind]),
+          ),
+        });
+      case 'collectionKind':
+        return this.listFolder(
+          folderId,
+          COLLECTION_NAMES[normalized.kind],
+          offset,
+          await this.fetchCollection(normalized.kind, limit || 50, offset),
+        );
+      case 'playlists':
+        return this.listFolder(folderId, 'My Playlists', offset, await this.fetchOwnPlaylists(limit || 50, offset));
+      case 'mixes':
+        return this.listFolder(folderId, 'Mixes', offset, await this.fetchMixes(limit || 50, offset));
       case 'albumItem': {
         const result = await this.fetchAlbumTracks(normalized.id, limit || 50, offset);
         return {
@@ -239,13 +280,31 @@ export class TidalProvider implements ContentProvider {
   /* ------------------------------------------------------------------------ */
 
   private buildRootFolder(offset: number): ContentFolder {
+    const items = [this.folderLink('collection', 'My Collection'), this.folderLink('playlists', 'My Playlists')];
+    // Mixes are read from the official API only; v1 has them as page modules, not as a resource.
+    if (this.useOpenApi()) items.push(this.folderLink('mixes', 'Mixes'));
     return {
       id: 'root',
       name: this.displayLabel,
       service: 'tidal',
       start: offset,
-      totalitems: 0,
-      items: [],
+      totalitems: items.length,
+      items: items.slice(offset),
+    };
+  }
+
+  private folderLink(id: string, name: string): ContentFolderItem {
+    return { id, name, type: FileType.Folder, kind: 'category', items: 0 };
+  }
+
+  private listFolder(id: string, name: string, offset: number, result: FolderResult): ContentFolder {
+    return {
+      id,
+      name,
+      service: 'tidal',
+      start: offset,
+      totalitems: typeof result.total === 'number' ? result.total : offset + result.items.length,
+      items: result.items,
     };
   }
 
@@ -282,6 +341,10 @@ export class TidalProvider implements ContentProvider {
     folderId: string,
   ):
     | { type: 'root' }
+    | { type: 'collection' }
+    | { type: 'collectionKind'; kind: CollectionKind }
+    | { type: 'playlists' }
+    | { type: 'mixes' }
     | { type: 'albumItem'; id: string }
     | { type: 'artistItem'; id: string }
     | { type: 'playlistItem'; id: string }
@@ -291,6 +354,11 @@ export class TidalProvider implements ContentProvider {
     if (lower === 'root' || lower === 'start') {
       return { type: 'root' };
     }
+    if (lower === 'collection') return { type: 'collection' };
+    if (lower === 'playlists') return { type: 'playlists' };
+    if (lower === 'mixes') return { type: 'mixes' };
+    const kind = lower.match(/^collection-(tracks|albums|artists|playlists)$/)?.[1] as CollectionKind | undefined;
+    if (kind) return { type: 'collectionKind', kind };
     const albumMatch = raw.match(/(?:^|:)album:(.+)$/i);
     if (albumMatch) {
       return { type: 'albumItem', id: albumMatch[1] ?? '' };
@@ -515,6 +583,124 @@ export class TidalProvider implements ContentProvider {
     };
   }
 
+  /** The account's favourites of one kind, newest first. */
+  private fetchCollection(kind: CollectionKind, limit: number, offset: number): Promise<FolderResult> {
+    return this.viaApi(
+      () =>
+        this.fetchUserListV1(`favorites/${kind}`, limit, offset, { order: 'DATE', orderDirection: 'DESC' }, (entry) =>
+          this.mapV1(kind, entry?.item ?? entry),
+        ),
+      () => {
+        switch (kind) {
+          case 'tracks':
+            return this.walkRelationship('userCollectionTracks/me/relationships/items', OPENAPI_INCLUDES.collectionTracks, offset, limit, (doc, r) =>
+              r.type === 'tracks' ? this.mapTrack(trackFromResource(doc, r)) : null,
+            );
+          case 'albums':
+            return this.walkRelationship('userCollectionAlbums/me/relationships/items', OPENAPI_INCLUDES.collectionAlbums, offset, limit, (doc, r) =>
+              this.mapAlbum(albumFromResource(doc, r)),
+            );
+          case 'artists':
+            return this.walkRelationship('userCollectionArtists/me/relationships/items', OPENAPI_INCLUDES.collectionArtists, offset, limit, (doc, r) =>
+              this.mapArtist(artistFromResource(doc, r)),
+            );
+          case 'playlists':
+            // FLAT: the playlists inside the account's folders, rather than the folders themselves.
+            return this.walkRelationship(
+              'userCollectionPlaylists/me/relationships/items',
+              OPENAPI_INCLUDES.collectionPlaylists,
+              offset,
+              limit,
+              (doc, r) => (r.type === 'playlists' ? this.mapPlaylist(playlistFromResource(doc, r)) : null),
+              { collectionView: 'FLAT' },
+            );
+        }
+      },
+    );
+  }
+
+  /** The playlists the account owns, most recently changed first. */
+  private fetchOwnPlaylists(limit: number, offset: number): Promise<FolderResult> {
+    return this.viaApi(
+      () => this.fetchUserListV1('playlists', limit, offset, {}, (playlist) => this.mapPlaylist(playlist)),
+      () =>
+        this.walkRelationship(
+          'playlists',
+          OPENAPI_INCLUDES.ownPlaylists,
+          offset,
+          limit,
+          (doc, r) => this.mapPlaylist(playlistFromResource(doc, r)),
+          { 'filter[owners.id]': 'me', sort: '-lastModifiedAt' },
+        ),
+    );
+  }
+
+  /** The account's daily, discovery and new-release mixes, as one list of playlists. */
+  private async fetchMixes(limit: number, offset: number): Promise<FolderResult> {
+    if (!this.useOpenApi()) return { items: [], total: 0 };
+    const all: ContentFolderItem[] = [];
+    const seen = new Set<string>();
+    for (const collection of OPENAPI_MIX_COLLECTIONS) {
+      const { items } = await this.walkRelationship(
+        `${collection}/me/relationships/items`,
+        OPENAPI_INCLUDES.mixes,
+        0,
+        MAX_MIXES_PER_COLLECTION,
+        (doc, r) => (r.type === 'playlists' ? this.mapPlaylist(playlistFromResource(doc, r)) : null),
+      );
+      for (const item of items) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        all.push(item);
+      }
+    }
+    return { items: all.slice(offset, offset + limit), total: all.length };
+  }
+
+  private mapV1(kind: CollectionKind, item: any): ContentFolderItem {
+    switch (kind) {
+      case 'tracks':
+        return this.mapTrack(item);
+      case 'albums':
+        return this.mapAlbum(item);
+      case 'artists':
+        return this.mapArtist(item);
+      case 'playlists':
+        return this.mapPlaylist(item);
+    }
+  }
+
+  /** v1 names the account by its numeric id, which `/sessions` says for any token. */
+  private async v1UserId(): Promise<string | null> {
+    if (this.v1User) return this.v1User;
+    const session = await this.fetchJson<{ userId?: unknown }>(TIDAL_SESSIONS_URL);
+    const id = session?.userId != null ? String(session.userId) : '';
+    this.v1User = id || null;
+    return this.v1User;
+  }
+
+  /** One page of `users/{id}/<path>` from v1, offset-paginated with the total alongside. */
+  private async fetchUserListV1(
+    path: string,
+    limit: number,
+    offset: number,
+    params: Record<string, string>,
+    map: (entry: any) => ContentFolderItem,
+  ): Promise<FolderResult> {
+    const userId = await this.v1UserId();
+    if (!userId) return { items: [], total: 0 };
+    const url = new URL(`${TIDAL_API_BASE}/users/${encodeURIComponent(userId)}/${path}`);
+    url.searchParams.set('limit', String(limit));
+    url.searchParams.set('offset', String(offset));
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    const data = await this.fetchJson<any>(url.toString());
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return {
+      items: items.map(map),
+      total: typeof data?.totalNumberOfItems === 'number' ? data.totalNumberOfItems : undefined,
+    };
+  }
+
   /* ------------------------------------------------------------------------ */
   /* openapi.tidal.com/v2                                                     */
   /* ------------------------------------------------------------------------ */
@@ -577,13 +763,14 @@ export class TidalProvider implements ContentProvider {
     include: readonly string[],
     offset: number,
     limit: number,
-    map: (doc: JsonApiDocument, resource: Parameters<typeof trackFromResource>[1]) => ContentFolderItem | null,
-  ): Promise<{ items: ContentFolderItem[]; total?: number }> {
+    map: (doc: JsonApiDocument, resource: ApiResource) => ContentFolderItem | null,
+    params: Record<string, string> = {},
+  ): Promise<FolderResult> {
     const collected: ContentFolderItem[] = [];
     let cursor: string | null = null;
     let more = false;
     for (let page = 0; page < MAX_OPENAPI_PAGES; page += 1) {
-      const doc = await this.fetchDocument(path, include, cursor ? { 'page[cursor]': cursor } : {});
+      const doc = await this.fetchDocument(path, include, cursor ? { ...params, 'page[cursor]': cursor } : params);
       if (!doc) break;
       for (const resource of relationshipItems(doc)) {
         const item = map(doc, resource);

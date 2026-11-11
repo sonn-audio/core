@@ -39,7 +39,7 @@ test('a node name passes through untouched, so other consumers address nodes dir
 
 test('a service without a slot table keeps its folder ids, so providers migrate one at a time', () => {
   for (const folderId of ['0', '5', 'albums']) {
-    assert.equal(slot('bridge-tidal-abc123', folderId), folderId);
+    assert.equal(slot('bridge-qobuz-abc123', folderId), folderId);
     assert.equal(toProviderNode('radioparadise', 'nouser', folderId), folderId);
   }
 });
@@ -277,4 +277,19 @@ test('the projected root advertises the number of items it actually contains', (
   const folder = { id: 'root', totalitems: items.length, items: projected };
   const forApp = { ...folder, totalitems: projected.length };
   assert.equal(forApp.totalitems, forApp.items.length);
+});
+
+// Tidal publishes its account sections by name; the app's slots reach the ones it has a place for.
+test('Tidal maps the app slots onto its mixes, own playlists and favourites', () => {
+  const tidal = 'bridge-tidal-t1';
+  assert.equal(slot(tidal, '0'), 'mixes');
+  assert.equal(slot(tidal, '3'), 'playlists');
+  assert.equal(slot(tidal, '4'), 'collection-tracks');
+  assert.equal(slot(tidal, '5'), 'collection-albums');
+  assert.equal(slot(tidal, '6'), 'collection-artists');
+  assert.equal(slot(tidal, 'collection-playlists'), 'collection-playlists');
+  assert.deepEqual(
+    rootItemsForLoxone('spotify', tidal, [{ id: 'collection' }, { id: 'playlists' }, { id: 'mixes' }]).map((item) => item.id),
+    ['collection', 'playlists', 'mixes'],
+  );
 });

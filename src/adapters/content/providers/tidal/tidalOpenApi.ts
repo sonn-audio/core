@@ -84,7 +84,19 @@ export const OPENAPI_INCLUDES = {
   albumItems: ['items.artists', 'items.albums.coverArt'],
   artistAlbums: ['albums.artists', 'albums.coverArt'],
   playlistItems: ['items.artists', 'items.albums.coverArt'],
+  collectionTracks: ['items.artists', 'items.albums.coverArt'],
+  collectionAlbums: ['items.artists', 'items.coverArt'],
+  collectionArtists: ['items.profileArt'],
+  collectionPlaylists: ['items.coverArt'],
+  ownPlaylists: ['coverArt'],
+  mixes: ['items.coverArt'],
 } as const;
+
+/**
+ * The account's mixes: three collections of `MIX` playlists, each read as `<resource>/me/relationships/items`.
+ * A third-party app's token reads them (scope recommendations.read); they open like any playlist.
+ */
+export const OPENAPI_MIX_COLLECTIONS = ['userDailyMixes', 'userDiscoveryMixes', 'userNewReleaseMixes'] as const;
 
 /* -------------------------------------------------------------------------- */
 /* Catalogue: JSON:API resources in the v1 shapes the provider maps           */
@@ -159,9 +171,14 @@ export function searchFromDocument(doc: JsonApiDocument): {
   };
 }
 
-/** A relationship page (`…/relationships/items`): the linkage in order, resolved to its resources. */
+/**
+ * The resources of a page, in order: a relationship page (`…/relationships/items`) holds linkage,
+ * resolved here from `included`; a collection (`/playlists?filter[…]`) holds the resources themselves.
+ */
 export function relationshipItems(doc: JsonApiDocument): Resource[] {
-  return doc.dataList.map((id) => doc.resolve(id)).filter((r): r is Resource => r !== null);
+  return doc.dataList
+    .map((entry) => doc.resolve(entry) ?? (entry.attributes ? entry : null))
+    .filter((r): r is Resource => r !== null);
 }
 
 function artistNames(doc: JsonApiDocument, resource: Resource): string {

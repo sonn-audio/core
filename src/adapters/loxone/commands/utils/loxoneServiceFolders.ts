@@ -100,6 +100,19 @@ const SLOT_NODES: Record<string, ServiceSlots> = {
     },
     projectRoot: false,
   },
+  // Tidal's account sections: its mixes where the app shows featured content, the account's own
+  // playlists, and the favourites by kind. The root goes out under its own names (My Collection
+  // has no slot of its own; its sections do).
+  tidal: {
+    nodes: {
+      '0': 'mixes',
+      '3': 'playlists',
+      '4': 'collection-tracks',
+      '5': 'collection-albums',
+      '6': 'collection-artists',
+    },
+    projectRoot: false,
+  },
   // Deezer's four chart feeds and Music Assistant's library sections have always
   // gone out under their own names, so they stay that way (projectRoot: false).
   deezer: {

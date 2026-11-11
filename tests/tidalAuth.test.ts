@@ -716,6 +716,211 @@ test('when v1 refuses the token ("Required scopes: r_usr"), the provider moves t
   assert.equal(calls.filter((c) => c.url.includes('api.tidal.com/v1')).length, 1);
 });
 
+// ── browsing the account ───────────────────────────────────────────────────────
+
+// Shaped like openapi.tidal.com/v2's answers for a signed-in third-party app: relationship pages
+// hold linkage (with `meta.addedAt`) and the resources in `included`; the next page is a cursor in
+// `links.next` and `links.meta.nextCursor`. Ids, names and URLs are made up.
+
+const artwork = (id: string) => ({
+  id,
+  type: 'artworks',
+  attributes: {
+    mediaType: 'IMAGE',
+    files: [
+      { href: `https://resources.tidal.com/images/${id}/160x160.jpg`, type: 'image/jpeg', meta: { width: 160, height: 160 } },
+      { href: `https://resources.tidal.com/images/${id}/320x320.jpg`, type: 'image/jpeg', meta: { width: 320, height: 320 } },
+    ],
+  },
+});
+const cover = (id: string) => `https://resources.tidal.com/images/${id}/320x320.jpg`;
+
+const COLLECTION_INCLUDED = [
+  { id: '9001', type: 'tracks', attributes: { title: 'First', version: null, duration: 'PT3M18S' }, relationships: { albums: { data: [{ id: '8001', type: 'albums' }] }, artists: { data: [{ id: '7001', type: 'artists' }] } } },
+  { id: '9002', type: 'tracks', attributes: { title: 'Second', version: null, duration: 'PT2M5S' }, relationships: { albums: { data: [{ id: '8001', type: 'albums' }] }, artists: { data: [{ id: '7001', type: 'artists' }] } } },
+  { id: '8001', type: 'albums', attributes: { title: 'Record', albumType: 'ALBUM' }, relationships: { coverArt: { data: [{ id: 'art8001', type: 'artworks' }] }, artists: { data: [{ id: '7001', type: 'artists' }] } } },
+  { id: '8002', type: 'albums', attributes: { title: 'Single', albumType: 'SINGLE' }, relationships: { coverArt: { data: [{ id: 'art8002', type: 'artworks' }] }, artists: { data: [{ id: '7001', type: 'artists' }] } } },
+  { id: '7001', type: 'artists', attributes: { name: 'Band' }, relationships: { profileArt: { data: [{ id: 'art7001', type: 'artworks' }] } } },
+  { id: '7002', type: 'artists', attributes: { name: 'Singer' }, relationships: { profileArt: { data: [] } } },
+  { id: 'aaaa-1111', type: 'playlists', attributes: { name: 'Road Trip', playlistType: 'USER', numberOfItems: 12 }, relationships: { coverArt: { data: [{ id: 'artpl1', type: 'artworks' }] } } },
+  { id: 'bbbb-2222', type: 'playlists', attributes: { name: 'Editors Pick', playlistType: 'EDITORIAL', numberOfItems: 50 }, relationships: { coverArt: { data: [] } } },
+  artwork('art8001'),
+  artwork('art8002'),
+  artwork('art7001'),
+  artwork('artpl1'),
+];
+
+/** A two-page relationship: the first identifier on the page without a cursor, the second after it. */
+function pagedRelationship(path: string, pages: [Array<{ id: string; type: string }>, Array<{ id: string; type: string }>]): Handler {
+  return (call) => {
+    const second = new URL(call.url).searchParams.get('page[cursor]') === 'CURSOR2';
+    const data = (second ? pages[1] : pages[0]).map((id) => ({ ...id, meta: { addedAt: '2026-10-01T12:00:00Z' } }));
+    const links: Record<string, unknown> = { self: `/${path}?countryCode=NL` };
+    if (!second) {
+      links.next = `/${path}?countryCode=NL&page%5Bcursor%5D=CURSOR2`;
+      links.meta = { nextCursor: 'CURSOR2' };
+    }
+    return json(200, { data, links, included: COLLECTION_INCLUDED });
+  };
+}
+
+const COLLECTION_ROUTES: Array<[RegExp, Handler]> = [
+  [/\/v2\/userCollectionTracks\/me\/relationships\/items/, pagedRelationship('userCollectionTracks/me/relationships/items', [[{ id: '9001', type: 'tracks' }], [{ id: '9002', type: 'tracks' }]])],
+  [/\/v2\/userCollectionAlbums\/me\/relationships\/items/, pagedRelationship('userCollectionAlbums/me/relationships/items', [[{ id: '8001', type: 'albums' }], [{ id: '8002', type: 'albums' }]])],
+  [/\/v2\/userCollectionArtists\/me\/relationships\/items/, pagedRelationship('userCollectionArtists/me/relationships/items', [[{ id: '7001', type: 'artists' }], [{ id: '7002', type: 'artists' }]])],
+  [/\/v2\/userCollectionPlaylists\/me\/relationships\/items/, pagedRelationship('userCollectionPlaylists/me/relationships/items', [[{ id: 'aaaa-1111', type: 'playlists' }], [{ id: 'bbbb-2222', type: 'playlists' }]])],
+];
+
+test('the Tidal root offers the collection, the own playlists and, on the official API, the mixes', async () => {
+  const openapi = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth: fakeAccess('openapi', []).auth });
+  const root = await openapi.getFolder('root', 0, 50);
+  assert.deepEqual(root?.items.map((i) => [i.id, i.name, i.kind]), [
+    ['collection', 'My Collection', 'category'],
+    ['playlists', 'My Playlists', 'category'],
+    ['mixes', 'Mixes', 'category'],
+  ]);
+  assert.equal(root?.totalitems, 3);
+
+  const collection = await openapi.getFolder('tidal:collection', 0, 50);
+  assert.deepEqual(collection?.items.map((i) => i.id), ['collection-tracks', 'collection-albums', 'collection-artists', 'collection-playlists']);
+
+  const { auth, calls } = fakeAccess('v1', []);
+  const v1 = await new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth }).getFolder('start', 0, 50);
+  assert.deepEqual(v1?.items.map((i) => i.id), ['collection', 'playlists'], 'v1 has no mixes resource');
+  assert.equal(calls.length, 0, 'the root itself asks Tidal nothing');
+});
+
+test('each collection folder reads its v2 collection and pages across the cursor', async () => {
+  const { auth, calls } = fakeAccess('openapi', COLLECTION_ROUTES);
+  const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
+
+  const tracks = await provider.getFolder('collection-tracks', 0, 2);
+  assert.equal(tracks?.name, 'Tracks');
+  assert.deepEqual(tracks?.items.map((i) => [i.audiopath, i.name, i.artist, i.album, i.duration, i.kind]), [
+    ['tidal:track:9001', 'First', 'Band', 'Record', 198, 'track'],
+    ['tidal:track:9002', 'Second', 'Band', 'Record', 125, 'track'],
+  ]);
+  assert.equal(tracks?.items[0]?.coverurl, cover('art8001'));
+  assert.equal(tracks?.totalitems, 2);
+  const first = new URL(calls[0]!.url);
+  assert.equal(first.searchParams.get('include'), 'items.artists,items.albums.coverArt');
+  assert.equal(first.searchParams.get('page[cursor]'), null);
+  assert.equal(new URL(calls[1]!.url).searchParams.get('page[cursor]'), 'CURSOR2');
+
+  // A window past the first page walks to it; a window inside it stops there and says there is more.
+  const second = await provider.getFolder('collection-albums', 1, 1);
+  assert.deepEqual(second?.items.map((i) => [i.audiopath, i.name, i.kind, i.coverurl]), [['tidal:album:8002', 'Single', 'album', cover('art8002')]]);
+  calls.length = 0;
+  const window = await provider.getFolder('collection-artists', 0, 1);
+  assert.deepEqual(window?.items.map((i) => [i.audiopath, i.name, i.kind, i.coverurl]), [['tidal:artist:7001', 'Band', 'artist', cover('art7001')]]);
+  assert.equal(calls.length, 1);
+  assert.ok((window?.totalitems ?? 0) > 1, 'a client is told to page on');
+
+  calls.length = 0;
+  const playlists = await provider.getFolder('collection-playlists', 0, 10);
+  assert.deepEqual(playlists?.items.map((i) => [i.audiopath, i.name, i.kind]), [
+    ['tidal:playlist:aaaa-1111', 'Road Trip', 'playlist'],
+    ['tidal:playlist:bbbb-2222', 'Editors Pick', 'playlist'],
+  ]);
+  assert.equal(new URL(calls[0]!.url).searchParams.get('collectionView'), 'FLAT', 'the playlists inside folders, not the folders');
+  assert.equal(new URL(calls[1]!.url).searchParams.get('collectionView'), 'FLAT', 'the cursor keeps the view');
+  assert.ok(calls.every((c) => c.headers.get('Accept') === 'application/vnd.api+json'));
+});
+
+test('My Playlists lists the playlists the account owns from the v2 playlists collection', async () => {
+  // A collection, not a relationship: `data` holds the playlists themselves.
+  const { auth, calls } = fakeAccess('openapi', [
+    [/\/v2\/playlists\?/, () =>
+      json(200, {
+        data: [
+          { id: 'cccc-3333', type: 'playlists', attributes: { name: 'Mine', playlistType: 'USER', numberOfItems: 3 }, relationships: { coverArt: { data: [{ id: 'artpl1', type: 'artworks' }] } } },
+        ],
+        links: { self: '/playlists?filter%5Bowners.id%5D=me&countryCode=NL' },
+        included: [artwork('artpl1')],
+      })],
+  ]);
+  const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
+  const folder = await provider.getFolder('playlists', 0, 50);
+  assert.equal(folder?.name, 'My Playlists');
+  assert.deepEqual(folder?.items.map((i) => [i.audiopath, i.name, i.coverurl, i.kind]), [['tidal:playlist:cccc-3333', 'Mine', cover('artpl1'), 'playlist']]);
+  const url = new URL(calls[0]!.url);
+  assert.equal(url.searchParams.get('filter[owners.id]'), 'me');
+  assert.equal(url.searchParams.get('include'), 'coverArt');
+});
+
+test('Mixes joins the daily, discovery and new-release mixes as playlists that open like any other', async () => {
+  const mix = (id: string, name: string) => ({ id, type: 'playlists', attributes: { name, playlistType: 'MIX' }, relationships: { coverArt: { data: [{ id: `art-${id}`, type: 'artworks' }] } } });
+  const page = (ids: string[], names: string[]): Handler => () =>
+    json(200, {
+      data: ids.map((id) => ({ id, type: 'playlists' })),
+      links: { self: '/x' },
+      included: [...ids.map((id, i) => mix(id, names[i]!)), ...ids.map((id) => artwork(`art-${id}`))],
+    });
+  const { auth, calls } = fakeAccess('openapi', [
+    [/\/v2\/userDailyMixes\/me\/relationships\/items/, page(['0011aa', '0022bb'], ['My Mix 1', 'My Mix 2'])],
+    [/\/v2\/userDiscoveryMixes\/me\/relationships\/items/, page(['0033cc'], ['My Daily Discovery'])],
+    // The same mix twice is listed once.
+    [/\/v2\/userNewReleaseMixes\/me\/relationships\/items/, page(['0044dd', '0011aa'], ['My New Arrivals', 'My Mix 1'])],
+  ]);
+  const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
+  const all = await provider.getFolder('mixes', 0, 50);
+  assert.deepEqual(all?.items.map((i) => [i.audiopath, i.name, i.owner]), [
+    ['tidal:playlist:0011aa', 'My Mix 1', 'TIDAL'],
+    ['tidal:playlist:0022bb', 'My Mix 2', 'TIDAL'],
+    ['tidal:playlist:0033cc', 'My Daily Discovery', 'TIDAL'],
+    ['tidal:playlist:0044dd', 'My New Arrivals', 'TIDAL'],
+  ]);
+  assert.equal(all?.items[0]?.coverurl, cover('art-0011aa'));
+  assert.equal(all?.totalitems, 4);
+  assert.equal(new URL(calls[0]!.url).searchParams.get('include'), 'items.coverArt');
+  const window = await provider.getFolder('mixes', 2, 1);
+  assert.deepEqual(window?.items.map((i) => i.name), ['My Daily Discovery']);
+  assert.equal(window?.totalitems, 4);
+});
+
+test('a device-flow account browses its favourites and playlists through v1, offset-paginated', async () => {
+  const { auth, calls } = fakeAccess('v1', [
+    [/api\.tidal\.com\/v1\/sessions/, () => json(200, { sessionId: 's', userId: 4242, countryCode: 'NL' })],
+    [/api\.tidal\.com\/v1\/users\/4242\/favorites\/tracks/, () =>
+      json(200, {
+        limit: 1,
+        offset: 1,
+        totalNumberOfItems: 3,
+        items: [{ created: '2026-10-01T12:00:00.000+0000', item: { id: 55, title: 'Fav', duration: 200, artist: { name: 'Band' }, album: { title: 'Record', cover: 'ab-cd' } } }],
+      })],
+    [/api\.tidal\.com\/v1\/users\/4242\/playlists/, () =>
+      json(200, { limit: 50, offset: 0, totalNumberOfItems: 1, items: [{ uuid: 'dddd-4444', title: 'Own', creator: { id: 4242 }, squareImage: 'ef-01' }] })],
+  ]);
+  const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
+  const tracks = await provider.getFolder('collection-tracks', 1, 1);
+  assert.deepEqual(tracks?.items.map((i) => [i.audiopath, i.name, i.coverurl]), [['tidal:track:55', 'Fav', 'https://resources.tidal.com/images/ab/cd/320x320.jpg']]);
+  assert.equal(tracks?.totalitems, 3);
+  const favUrl = new URL(calls[1]!.url);
+  assert.equal(favUrl.searchParams.get('offset'), '1');
+  assert.equal(favUrl.searchParams.get('limit'), '1');
+  assert.equal(favUrl.searchParams.get('order'), 'DATE');
+
+  const playlists = await provider.getFolder('playlists', 0, 50);
+  assert.deepEqual(playlists?.items.map((i) => i.audiopath), ['tidal:playlist:dddd-4444']);
+  assert.equal(calls.filter((c) => c.url.includes('/sessions')).length, 1, 'the user id is asked once');
+  assert.ok(calls.every((c) => c.url.includes('api.tidal.com/v1/')), 'nothing went to openapi');
+});
+
+test('a v1 account whose favourites v1 refuses reads them from openapi instead', async () => {
+  const { auth, calls } = fakeAccess('v1', [
+    [/api\.tidal\.com\/v1\/sessions/, () => json(200, { userId: 4242 })],
+    [/api\.tidal\.com\/v1\/users\//, () => json(403, { status: 403, subStatus: 1002, userMessage: 'Required scopes: r_usr' })],
+    ...COLLECTION_ROUTES,
+  ]);
+  const provider = new TidalProvider({ providerId: 'tidal', serviceId: 'bridge-tidal-1', auth });
+  const albums = await provider.getFolder('collection-albums', 0, 5);
+  assert.deepEqual(albums?.items.map((i) => i.audiopath), ['tidal:album:8001', 'tidal:album:8002']);
+  assert.ok(calls.some((c) => c.url.includes('openapi.tidal.com/v2/userCollectionAlbums')));
+  // Now on the official API, the root offers the mixes too.
+  const root = await provider.getFolder('root', 0, 50);
+  assert.ok(root?.items.some((i) => i.id === 'mixes'));
+});
+
 // ── saving the service ─────────────────────────────────────────────────────────
 
 test('saving a Tidal service collects its sign-in, and re-saving keeps it', async () => {
