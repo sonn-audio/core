@@ -1,18 +1,10 @@
-import crypto from 'crypto';
+import { createPkcePair as createPair } from '@/adapters/content/oauth/pkce';
 
 const pkceState = new Map<string, string>();
 
-function base64UrlEncode(buffer: Buffer): string {
-  return buffer
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
-}
-
 export function createPkcePair(stateKey: string): { codeChallenge: string } {
-  const verifier = base64UrlEncode(crypto.randomBytes(32));
-  const challenge = base64UrlEncode(crypto.createHash('sha256').update(verifier).digest());
+  // 32 bytes: the 43-character verifier Spotify has always been sent.
+  const { verifier, challenge } = createPair(32);
   pkceState.set(stateKey, verifier);
   return { codeChallenge: challenge };
 }

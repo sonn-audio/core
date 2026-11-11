@@ -6,6 +6,7 @@ import type { ContentManager } from '@/adapters/content/contentManager';
 import { consumePkceVerifier } from '@/adapters/content/providers/spotify/pkce';
 import { resolveSpotifyClientId } from '@/adapters/content/providers/spotify/utils';
 import { createPkcePair } from '@/adapters/content/providers/spotify/pkce';
+import { extractCodeAndState } from '@/adapters/content/oauth/oauthRedirect';
 import type { NotifierPort } from '@/ports/NotifierPort';
 import type { SpotifyInputService } from '@/adapters/inputs/spotify/spotifyInputService';
 import type { ConfigPort } from '@/ports/ConfigPort';
@@ -312,38 +313,6 @@ function reinitializeSpotifyInputs(
     const message = error instanceof Error ? error.message : String(error);
     log.warn('spotify inputs reinit failed', { reason, accountId, message });
   }
-}
-
-function extractCodeAndState(code: string, state: string): { code: string; state: string } {
-  let normalizedCode = code?.trim() ?? '';
-  let normalizedState = state?.trim() ?? '';
-
-  // Some redirect flows append ?code=... directly onto state
-  const stateQueryIdx = normalizedState.indexOf('?code=');
-  if (stateQueryIdx >= 0) {
-    const embedded = normalizedState.slice(stateQueryIdx + '?code='.length);
-    const [codeFromState] = embedded.split('&');
-    if (!normalizedCode && codeFromState) {
-      normalizedCode = decodeURIComponent(codeFromState);
-    }
-    normalizedState = normalizedState.slice(0, stateQueryIdx);
-  }
-
-  // state may contain the local callback URL; peel off nested params if present
-  try {
-    const decoded = decodeURIComponent(normalizedState);
-    if (decoded.startsWith('http')) {
-      const nested = new URL(decoded);
-      normalizedState = nested.searchParams.get('state') ?? normalizedState;
-      if (!normalizedCode) {
-        normalizedCode = nested.searchParams.get('code') ?? normalizedCode;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-
-  return { code: normalizedCode, state: normalizedState };
 }
 
 function renderError(
