@@ -469,8 +469,8 @@ export interface StreamingServiceConfig {
   tidalCountryCode?: string;
   /**
    * The Tidal client the device sign-in runs as: one TIDAL allows the device flow (secret
-   * optional). There is no built-in client. The SONN_TIDAL_CLIENT_ID / SONN_TIDAL_CLIENT_SECRET
-   * environment variables take precedence.
+   * optional). The SONN_TIDAL_CLIENT_ID / SONN_TIDAL_CLIENT_SECRET environment variables take
+   * precedence; a release image's built-in client is used only when neither names one.
    */
   tidalClientId?: string;
   tidalClientSecret?: string;

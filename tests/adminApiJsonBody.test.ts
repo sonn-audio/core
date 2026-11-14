@@ -166,7 +166,7 @@ function createHandler(): AdminApiHandler {
       takeCredentials: () => null,
     },
     tidalAdmin: {
-      clientStatus: () => ({ envConfigured: false }),
+      clientStatus: () => ({ envConfigured: false, source: null }),
       startLogin: async () => ({ ok: false, error: 'failed', message: '' }),
       loginStatus: () => ({ state: 'pending' }),
       takeSession: () => null,

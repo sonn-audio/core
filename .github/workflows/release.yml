@@ -118,30 +118,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
-      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
-      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
-      # leaves the CDM out — a fork still builds.
-      - name: Prepare the Widevine CDM
-        id: widevine
+      # What the image is built with so it works without setup: the Widevine CDM Apple Music and
+      # Amazon Music decrypt with, and the TIDAL client the device sign-in runs as. The CDM secrets
+      # hold the files base64-encoded, because client_id.bin is binary and a secret is text; the
+      # TIDAL ones are plain. Whatever is not set is left out of the build, which then carries
+      # none of it — a fork still builds.
+      - name: Prepare the build secrets
+        id: build_secrets
         shell: bash
         env:
           WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
           WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+          TIDAL_CLIENT_ID: ${{ secrets.TIDAL_CLIENT_ID }}
+          TIDAL_CLIENT_SECRET: ${{ secrets.TIDAL_CLIENT_SECRET }}
         run: |
           umask 077
-          mkdir -p "$RUNNER_TEMP/widevine_cdm"
-          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
-          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
-          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
-            {
-              echo "secret_files<<EOF"
-              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
-              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+          dir="$RUNNER_TEMP/build_secrets"
+          mkdir -p "$dir"
+          files=()
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$dir/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$dir/client_id.bin"
+          if [ -s "$dir/private_key.pem" ] && [ -s "$dir/client_id.bin" ]; then
+            files+=("widevine_private_key=$dir/private_key.pem" "widevine_client_id=$dir/client_id.bin")
           else
             echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+          printf '%s' "$TIDAL_CLIENT_ID" > "$dir/tidal_client_id"
+          printf '%s' "$TIDAL_CLIENT_SECRET" > "$dir/tidal_client_secret"
+          if [ -s "$dir/tidal_client_id" ]; then
+            files+=("tidal_client_id=$dir/tidal_client_id")
+            [ -s "$dir/tidal_client_secret" ] && files+=("tidal_client_secret=$dir/tidal_client_secret")
+          else
+            echo "::warning::TIDAL client secrets are not set; this image will carry no TIDAL client."
+          fi
+          if [ "${#files[@]}" -gt 0 ]; then
+            {
+              echo "secret_files<<EOF"
+              printf '%s\n' "${files[@]}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push Docker image
@@ -151,7 +166,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          secret-files: ${{ steps.widevine.outputs.secret_files }}
+          secret-files: ${{ steps.build_secrets.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.release_meta.outputs.version }}
             BUILD_CHANNEL=${{ steps.release_meta.outputs.prerelease == 'true' && 'beta' || 'stable' }}
@@ -217,30 +232,45 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_id=dev-$BUILD_TS" >> "$GITHUB_OUTPUT"
 
-      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
-      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
-      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
-      # leaves the CDM out — a fork still builds.
-      - name: Prepare the Widevine CDM
-        id: widevine
+      # What the image is built with so it works without setup: the Widevine CDM Apple Music and
+      # Amazon Music decrypt with, and the TIDAL client the device sign-in runs as. The CDM secrets
+      # hold the files base64-encoded, because client_id.bin is binary and a secret is text; the
+      # TIDAL ones are plain. Whatever is not set is left out of the build, which then carries
+      # none of it — a fork still builds.
+      - name: Prepare the build secrets
+        id: build_secrets
         shell: bash
         env:
           WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
           WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+          TIDAL_CLIENT_ID: ${{ secrets.TIDAL_CLIENT_ID }}
+          TIDAL_CLIENT_SECRET: ${{ secrets.TIDAL_CLIENT_SECRET }}
         run: |
           umask 077
-          mkdir -p "$RUNNER_TEMP/widevine_cdm"
-          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
-          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
-          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
-            {
-              echo "secret_files<<EOF"
-              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
-              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+          dir="$RUNNER_TEMP/build_secrets"
+          mkdir -p "$dir"
+          files=()
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$dir/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$dir/client_id.bin"
+          if [ -s "$dir/private_key.pem" ] && [ -s "$dir/client_id.bin" ]; then
+            files+=("widevine_private_key=$dir/private_key.pem" "widevine_client_id=$dir/client_id.bin")
           else
             echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+          printf '%s' "$TIDAL_CLIENT_ID" > "$dir/tidal_client_id"
+          printf '%s' "$TIDAL_CLIENT_SECRET" > "$dir/tidal_client_secret"
+          if [ -s "$dir/tidal_client_id" ]; then
+            files+=("tidal_client_id=$dir/tidal_client_id")
+            [ -s "$dir/tidal_client_secret" ] && files+=("tidal_client_secret=$dir/tidal_client_secret")
+          else
+            echo "::warning::TIDAL client secrets are not set; this image will carry no TIDAL client."
+          fi
+          if [ "${#files[@]}" -gt 0 ]; then
+            {
+              echo "secret_files<<EOF"
+              printf '%s\n' "${files[@]}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push Docker image (dev)
@@ -250,7 +280,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev,ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-latest
-          secret-files: ${{ steps.widevine.outputs.secret_files }}
+          secret-files: ${{ steps.build_secrets.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.dev_meta.outputs.version }}
             BUILD_TIMESTAMP=${{ steps.dev_meta.outputs.build_id }}
@@ -312,30 +342,45 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_id=testing-$BUILD_TS" >> "$GITHUB_OUTPUT"
 
-      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
-      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
-      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
-      # leaves the CDM out — a fork still builds.
-      - name: Prepare the Widevine CDM
-        id: widevine
+      # What the image is built with so it works without setup: the Widevine CDM Apple Music and
+      # Amazon Music decrypt with, and the TIDAL client the device sign-in runs as. The CDM secrets
+      # hold the files base64-encoded, because client_id.bin is binary and a secret is text; the
+      # TIDAL ones are plain. Whatever is not set is left out of the build, which then carries
+      # none of it — a fork still builds.
+      - name: Prepare the build secrets
+        id: build_secrets
         shell: bash
         env:
           WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
           WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+          TIDAL_CLIENT_ID: ${{ secrets.TIDAL_CLIENT_ID }}
+          TIDAL_CLIENT_SECRET: ${{ secrets.TIDAL_CLIENT_SECRET }}
         run: |
           umask 077
-          mkdir -p "$RUNNER_TEMP/widevine_cdm"
-          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
-          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
-          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
-            {
-              echo "secret_files<<EOF"
-              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
-              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+          dir="$RUNNER_TEMP/build_secrets"
+          mkdir -p "$dir"
+          files=()
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$dir/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$dir/client_id.bin"
+          if [ -s "$dir/private_key.pem" ] && [ -s "$dir/client_id.bin" ]; then
+            files+=("widevine_private_key=$dir/private_key.pem" "widevine_client_id=$dir/client_id.bin")
           else
             echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+          printf '%s' "$TIDAL_CLIENT_ID" > "$dir/tidal_client_id"
+          printf '%s' "$TIDAL_CLIENT_SECRET" > "$dir/tidal_client_secret"
+          if [ -s "$dir/tidal_client_id" ]; then
+            files+=("tidal_client_id=$dir/tidal_client_id")
+            [ -s "$dir/tidal_client_secret" ] && files+=("tidal_client_secret=$dir/tidal_client_secret")
+          else
+            echo "::warning::TIDAL client secrets are not set; this image will carry no TIDAL client."
+          fi
+          if [ "${#files[@]}" -gt 0 ]; then
+            {
+              echo "secret_files<<EOF"
+              printf '%s\n' "${files[@]}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push Docker image (testing)
@@ -345,7 +390,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:testing,ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:testing-latest
-          secret-files: ${{ steps.widevine.outputs.secret_files }}
+          secret-files: ${{ steps.build_secrets.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.test_meta.outputs.version }}
             BUILD_TIMESTAMP=${{ steps.test_meta.outputs.build_id }}

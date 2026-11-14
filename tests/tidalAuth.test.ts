@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from './testHarness';
 import {
+  bundledTidalClient,
   fetchTidalIdentity,
   resolveTidalClient,
   TIDAL_SCOPE,
@@ -89,8 +93,27 @@ test('the Tidal client comes from the environment first, then the service config
     clientSecret: undefined,
     source: 'config',
   });
-  // There is no built-in client to fall back on.
   assert.equal(resolveTidalClient({}, NO_ENV), null);
+});
+
+// The client a release image is built with is the last resort: a client someone named on purpose,
+// in the environment or the service, must never be hidden behind it.
+test('the bundled Tidal client is used only when neither the environment nor the service names one', () => {
+  const bundled = { clientId: 'image-client', clientSecret: 'image-secret' };
+  assert.deepEqual(resolveTidalClient({}, NO_ENV, bundled), { ...bundled, source: 'bundled' });
+  assert.equal(resolveTidalClient({ tidalClientId: 'cfg' }, NO_ENV, bundled)?.source, 'config');
+  assert.equal(resolveTidalClient({}, CLIENT_ENV, bundled)?.source, 'env');
+});
+
+test('a build without a Tidal client reads as none', async () => {
+  const empty = await mkdtemp(join(tmpdir(), 'sonn-tidal-client-'));
+  try {
+    assert.equal(bundledTidalClient(empty), null);
+    await writeFile(join(empty, 'client_id'), ' image-client\n');
+    assert.deepEqual(bundledTidalClient(empty), { clientId: 'image-client', clientSecret: undefined });
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+  }
 });
 
 function silentLog() {
@@ -115,11 +138,15 @@ function tidalRoutes(admin: TidalAdminPort, body: () => unknown) {
   return { routes, call };
 }
 
-test('the client route says whether the environment names a client, and nothing else', async () => {
-  const none = createTidalAdmin({ store: memoryStore([]), env: NO_ENV });
-  assert.deepEqual(none.clientStatus(), { envConfigured: false });
-  const withEnv = createTidalAdmin({ store: memoryStore([]), env: CLIENT_ENV });
-  assert.deepEqual((await tidalRoutes(withEnv, () => null).call('GET', '/tidal/client'))?.body, { envConfigured: true });
+test('the client route says whether the server provides a client, and where from', async () => {
+  const none = createTidalAdmin({ store: memoryStore([]), env: NO_ENV, bundledClient: null });
+  assert.deepEqual(none.clientStatus(), { envConfigured: false, source: null });
+  const withEnv = createTidalAdmin({ store: memoryStore([]), env: CLIENT_ENV, bundledClient: null });
+  assert.deepEqual((await tidalRoutes(withEnv, () => null).call('GET', '/tidal/client'))?.body, { envConfigured: true, source: 'env' });
+  // envConfigured stays true for a bundled client, so a console that predates `source` still
+  // lets the sign-in start without a client of its own.
+  const withImage = createTidalAdmin({ store: memoryStore([]), env: NO_ENV, bundledClient: { clientId: 'image-client' } });
+  assert.deepEqual(withImage.clientStatus(), { envConfigured: true, source: 'bundled' });
 });
 
 test('only the device sign-in is left: no callback, no paste-back, no browser mode', async () => {

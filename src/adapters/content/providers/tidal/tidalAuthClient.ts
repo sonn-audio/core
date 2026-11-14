@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { StreamingServiceConfig } from '@/domain/config/types';
 import { JSONAPI_CONTENT_TYPE, TIDAL_OPENAPI_BASE } from '@/adapters/content/providers/tidal/tidalOpenApi';
 
@@ -10,8 +12,8 @@ import { JSONAPI_CONTENT_TYPE, TIDAL_OPENAPI_BASE } from '@/adapters/content/pro
  * `Client is not a Limited Input Device client`. The browser sign-in at login.tidal.com that TIDAL
  * offers apps from developer.tidal.com is not used: TIDAL gives such an app 30-second previews only.
  *
- * sonn ships no client of its own; it comes from the environment or the service's config — see
- * {@link resolveTidalClient}.
+ * The client comes from the environment, the service's config, or — last — the one a release image
+ * is built with; see {@link resolveTidalClient}.
  */
 
 export const TIDAL_AUTH_URL = 'https://auth.tidal.com/v1/oauth2';
@@ -27,12 +29,41 @@ export const TIDAL_CLIENT_SECRET_ENV = 'SONN_TIDAL_CLIENT_SECRET';
 
 export type FetchFn = typeof fetch;
 
-export type TidalClient = {
+export type TidalClientCredentials = {
   clientId: string;
   clientSecret?: string;
-  /** Where it came from: the environment, then the service's config. */
-  source: 'env' | 'config';
 };
+
+export type TidalClient = TidalClientCredentials & {
+  /** Where it came from: the environment, the service's config, or the image it was built into. */
+  source: 'env' | 'config' | 'bundled';
+};
+
+/**
+ * Where a release image keeps the client it was built with: beside the code, not under `data/`,
+ * which is a volume and would hide it. The files arrive as build secrets, so they are in neither
+ * the repository nor the build context.
+ */
+const BUNDLED_CLIENT_DIR = resolve(process.cwd(), 'tidal_client');
+
+let bundledCache: TidalClientCredentials | null | undefined;
+
+function readTrimmed(filePath: string): string | undefined {
+  try {
+    return readFileSync(filePath, 'utf-8').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The client this image was built with, or null for a build without one (a fork, a local build). */
+export function bundledTidalClient(dir: string = BUNDLED_CLIENT_DIR): TidalClientCredentials | null {
+  if (dir === BUNDLED_CLIENT_DIR && bundledCache !== undefined) return bundledCache;
+  const clientId = readTrimmed(join(dir, 'client_id'));
+  const found = clientId ? { clientId, clientSecret: readTrimmed(join(dir, 'client_secret')) } : null;
+  if (dir === BUNDLED_CLIENT_DIR) bundledCache = found;
+  return found;
+}
 
 export type TidalDeviceAuthorization = {
   deviceCode: string;
@@ -81,12 +112,14 @@ export class TidalAuthError extends Error {
 }
 
 /**
- * The client the sign-in and refresh run as: the environment first, then the service's config.
- * Null when neither names one: there is no built-in client, so a sign-in needs one first.
+ * The client the sign-in and refresh run as: the environment first, then the service's config,
+ * then the one the image was built with. A client someone named on purpose wins over the bundled
+ * one, so the bundled one never hides a setting. Null when none of the three names a client.
  */
 export function resolveTidalClient(
   service?: Pick<StreamingServiceConfig, 'tidalClientId' | 'tidalClientSecret'> | null,
   env: Record<string, string | undefined> = process.env,
+  bundled: TidalClientCredentials | null = null,
 ): TidalClient | null {
   const envId = env[TIDAL_CLIENT_ID_ENV]?.trim();
   if (envId) {
@@ -95,6 +128,9 @@ export function resolveTidalClient(
   const configId = service?.tidalClientId?.trim();
   if (configId) {
     return { clientId: configId, clientSecret: service?.tidalClientSecret?.trim() || undefined, source: 'config' };
+  }
+  if (bundled?.clientId) {
+    return { clientId: bundled.clientId, clientSecret: bundled.clientSecret, source: 'bundled' };
   }
   return null;
 }

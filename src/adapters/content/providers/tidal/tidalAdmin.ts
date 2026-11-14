@@ -9,6 +9,7 @@ import type {
 import { createLogger } from '@/shared/logging/logger';
 import type { TidalSessionStore } from '@/adapters/content/providers/tidal/tidalAuth';
 import {
+  bundledTidalClient,
   fetchTidalIdentity,
   pollDeviceToken,
   resolveTidalClient,
@@ -17,6 +18,7 @@ import {
   TIDAL_CLIENT_ID_ENV,
   type FetchFn,
   type TidalClient,
+  type TidalClientCredentials,
   type TidalTokens,
 } from '@/adapters/content/providers/tidal/tidalAuthClient';
 
@@ -49,6 +51,8 @@ type Deps = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   env?: Record<string, string | undefined>;
+  /** The client the image was built with; read from the image when not given. */
+  bundledClient?: TidalClientCredentials | null;
   /** Told when a service signs out, so its refresh bookkeeping starts afresh. */
   onSignedOut?: (serviceId: string) => void;
 };
@@ -73,6 +77,7 @@ export function createTidalAdmin(deps: Deps): TidalAdmin {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
   const env = deps.env ?? process.env;
+  const bundled = deps.bundledClient === undefined ? bundledTidalClient() : deps.bundledClient;
   const logins = new Map<string, Entry>();
   const runs = new Map<string, Promise<void>>();
 
@@ -92,14 +97,15 @@ export function createTidalAdmin(deps: Deps): TidalAdmin {
 
   /**
    * The client to sign in as: the environment wins; then what the form holds now (it may not be
-   * saved yet); then what is saved. Null when none names one — there is no built-in client.
+   * saved yet); then what is saved; then the one the image was built with. Null when none names one.
    */
   const resolveClient = (input: { serviceId?: string; clientId?: string; clientSecret?: string }): TidalClient | null => {
     const stored = input.serviceId ? deps.store.getService(input.serviceId) : undefined;
     return (
       resolveTidalClient(null, env) ??
       resolveTidalClient({ tidalClientId: input.clientId, tidalClientSecret: input.clientSecret }, {}) ??
-      resolveTidalClient(stored, {})
+      resolveTidalClient(stored, {}) ??
+      resolveTidalClient(null, {}, bundled)
     );
   };
 
@@ -211,7 +217,10 @@ export function createTidalAdmin(deps: Deps): TidalAdmin {
   };
 
   return {
-    clientStatus: () => ({ envConfigured: resolveTidalClient(null, env)?.source === 'env' }),
+    clientStatus: () => {
+      const server = resolveTidalClient(null, env, bundled);
+      return { envConfigured: server !== null, source: server ? (server.source === 'env' ? 'env' : 'bundled') : null };
+    },
 
     startLogin: async (input): Promise<TidalLoginStart> => {
       prune();

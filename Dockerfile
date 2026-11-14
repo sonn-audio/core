@@ -110,6 +110,20 @@ RUN --mount=type=secret,id=widevine_private_key \
     else \
         echo "widevine cdm: not provided, image carries none"; \
     fi
+# The TIDAL client the device sign-in runs as, the same way: build secrets, beside the code, both
+# optional. It is the last resort — SONN_TIDAL_CLIENT_ID and a client set on the service win.
+RUN --mount=type=secret,id=tidal_client_id \
+    --mount=type=secret,id=tidal_client_secret \
+    if [ -s /run/secrets/tidal_client_id ]; then \
+        install -d -o node -g node /app/tidal_client \
+        && install -o node -g node -m 0644 /run/secrets/tidal_client_id /app/tidal_client/client_id \
+        && if [ -s /run/secrets/tidal_client_secret ]; then \
+               install -o node -g node -m 0644 /run/secrets/tidal_client_secret /app/tidal_client/client_secret; \
+           fi \
+        && echo "tidal client: bundled"; \
+    else \
+        echo "tidal client: not provided, image carries none"; \
+    fi
 RUN mkdir -p /app/data/.cache && chown -R node:node /app/data
 # Start the application
 CMD ["node", "dist/server.js"]

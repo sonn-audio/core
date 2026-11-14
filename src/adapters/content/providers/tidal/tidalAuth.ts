@@ -2,11 +2,13 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 import type { StreamingServiceConfig, TidalQuality, TidalSession } from '@/domain/config/types';
 import { createLogger } from '@/shared/logging/logger';
 import {
+  bundledTidalClient,
   refreshTidalTokens,
   resolveTidalClient,
   TidalAuthError,
   TIDAL_CLIENT_ID_ENV,
   type FetchFn,
+  type TidalClientCredentials,
 } from '@/adapters/content/providers/tidal/tidalAuthClient';
 
 /** Refresh this long before the access token runs out, so no request goes out with a dying one. */
@@ -49,6 +51,8 @@ type Deps = {
   fetchFn?: FetchFn;
   now?: () => number;
   env?: Record<string, string | undefined>;
+  /** The client the image was built with; read from the image when not given. */
+  bundledClient?: TidalClientCredentials | null;
 };
 
 /**
@@ -63,6 +67,7 @@ export class TidalAuth implements TidalApiAccess {
   private readonly fetchFn: FetchFn;
   private readonly now: () => number;
   private readonly env: Record<string, string | undefined>;
+  private readonly bundled: TidalClientCredentials | null;
   private readonly inflight = new Map<string, Promise<boolean>>();
   private readonly lastAttempt = new Map<string, { at: number; ok: boolean }>();
 
@@ -71,6 +76,7 @@ export class TidalAuth implements TidalApiAccess {
     this.fetchFn = deps.fetchFn ?? ((input, init) => fetch(input, init));
     this.now = deps.now ?? Date.now;
     this.env = deps.env ?? process.env;
+    this.bundled = deps.bundledClient === undefined ? bundledTidalClient() : deps.bundledClient;
   }
 
   /** A token to use now, refreshed first when it is about to run out. */
@@ -147,7 +153,7 @@ export class TidalAuth implements TidalApiAccess {
     const service = this.store.getService(serviceId);
     const refreshToken = service?.tidal?.refreshToken;
     if (!service || !refreshToken) return false;
-    const client = resolveTidalClient(service, this.env);
+    const client = resolveTidalClient(service, this.env, this.bundled);
     if (!client) {
       // The client the session signed in with is gone from the environment and the config: a
       // refresh token is bound to its client, so only a new sign-in helps.

@@ -2,8 +2,8 @@ import type { TidalSession } from '@/domain/config/types';
 
 export type TidalLoginFailure =
   /**
-   * No client to sign in as: neither SONN_TIDAL_CLIENT_ID in the environment nor a client id in the
-   * request or the service's config. sonn ships none of its own.
+   * No client to sign in as: not SONN_TIDAL_CLIENT_ID in the environment, a client id in the
+   * request or the service's config, nor one the image was built with.
    */
   | 'client-required'
   /** Tidal will not run the device flow for the configured client. */
@@ -40,10 +40,11 @@ export type TidalLoginStatus =
  */
 export interface TidalAdminPort {
   /**
-   * Whether the environment names the client (SONN_TIDAL_CLIENT_ID); when it does not, the form
-   * has to supply one.
+   * Whether the server provides the client, so the form need not: through SONN_TIDAL_CLIENT_ID
+   * (`source: 'env'`) or one the image was built with (`source: 'bundled'`). `envConfigured` keeps
+   * its name for consoles that predate `source`; it is true for either.
    */
-  clientStatus(): { envConfigured: boolean };
+  clientStatus(): { envConfigured: boolean; source: 'env' | 'bundled' | null };
   startLogin(input: { serviceId?: string; clientId?: string; clientSecret?: string }): Promise<TidalLoginStart>;
   loginStatus(loginId: string): TidalLoginStatus;
   /** The session a finished login produced, handed over once; null when there is none. */
