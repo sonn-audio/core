@@ -80,7 +80,7 @@ async function handleAppleMusicWidevineStatus(
   try {
     const verdict = await deps.appleMusicAdmin.verifyWidevineArtifacts();
     if (verdict.ok) {
-      deps.sendJson(res, 200, { ok: true, status: 'valid', files });
+      deps.sendJson(res, 200, { ok: true, status: 'valid', source: verdict.source, files });
       return;
     }
     deps.sendJson(res, 200, { ok: false, status: verdict.code, details: verdict.details, files });
@@ -119,7 +119,7 @@ async function handleAppleMusicWidevineUpload(
       deps.sendJson(res, 200, { ok: false, status: verdict.code, details: verdict.details, files });
       return;
     }
-    deps.sendJson(res, 200, { ok: true, status: 'valid', files });
+    deps.sendJson(res, 200, { ok: true, status: 'valid', source: verdict.source, files });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     deps.log.warn('widevine upload failed', { kind, message });

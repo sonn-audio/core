@@ -7,15 +7,16 @@
  * Anything else still throws: an unreadable directory is not a verdict about the files.
  */
 export type WidevineVerification =
-  | { ok: true }
+  /** `source` says whose CDM it is: one the user uploaded, or the one the image was built with. */
+  | { ok: true; source: 'uploaded' | 'bundled' }
   | { ok: false; code: 'missing' | 'invalid'; details: string[] };
 
 /**
  * Administering the Apple Music integration: its developer token and its Widevine CDM files.
  *
- * Apple Music is the one service whose playback needs a CDM the user has to supply themselves,
- * so "are the files there and do they parse" is a question the setup screen asks and nothing else
- * does. Both operations here are management; neither is used to play anything.
+ * Apple Music playback needs a Widevine CDM — the one a release image is built with, or one the
+ * user uploads in its place — so "is there a usable set, and whose is it" is a question the setup
+ * screen asks and nothing else does. Both operations here are management; neither is used to play anything.
  */
 export interface AppleMusicAdminPort {
   /** The developer token from config, or null when the install relies on a scraped one. */

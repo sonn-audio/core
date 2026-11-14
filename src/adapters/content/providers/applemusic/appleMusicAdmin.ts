@@ -38,8 +38,8 @@ export const appleMusicAdmin: AppleMusicAdminPort = {
   verifyWidevineArtifacts: async (): Promise<WidevineVerification> => {
     invalidateWidevineArtifactsCache();
     try {
-      await loadWidevineArtifacts();
-      return { ok: true };
+      const { source } = await loadWidevineArtifacts();
+      return { ok: true, source };
     } catch (err) {
       if (err instanceof WidevineArtifactsError) {
         return { ok: false, code: err.code, details: err.details };

@@ -1,16 +1,36 @@
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createPrivateKey } from 'node:crypto';
 import { Widevine } from 'widevine';
 import protobuf from 'protobufjs';
 import { ensureDir, readFileBuffer, resolveDataDir } from '@/shared/utils/file';
 
-const CDM_DIR = resolveDataDir('widevine_cdm');
-const PRIVATE_KEY_PATH = join(CDM_DIR, 'private_key.pem');
-const CLIENT_ID_PATH = join(CDM_DIR, 'client_id.bin');
+/**
+ * Where a CDM can come from, in the order it is looked for.
+ *
+ * `uploaded` is the set the user put there through the admin screen; it lives in the data
+ * directory, so it survives an image update. `bundled` is the set the release image is built
+ * with, which is what lets Apple Music and Amazon Music play without anyone having to find a CDM
+ * of their own. It sits beside the code rather than under `data/`, because `data/` is a volume
+ * and would hide it.
+ */
+export type WidevineSource = 'uploaded' | 'bundled';
+
+export type WidevineCdmDirs = Record<WidevineSource, string>;
+
+const PRIVATE_KEY_FILE = 'private_key.pem';
+const CLIENT_ID_FILE = 'client_id.bin';
+
+export function defaultWidevineCdmDirs(): WidevineCdmDirs {
+  return {
+    uploaded: resolveDataDir('widevine_cdm'),
+    bundled: resolve(process.cwd(), 'widevine_cdm'),
+  };
+}
 
 type WidevineArtifacts = {
   privateKey: Buffer;
   clientIdBlob: Buffer;
+  source: WidevineSource;
 };
 
 let cachedArtifacts: WidevineArtifacts | null = null;
@@ -31,36 +51,29 @@ export class WidevineArtifactsError extends Error {
   }
 }
 
-async function ensureWidevineCdm(): Promise<void> {
-  await ensureDir(CDM_DIR);
+async function readIfPresent(filePath: string): Promise<Buffer | null> {
+  try {
+    return await readFileBuffer(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw err;
+  }
 }
 
-export async function loadWidevineArtifacts(): Promise<WidevineArtifacts> {
-  if (cachedArtifacts) {
-    return cachedArtifacts;
-  }
+type CdmFiles = { privateKey: Buffer | null; clientIdBlob: Buffer | null };
 
-  await ensureWidevineCdm();
+async function readCdmFiles(dir: string): Promise<CdmFiles> {
+  const [privateKey, clientIdBlob] = await Promise.all([
+    readIfPresent(join(dir, PRIVATE_KEY_FILE)),
+    readIfPresent(join(dir, CLIENT_ID_FILE)),
+  ]);
+  return { privateKey, clientIdBlob };
+}
 
-  let privateKey: Buffer;
-  let clientIdBlob: Buffer;
-  try {
-    privateKey = await readFileBuffer(PRIVATE_KEY_PATH);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new WidevineArtifactsError('missing', 'Widevine artifacts missing', ['private_key.pem missing']);
-    }
-    throw err;
-  }
-  try {
-    clientIdBlob = await readFileBuffer(CLIENT_ID_PATH);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new WidevineArtifactsError('missing', 'Widevine artifacts missing', ['client_id.bin missing']);
-    }
-    throw err;
-  }
-
+/** Throws unless the pair is one the widevine library will actually open a session with. */
+function assertUsable(privateKey: Buffer, clientIdBlob: Buffer): void {
   const issues: string[] = [];
   if (!privateKey.length) {
     issues.push('private_key.pem empty');
@@ -98,8 +111,40 @@ export async function loadWidevineArtifacts(): Promise<WidevineArtifacts> {
   if (strongIssues.length) {
     throw new WidevineArtifactsError('invalid', 'Widevine artifacts missing or invalid', strongIssues);
   }
+}
 
-  cachedArtifacts = { privateKey, clientIdBlob };
+/**
+ * Reads the CDM from the given directories without touching the cache.
+ *
+ * An upload wins as soon as either of its files exists, and is then judged on its own: someone
+ * who uploads a set means to use it, so half a set or a broken one is reported as that instead of
+ * being papered over by the bundled one — the screen would otherwise call a bad upload valid.
+ * The bundled set is only reached when nothing was uploaded at all.
+ */
+export async function readWidevineArtifacts(dirs: WidevineCdmDirs): Promise<WidevineArtifacts> {
+  await ensureDir(dirs.uploaded);
+
+  const uploaded = await readCdmFiles(dirs.uploaded);
+  const hasUpload = uploaded.privateKey !== null || uploaded.clientIdBlob !== null;
+  const source: WidevineSource = hasUpload ? 'uploaded' : 'bundled';
+  const { privateKey, clientIdBlob } = hasUpload ? uploaded : await readCdmFiles(dirs.bundled);
+
+  if (privateKey === null || clientIdBlob === null) {
+    const missing: string[] = [];
+    if (privateKey === null) missing.push('private_key.pem missing');
+    if (clientIdBlob === null) missing.push('client_id.bin missing');
+    throw new WidevineArtifactsError('missing', 'Widevine artifacts missing', missing);
+  }
+
+  assertUsable(privateKey, clientIdBlob);
+  return { privateKey, clientIdBlob, source };
+}
+
+export async function loadWidevineArtifacts(): Promise<WidevineArtifacts> {
+  if (cachedArtifacts) {
+    return cachedArtifacts;
+  }
+  cachedArtifacts = await readWidevineArtifacts(defaultWidevineCdmDirs());
   return cachedArtifacts;
 }
 

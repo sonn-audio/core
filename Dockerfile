@@ -95,6 +95,21 @@ COPY --from=builder --chown=node:node /app/package*.json ./
 COPY --from=crelay-builder /usr/local/bin/crelay /usr/local/bin/crelay
 RUN chmod +x /usr/local/bin/crelay \
     && /usr/local/bin/crelay --help >/dev/null || true
+# The Widevine CDM Apple Music and Amazon Music are decrypted with. It comes in as build secrets
+# so it is in neither the repository nor the build context, and it lands beside the code rather
+# than under /app/data, which is a volume and would hide it. Both secrets are optional: a build
+# without them — a fork, a local `docker build` — simply carries no CDM, and the server then asks
+# for an upload as it always did. A set uploaded through the admin screen still wins over this one.
+RUN --mount=type=secret,id=widevine_private_key \
+    --mount=type=secret,id=widevine_client_id \
+    if [ -s /run/secrets/widevine_private_key ] && [ -s /run/secrets/widevine_client_id ]; then \
+        install -d -o node -g node /app/widevine_cdm \
+        && install -o node -g node -m 0644 /run/secrets/widevine_private_key /app/widevine_cdm/private_key.pem \
+        && install -o node -g node -m 0644 /run/secrets/widevine_client_id /app/widevine_cdm/client_id.bin \
+        && echo "widevine cdm: bundled"; \
+    else \
+        echo "widevine cdm: not provided, image carries none"; \
+    fi
 RUN mkdir -p /app/data/.cache && chown -R node:node /app/data
 # Start the application
 CMD ["node", "dist/server.js"]

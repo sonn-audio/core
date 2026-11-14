@@ -118,6 +118,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
+      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
+      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
+      # leaves the CDM out — a fork still builds.
+      - name: Prepare the Widevine CDM
+        id: widevine
+        shell: bash
+        env:
+          WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
+          WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/widevine_cdm"
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
+          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
+            {
+              echo "secret_files<<EOF"
+              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
+              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -125,6 +151,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          secret-files: ${{ steps.widevine.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.release_meta.outputs.version }}
             BUILD_CHANNEL=${{ steps.release_meta.outputs.prerelease == 'true' && 'beta' || 'stable' }}
@@ -190,6 +217,32 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_id=dev-$BUILD_TS" >> "$GITHUB_OUTPUT"
 
+      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
+      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
+      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
+      # leaves the CDM out — a fork still builds.
+      - name: Prepare the Widevine CDM
+        id: widevine
+        shell: bash
+        env:
+          WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
+          WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/widevine_cdm"
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
+          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
+            {
+              echo "secret_files<<EOF"
+              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
+              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+
       - name: Build and push Docker image (dev)
         uses: docker/build-push-action@v5
         with:
@@ -197,6 +250,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev,ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-latest
+          secret-files: ${{ steps.widevine.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.dev_meta.outputs.version }}
             BUILD_TIMESTAMP=${{ steps.dev_meta.outputs.build_id }}
@@ -258,6 +312,32 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_id=testing-$BUILD_TS" >> "$GITHUB_OUTPUT"
 
+      # The Widevine CDM the image is built with, so Apple Music and Amazon Music play without
+      # anyone uploading one. Both secrets hold the file base64-encoded, because client_id.bin is
+      # binary and a secret is text. Without them the build gets no secret files and the Dockerfile
+      # leaves the CDM out — a fork still builds.
+      - name: Prepare the Widevine CDM
+        id: widevine
+        shell: bash
+        env:
+          WIDEVINE_PRIVATE_KEY_B64: ${{ secrets.WIDEVINE_PRIVATE_KEY_B64 }}
+          WIDEVINE_CLIENT_ID_B64: ${{ secrets.WIDEVINE_CLIENT_ID_B64 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/widevine_cdm"
+          printf '%s' "$WIDEVINE_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/private_key.pem"
+          printf '%s' "$WIDEVINE_CLIENT_ID_B64" | base64 -d > "$RUNNER_TEMP/widevine_cdm/client_id.bin"
+          if [ -s "$RUNNER_TEMP/widevine_cdm/private_key.pem" ] && [ -s "$RUNNER_TEMP/widevine_cdm/client_id.bin" ]; then
+            {
+              echo "secret_files<<EOF"
+              echo "widevine_private_key=$RUNNER_TEMP/widevine_cdm/private_key.pem"
+              echo "widevine_client_id=$RUNNER_TEMP/widevine_cdm/client_id.bin"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Widevine CDM secrets are not set; this image will carry no CDM."
+          fi
+
       - name: Build and push Docker image (testing)
         uses: docker/build-push-action@v5
         with:
@@ -265,6 +345,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:testing,ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:testing-latest
+          secret-files: ${{ steps.widevine.outputs.secret_files }}
           build-args: |
             BUILD_VERSION=${{ steps.test_meta.outputs.version }}
             BUILD_TIMESTAMP=${{ steps.test_meta.outputs.build_id }}

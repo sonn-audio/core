@@ -44,7 +44,7 @@ test('sign-in falls back to the scraped token when none is configured', async ()
   const h = appleHarness({
     configuredDeveloperToken: () => null,
     scrapedDeveloperToken: async () => 'eyJ0.scraped.token',
-    verifyWidevineArtifacts: async () => ({ ok: true }),
+    verifyWidevineArtifacts: async () => ({ ok: true, source: 'uploaded' as const }),
   });
   await call(h.routes, 'GET', '/applemusic/auth');
   assert.equal(h.sent[0]!.status, 200);
@@ -59,7 +59,7 @@ test('sign-in prefers the configured token and does not scrape', async () => {
       scraped = true;
       return null;
     },
-    verifyWidevineArtifacts: async () => ({ ok: true }),
+    verifyWidevineArtifacts: async () => ({ ok: true, source: 'uploaded' as const }),
   });
   await call(h.routes, 'GET', '/applemusic/auth');
   assert.equal(h.sent[0]!.status, 200);
@@ -71,7 +71,7 @@ test('sign-in without any token says so', async () => {
   const h = appleHarness({
     configuredDeveloperToken: () => null,
     scrapedDeveloperToken: async () => null,
-    verifyWidevineArtifacts: async () => ({ ok: true }),
+    verifyWidevineArtifacts: async () => ({ ok: true, source: 'uploaded' as const }),
   });
   await call(h.routes, 'GET', '/applemusic/auth');
   assert.equal(h.sent[0]!.status, 500);
@@ -84,7 +84,7 @@ test('a usable CDM set reports valid', async () => {
   const h = appleHarness({
     configuredDeveloperToken: () => null,
     scrapedDeveloperToken: async () => null,
-    verifyWidevineArtifacts: async () => ({ ok: true }),
+    verifyWidevineArtifacts: async () => ({ ok: true, source: 'uploaded' as const }),
   });
   await call(h.routes, 'GET', '/applemusic/widevine/status');
   assert.equal(h.sent[0]!.status, 200);

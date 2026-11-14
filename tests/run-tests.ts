@@ -71,6 +71,7 @@ import './integrationAdminRoutes.test';
 import './sendspinGroupController.test';
 import './appleMusicStreamHelpers.test';
 import './amazonMusic.test';
+import './widevineArtifacts.test';
 import './amazonMusicServiceSave.test';
 import './tidalAuth.test';
 import './oauthHelpers.test';
