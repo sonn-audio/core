@@ -89,9 +89,8 @@ export function createConfigHandlers(config: LoxoneHttpConfig, options: ConfigHa
         services: [],
       }),
     ),
-    miniserverTime: handler((command) =>
-      buildEmptyResponseWithPayload(command, Date.now()),
-    ),
+    // Named outright: the last segment is the Miniserver's timestamp, not the command (#440).
+    miniserverTime: handler((command) => buildResponse(command, 'miniservertime', Date.now())),
     restart: handler(async (command) => {
       loxoneNotifier?.notifyRestart();
       if (!options.onRestart) {
@@ -136,7 +135,8 @@ export function createConfigHandlers(config: LoxoneHttpConfig, options: ConfigHa
       });
 
       const info = configService.getCurrentConfigInfo();
-      return buildEmptyResponseWithPayload(command, {
+      // Named outright: the last segment is the base64 config, which answered as its key (#440).
+      return buildResponse(command, 'setconfig', {
         crc32: crc32 ?? info.crc32 ?? null,
         extensions: info.extensions ?? [],
       });

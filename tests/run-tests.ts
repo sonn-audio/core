@@ -233,6 +233,7 @@ import './mixedGroupFanout.test';
 import './loxoneZoneProjection.test';
 import './loxoneConnectGroupSnapshot.test';
 import './loxoneFixedGroups.test';
+import './loxoneSetConfig.test';
 import './adminZoneStates.test';
 import './adminInfo.test';
 import './bundleCompat.test';
