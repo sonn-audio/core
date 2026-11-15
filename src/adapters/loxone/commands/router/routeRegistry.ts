@@ -101,6 +101,9 @@ export function registerRoutes(
   router.registerPrefix('audio', 'audio/cfg/globalsearch/describe', globalSearchHandlers.audioCfgGlobalSearchDescribe);
   router.registerPrefix('audio', 'audio/cfg/globalsearch', globalSearchHandlers.audioCfgGlobalSearch);
 
+  // One category of a search, paged — the `link` a global search result carries.
+  router.registerPrefix('audio', 'audio/cfg/search/', globalSearchHandlers.audioCfgSearch);
+
   router.registerPrefix('audio', 'audio/cfg/getmediafolder', providerHandlers.audioCfgGetMediaFolder);
   router.registerPrefix('audio', 'audio/cfg/rescan', providerHandlers.audioCfgRescan);
   router.registerPrefix('audio', 'audio/cfg/scanstatus', providerHandlers.audioCfgScanStatus);

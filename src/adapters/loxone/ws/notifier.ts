@@ -321,18 +321,21 @@ export class LoxoneWsNotifier {
   public notifyGlobalSearchResult(result: Record<string, any>, providerId: string, unique: string): void {
     // TuneIn special-case payload
     if (providerId.toLowerCase() === 'tunein' && result.station) {
+      // The app opens a category in full by sending this link back with its own paging, so
+      // it has to carry the words that were searched for.
+      const radioQuery = encodeURIComponent(typeof result.query === 'string' ? result.query : '');
       const payload = {
         globalsearch_result: {
           station: {
             caption: 'Zender',
             items: result.station,
-            link: `audio/cfg/search/radio/nouser/station/arr/0/${result.station.length}`,
+            link: `audio/cfg/search/radio/nouser/station/${radioQuery}/0/50`,
             totalitems: result.station.length,
           },
           custom: {
             caption: 'Eigen radiostations',
             items: result.custom ?? [],
-            link: 'audio/cfg/search/radio/nouser/custom/arr/0/0',
+            link: `audio/cfg/search/radio/nouser/custom/${radioQuery}/0/50`,
             totalitems: result.custom?.length ?? 0,
           },
         },
