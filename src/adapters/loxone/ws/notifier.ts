@@ -176,32 +176,43 @@ export class LoxoneWsNotifier {
   /**
    * Signals that the streaming-services configuration changed.
    * Client refetches services when `action === 'serviceschanged'`.
+   *
+   * A bare object, not an array: the client's envelope types this key as
+   * `z.object({ action: z.literal('serviceschanged') })`, and a frame that does not
+   * fit the envelope is dropped whole.
    */
-  public notifyServiceChanged(action: string = 'serviceschanged'): void {
-    this.emit({ service_changed_event: [{ action }] }, 'service_changed_event', { action });
+  public notifyServiceChanged(): void {
+    const action = 'serviceschanged';
+    this.emit({ service_changed_event: { action } }, 'service_changed_event', { action });
   }
 
   /**
    * Signals an upcoming process restart (server stays reachable).
    * v17 client distinguishes this from a hard reboot.
+   *
+   * The client types this key as a bare boolean (`z.boolean()`).
    */
   public notifyRestart(): void {
-    this.emit({ restart_event: [] }, 'restart_event');
+    this.emit({ restart_event: true }, 'restart_event');
   }
 
   /**
    * Signals an upcoming hard reboot (sockets will drop).
    * Client transitions to the `rebooting` health state.
+   *
+   * The client types this key as a bare boolean (`z.boolean()`).
    */
   public notifyReboot(): void {
-    this.emit({ reboot_event: [] }, 'reboot_event');
+    this.emit({ reboot_event: true }, 'reboot_event');
   }
 
   /**
-   * Signals that USB / external storage state changed.
+   * Signals that USB / external storage was plugged in or pulled out.
+   *
+   * A bare object carrying which of the two — the client accepts nothing else here.
    */
-  public notifyUsbChanged(): void {
-    this.emit({ usbchanged_event: [] }, 'usbchanged_event');
+  public notifyUsbChanged(action: 'added' | 'removed'): void {
+    this.emit({ usbchanged_event: { action } }, 'usbchanged_event', { action });
   }
 
   /**
@@ -220,7 +231,21 @@ export class LoxoneWsNotifier {
     },
     command?: string,
   ): void {
-    const payload = detail ? [detail] : [];
+    // The client requires every one of these as a string — `name` and a textual
+    // `playlistid` included — and drops the frame when one is missing. A delete or an
+    // item edit has no new name to report, so it reports an empty one.
+    const payload = detail
+      ? [
+          {
+            ...detail,
+            playlistid: String(detail.playlistid),
+            audiopath: detail.audiopath ?? '',
+            cmd: detail.cmd ?? 'lms',
+            user: detail.user ?? 'nouser',
+            name: detail.name ?? '',
+          },
+        ]
+      : [];
     const message: Record<string, unknown> = { playlistchanged_event: payload };
     if (command) {
       message.command = command;
@@ -229,10 +254,13 @@ export class LoxoneWsNotifier {
   }
 
   /**
-   * Signals that custom URL inputs were added, renamed, or removed.
+   * Signals that a custom URL station was added, changed, or removed.
+   *
+   * A bare object naming the station and what happened to it — the client accepts
+   * nothing else here.
    */
-  public notifyCustomUrlChanged(): void {
-    this.emit({ customurl_changed_event: [] }, 'customurl_changed_event');
+  public notifyCustomUrlChanged(action: 'added' | 'changed' | 'delete', id: string): void {
+    this.emit({ customurl_changed_event: { action, id } }, 'customurl_changed_event', { action, id });
   }
 
   /**
