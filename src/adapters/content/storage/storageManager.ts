@@ -75,6 +75,31 @@ export function getStorageMountPath(id: string): string {
   return path.join(resolveDataDir('music', 'nas'), String(id));
 }
 
+const DEFAULT_MOUNT_OPTIONS = ['rw', 'file_mode=0644', 'dir_mode=0755'];
+
+/**
+ * The mount options for one attempt: our defaults, the attempt's credentials, then what the
+ * storage's own options field says.
+ *
+ * The field wins over a default it names: `ro` replaces `rw`, and `file_mode=0600` replaces ours.
+ * Appending it after the defaults left both `rw` and `ro` in the list, and the fallback with
+ * inline credentials dropped the field altogether, so options a user typed never reached
+ * mount.cifs (#438).
+ */
+export function withMountDefaults(credentials: readonly string[], userOptions: string | undefined): string[] {
+  const user = (userOptions ?? '')
+    .split(',')
+    .map((opt) => opt.trim())
+    .filter(Boolean);
+  const keyOf = (opt: string) => {
+    const key = opt.split('=')[0]!.trim().toLowerCase();
+    return key === 'ro' ? 'rw' : key;
+  };
+  const named = new Set(user.map(keyOf));
+  const defaults = DEFAULT_MOUNT_OPTIONS.filter((opt) => !named.has(keyOf(opt)));
+  return [...defaults, ...credentials, ...user];
+}
+
 async function mountStorage(cfg: StorageConfig, dir: string): Promise<void> {
   if (cfg.type.toLowerCase() !== 'cifs') {
     throw new Error(`Unsupported storage type "${cfg.type}" (only "cifs" is supported)`);
@@ -86,7 +111,7 @@ async function mountStorage(cfg: StorageConfig, dir: string): Promise<void> {
   // of a loadable module, so mount.cifs aborts with "iocharset utf8 not found"
   // before any SMB negotiation (#321). A share that needs a different charset can
   // still pass iocharset=… through the per-storage options field below.
-  const options: string[] = ['rw', 'file_mode=0644', 'dir_mode=0755'];
+  const options: string[] = [];
   const inlineCreds: string[] = [];
   let credentialsPath: string | undefined;
 
@@ -125,15 +150,6 @@ async function mountStorage(cfg: StorageConfig, dir: string): Promise<void> {
     }
   }
 
-  if (cfg.options && cfg.options.trim()) {
-    options.push(
-      ...cfg.options
-        .split(',')
-        .map((opt) => opt.trim())
-        .filter(Boolean),
-    );
-  }
-
   const attemptMount = async (opts: string[]): Promise<void> => {
     const optString = opts.join(',');
     const mountArgs = ['-t', 'cifs', unc, dir, '-o', optString];
@@ -156,12 +172,12 @@ async function mountStorage(cfg: StorageConfig, dir: string): Promise<void> {
   };
 
   try {
-    await tryMountWithFallback(options);
+    await tryMountWithFallback(withMountDefaults(options, cfg.options));
     return;
   } catch (primaryErr) {
     // If credentials file was used, try inline username/password as a fallback (matches simple CLI mount).
     if (inlineCreds.length) {
-      const inlineOptions = ['rw', 'file_mode=0644', 'dir_mode=0755', ...inlineCreds];
+      const inlineOptions = withMountDefaults(inlineCreds, cfg.options);
       try {
         await tryMountWithFallback(inlineOptions);
         return;

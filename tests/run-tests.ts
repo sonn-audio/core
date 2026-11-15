@@ -134,6 +134,7 @@ import './sonosEndpointResolution.test';
 import './sonosDiscovery.test';
 import './sonosTransportResilience.test';
 import './externalStateRouter.test';
+import './storageMountOptions.test';
 import './sonosExternalTakeover.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
