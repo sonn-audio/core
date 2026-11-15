@@ -228,7 +228,11 @@ export class ZoneManager {
       notifyQueueUpdated: (zoneId, count) => this.notifier.notifyQueueUpdated(zoneId, count),
       yieldToExternalSource: (zoneId) => {
         const ctx = this.zoneRepo.get(zoneId);
-        return ctx ? this.endOwnSession(ctx, 'switch_to_external') : false;
+        if (!ctx || !this.endOwnSession(ctx, 'switch_to_external')) {
+          return false;
+        }
+        this.stopFollowersAfterTakeover(zoneId);
+        return true;
       },
       log: this.log,
     });
@@ -1257,6 +1261,28 @@ export class ZoneManager {
       }
     }
     this.groupingCoordinator.syncGroupMembersToLeader(leaderId);
+  }
+
+  /**
+   * A leader whose speaker went to a source of its own (#430: a soundbar going to TV audio) takes
+   * its group's other speakers down with it. Sonos hands a group whose coordinator leaves it to
+   * the next speaker, which went on playing the leader's music on its own. The group stands for
+   * one source; when that source is taken over the rest of the group goes quiet too.
+   */
+  private stopFollowersAfterTakeover(leaderId: number): void {
+    const group = getGroupByZone(leaderId);
+    if (!group || group.leader !== leaderId) {
+      return;
+    }
+    for (const member of group.members) {
+      if (member === leaderId || !this.zoneRepo.get(member)) continue;
+      const sent = this.stateControllers.handleCommand(member, 'stop');
+      this.log.info('group member stopped; its leader went to another source', {
+        zoneId: member,
+        leaderId,
+        sent,
+      });
+    }
   }
 
   /**
