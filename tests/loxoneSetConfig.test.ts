@@ -2,11 +2,16 @@ import assert from 'node:assert/strict';
 import { test } from './testHarness';
 import { createConfigHandlers } from '../src/adapters/loxone/commands/handlers/configHandlers';
 import { serializeResult } from '../src/adapters/loxone/commands/responses';
+import { LoxoneConfigService } from '../src/adapters/loxone/services/loxoneConfigService';
 import {
   buildZoneConfigs,
   extractZonesFromLoxoneConfig,
 } from '../src/adapters/loxone/services/loxoneZoneExtractor';
-import type { ZoneConfig } from '../src/domain/config/types';
+import type { ZoneManagerFacade } from '../src/application/zones/createZoneManager';
+import type { ConfigPort } from '../src/ports/ConfigPort';
+import type { NotifierPort } from '../src/ports/NotifierPort';
+import type { ContentManager } from '../src/adapters/content/contentManager';
+import type { AudioServerConfig, ZoneConfig } from '../src/domain/config/types';
 
 // The Miniserver's audio/cfg/setconfig, as tobsch traced it on a Miniserver stuck in its handshake:
 // the reply went out keyed by the base64 payload (#440), players pushed without a name lost the
@@ -73,4 +78,44 @@ test('a player pushed without a name keeps the name it has (#441)', () => {
     'a known room keeps its name, a real name still wins, only a new room gets a placeholder',
   );
   assert.deepEqual(zones[0]?.output, { type: 'sendspin' });
+});
+
+test('the same config pushed again leaves the zones alone (#441)', async () => {
+  let rebuilds = 0;
+  const cfg = {
+    system: { audioserver: { macId: OUR_MAC, extensions: [] }, miniserver: {} },
+    rawAudioConfig: { raw: null, rawString: null, crc32: null },
+    zones: [],
+    groups: { mixedGroupEnabled: false, powerGroups: [], audioGroups: [] },
+  } as unknown as AudioServerConfig;
+  const configPort = {
+    getConfig: () => cfg,
+    updateConfig: async (fn: (c: AudioServerConfig) => unknown) => {
+      await fn(cfg);
+      return cfg;
+    },
+  } as unknown as ConfigPort;
+  const service = new LoxoneConfigService(
+    {
+      replaceAll: async () => {
+        rebuilds += 1;
+      },
+    } as unknown as ZoneManagerFacade,
+    configPort,
+    { refreshFromConfig: () => {} } as unknown as ContentManager,
+    {} as NotifierPort,
+  );
+  const push = (raw: unknown) => service.setRawAudioConfig({ raw, rawString: JSON.stringify(raw) });
+
+  const first = await push(music([{ playerid: 1, name: 'Kitchen' }]));
+  assert.equal(rebuilds, 1);
+  assert.ok(first);
+
+  const again = await push(music([{ playerid: 1, name: 'Kitchen' }]));
+  assert.equal(rebuilds, 1, 'nothing changed, so nothing is rebuilt');
+  assert.equal(again, first, 'and the Miniserver gets the same crc back');
+
+  await push(music([{ playerid: 1, name: 'Kitchen' }, { playerid: 2, name: 'Office' }]));
+  assert.equal(rebuilds, 2, 'a changed config still applies');
+  assert.equal(cfg.zones.length, 2);
 });

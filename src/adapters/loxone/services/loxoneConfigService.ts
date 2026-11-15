@@ -55,6 +55,19 @@ export class LoxoneConfigService {
   }
 
   public async setRawAudioConfig(payload: RawConfigPayload): Promise<string | null> {
+    // The same config again changes nothing, and rebuilding every zone for it restarts each
+    // state controller, which cut off whatever was playing. A Miniserver stuck in its handshake
+    // pushed it every 20 seconds (#441).
+    const stored = this.config.getConfig();
+    if (
+      stored.rawAudioConfig?.crc32 &&
+      stored.rawAudioConfig.rawString === payload.rawString &&
+      (stored.zones?.length ?? 0) > 0
+    ) {
+      this.log.debug('setconfig unchanged; zones left as they are', { crc32: stored.rawAudioConfig.crc32 });
+      return stored.rawAudioConfig.crc32;
+    }
+
     let crc32: string | null = null;
 
     await this.config.updateConfig(async (cfg) => {
