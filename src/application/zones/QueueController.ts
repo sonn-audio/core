@@ -792,12 +792,7 @@ export class QueueController {
     if (!target || ctx.queue.items.length === 0) {
       return false;
     }
-    const normalizedTarget = normalizeSpotifyAudiopath(target);
-    const idx = ctx.queue.items.findIndex(
-      (item) =>
-        normalizeSpotifyAudiopath(item.audiopath) === normalizedTarget ||
-        normalizeSpotifyAudiopath(item.unique_id) === normalizedTarget,
-    );
+    const idx = QueueController.findTargetIndex(ctx.queue.items, target);
     if (idx < 0) {
       return false;
     }
@@ -815,11 +810,23 @@ export class QueueController {
 
   private static readonly UNDO_DEPTH = 25;
 
+  /**
+   * Whether `target` names this queue item.
+   *
+   * A client can only name an item the way it was shown it, and the queue is shown in a form
+   * the items are not held in: `getQueue` hands out `spotify:track:<id>` for every streaming
+   * service, account and service dropped, because that is all the Loxone app's queue accepts
+   * (see {@link sanitizeAudiopathForOutput}). So the last comparison is on that form. Without
+   * it a row picked out of the queue is not found in the queue it was picked from, and the
+   * pick is taken for new music — replacing the whole queue with that one track, under a path
+   * no provider recognises.
+   */
   private static matchesTarget(item: QueueItem, target: string, normalizedTarget: string): boolean {
     return (
       item.unique_id === target ||
       normalizeSpotifyAudiopath(item.unique_id) === normalizedTarget ||
-      normalizeSpotifyAudiopath(item.audiopath) === normalizedTarget
+      normalizeSpotifyAudiopath(item.audiopath) === normalizedTarget ||
+      sanitizeAudiopathForOutput(item.audiopath) === sanitizeAudiopathForOutput(target)
     );
   }
 

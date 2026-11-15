@@ -213,6 +213,7 @@ import './loxoneDefaultAccount.test';
 import './loxonePlayContext.test';
 import './loxoneDialogs.test';
 import './loxoneTransport.test';
+import './queueRowPick.test';
 import './browseRef.test';
 import './libraryProjectionSource.test';
 import './streamFormat.test';

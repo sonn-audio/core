@@ -199,7 +199,9 @@ async function audioServicePlay(
   const zoneId = parseNumberPart(parts[1], 0);
   const hasNoShuffle = /\/noshuffle(?:\/|$)/i.test(command);
   zoneManager.queue.setPendingShuffle(zoneId, !hasNoShuffle);
-  const resolvedCommand = resolveParentIdInCommand(command);
+  // A parent id that names no folder is no context at all — it is what the app sends for a row
+  // of the queue, whose "folder" is the zone. Left in, it would ride along as part of the path.
+  const resolvedCommand = resolveParentIdInCommand(command).replace(/\/parentid\/[^/]+\/\d+(?=\/|$)/i, '');
   // `serviceplay_result` is the string "ok", or `{ error, message }` — never a list.
   const answer = () => ({ name: 'serviceplay', payload: 'ok' });
   const response = await playToZone(zoneManager, contentManager, fadeController, resolvedCommand, 'serviceplay', answer, (parts) => {
@@ -654,14 +656,21 @@ async function playToZone(
   const uri = payloadResolver(parts);
   const fadeOpts = fadeController.parseFadeOptions(command);
 
-  // Detect queue item clicks (no parent context) and pre-seek within the existing queue.
+  // A row picked out of the queue: no parent context, and the queue already holds it. The app
+  // sends this as an ordinary play of the row's audiopath — the form the queue was shown in,
+  // which names neither the service nor the account. Played as new music it would replace the
+  // whole queue with that one track, under a path no provider recognises. So it is played as
+  // what it is: that item of the queue the zone has.
   const looksLikeQueueClick = uri && !uri.includes('/parentpath/') && !uri.includes('/parentid/');
   if (looksLikeQueueClick) {
     const candidates = [uri, decodeAudiopath(uri)].filter(Boolean);
-    for (const target of candidates) {
-      if (zoneManager.queue.seekInQueue(zoneId, target)) {
-        break;
+    if (candidates.some((target) => zoneManager.queue.seekInQueue(zoneId, target))) {
+      zoneManager.handleCommand(zoneId, 'queueplaycurrent');
+      if (fadeOpts.fade) {
+        void fadeController.fadeIn(zoneId, fadeOpts.fadeDurationMs ?? 120_000);
       }
+      const picked = answer(uri);
+      return buildResponse(command, picked.name, picked.payload);
     }
   }
 
