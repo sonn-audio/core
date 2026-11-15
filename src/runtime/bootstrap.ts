@@ -435,6 +435,12 @@ export function createRuntime(): Runtime {
   });
   zoneManagerRef = zoneManager;
   loxoneNotifier.setZoneStateLookup((zoneId) => zoneManager.getState(zoneId));
+  loxoneNotifier.setPlayContextLookup((zoneId) => zoneManager.getPlayContext(zoneId));
+  loxoneNotifier.setServiceAccountsLookup(() =>
+    (contentManager.getServices() as unknown as Array<{ id?: string; user?: string; fake?: boolean }>)
+      .filter((entry) => typeof entry.id === 'string' && typeof entry.user === 'string')
+      .map((entry) => ({ id: entry.id as string, user: entry.user as string, fake: entry.fake === true })),
+  );
   // Surface each zone's output protocol in audio_event so our player can hint
   // grouping compatibility (grouping requires matching protocols).
   loxoneNotifier.setOutputProtocolLookup((zoneId) =>

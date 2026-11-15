@@ -21,17 +21,18 @@ import { formatEqualizerSettings } from '@/domain/zones/equalizer';
  * protocol is marked as ours.
  */
 /**
- * Browse context for the item that started playback. The native client accepts it
- * but does not require it, and the server has never populated it — it is emitted as
- * null. Kept in the payload type because dropping the key entirely is a wire change.
+ * What the zone is playing from — the album, playlist or artist behind the queue.
+ *
+ * The native client uses it in three places: a row of a browse list is marked as playing when
+ * its audiopath equals `id`, the mini player shows `name` in place of the album, and the queue
+ * screen is titled with it. Null when there is no such container, or when we cannot name it:
+ * the name is shown, so an unnamed context would blank a line that is otherwise filled.
  */
 export interface LoxoneParentMeta {
-  audiopath: string;
-  coverurl: string;
   id: string;
-  items: number;
   name: string;
-  type: number;
+  /** Lets the client open the container from the now-playing screen. */
+  audiopath: string;
 }
 
 export interface LoxoneZoneState {
@@ -88,6 +89,14 @@ export type ZoneStateProjectionContext = {
    * expects (`spotify@bridge-…`). Identity when there is nothing to translate.
    */
   audiopathToLoxone: (audiopath: string) => string;
+  /** The container the zone is playing from, when there is one and it has a name. */
+  playContext?: { path: string; name: string } | null;
+  /**
+   * The streaming accounts as the client knows them: the `id` and `user` of each `getservices`
+   * entry, in the order they are listed. `fake` marks a bridged service, which is addressed
+   * by its id in every audiopath; a real Spotify account is not always.
+   */
+  serviceAccounts?: () => ReadonlyArray<LoxoneServiceAccount>;
 };
 
 function clamp01to100(value: unknown): number {
@@ -136,6 +145,69 @@ function blankAudiopathStation(station: string | undefined): string {
   return looksLikeAudiopath(raw) ? '' : (station ?? '');
 }
 
+export type LoxoneServiceAccount = { id: string; user: string; fake?: boolean };
+
+/**
+ * The account behind a zone that plays a streaming service, as the client would name it.
+ *
+ * The native client takes every `spotify…` audiopath for Spotify — which is how all the
+ * services we bridge reach it — and identifies *which account* by name: it reads `sourceName`
+ * off the audio_event and looks for the service entry whose `user` equals it
+ * (`getServiceForAccountName`, `isItemPlaying`). So the name has to be exactly that `user`.
+ *
+ * Null when the zone is not streaming, or when the account cannot be told for certain: a path
+ * without an account in it, on a server with more than one real Spotify account. Null also
+ * when another entry further up the list carries the same name — the client takes the first
+ * it finds, so the name would point it at the wrong account.
+ */
+function streamingAccount(
+  playing: string,
+  accounts: ReadonlyArray<LoxoneServiceAccount>,
+): LoxoneServiceAccount | null {
+  if (!playing.toLowerCase().startsWith('spotify')) {
+    return null;
+  }
+  const inPath = /^spotify@([^:]+)/i.exec(playing)?.[1];
+  const real = accounts.filter((account) => !account.fake);
+  const account = inPath
+    ? accounts.find((entry) => entry.id === inPath)
+    : real.length === 1
+      ? real[0]
+      : undefined;
+  if (!account?.user) {
+    return null;
+  }
+  return accounts.find((entry) => entry.user === account.user) === account ? account : null;
+}
+
+/**
+ * The `parent` of a zone's audio_event, or null when sending one would do harm.
+ *
+ * A parent is not free. Without one the client marks a row as playing when its audiopath is
+ * the zone's. With one, for anything it takes to be Spotify, it first looks the playing
+ * account up by `sourceName` and marks *nothing* when that finds no account or a different
+ * one than the row's (`isItemPlaying`, shared-app.js:20768). So a streaming zone only gets a
+ * parent when its account is known — which is also when its `sourceName` is that account's
+ * name; otherwise it keeps what it had, the track row marked and the container not.
+ */
+function toLoxoneParent(
+  playing: string,
+  account: LoxoneServiceAccount | null,
+  ctx: ZoneStateProjectionContext,
+): LoxoneParentMeta | null {
+  const context = ctx.playContext;
+  if (!context?.path || !context.name) {
+    return null;
+  }
+  if (playing.toLowerCase().startsWith('spotify') && !account) {
+    return null;
+  }
+  // The same translation the track's own audiopath gets, so the id is the one the client
+  // holds for that row.
+  const id = ctx.audiopathToLoxone(context.path);
+  return { id, name: context.name, audiopath: id };
+}
+
 export function toLoxoneZoneState(
   state: ZoneState,
   ctx: ZoneStateProjectionContext,
@@ -144,10 +216,13 @@ export function toLoxoneZoneState(
     ? Array.from(new Set<number>([ctx.group.leader, ...ctx.group.members]))
     : [];
 
+  const audiopath = ctx.audiopathToLoxone(state.audiopath);
+  const account = streamingAccount(audiopath, ctx.serviceAccounts?.() ?? []);
+
   return {
     album: state.album,
     artist: state.artist,
-    audiopath: ctx.audiopathToLoxone(state.audiopath),
+    audiopath,
     audiotype: state.audiotype,
     clientState: state.clientState,
     coverurl: state.coverurl,
@@ -156,15 +231,17 @@ export function toLoxoneZoneState(
     icontype: state.icontype,
     mode: state.mode,
     name: state.name,
-    // Never populated by the server; the client treats null as "no browse context".
-    parent: null,
+    parent: toLoxoneParent(audiopath, account, ctx),
     playerid: state.id,
     plrepeat: state.plrepeat,
     plshuffle: state.plshuffle,
     power: state.power,
     qindex: state.qindex,
     queueAuthority: state.queueAuthority,
-    sourceName: state.sourceName,
+    // For a streaming zone: the account's name as the client lists it, which is how it tells
+    // accounts apart. The zone's own source name ("Spotify") stays for everything else, and
+    // for a streaming zone whose account cannot be told.
+    sourceName: account?.user ?? state.sourceName,
     station: blankAudiopathStation(state.station),
     time: state.time,
     title: titleOrFallback(state.title, state.name),

@@ -57,15 +57,79 @@ Neither wraps the other. Everything in §2–§6 is the modern stack; §7 summar
 | `AudioServerRepository` | `shared-app.js:19546` (module 871259) | Façade; creates Cover, Grouping, LocalPlaylist, LocalLibrary, GlobalSearch, Spotify, Soundsuit, Radio repositories (`:19570-19610`) and per player Favorites, RecentlyPlayed, Queue, LoxoneRadio (`:20006`) |
 | AudioZoneV2 control | `shared-app.js:75561` (module 504874), `AppHub.js:29437` | UI; not analysed in depth |
 
-### What does *not* go to us
+### Who gets which command
 
-- Zone transport from the control card goes to the **Miniserver**: `jdev/sps/io/<zone uuid>/<cmd>`
-  with `play`, `pause`, `on`, `off`, `svpower/on|off`, `next`, `prev`, `volume/%d`, `volstep/%d`,
-  `volUp`, `volDown`, `progress/%d`, `playZoneFav/%d`, `roomfav/plus`, `tts/%s`,
-  `presence/on|off` (`scripts5.js:496-515`, `controls1.js:1454-1569`).
-- Grouping and per-zone `clientState` are read from Miniserver states (`grouping`,
-  `GroupingRepository` at `shared-app.js:22151`; `AudioServerStateContainer` at `AppHub.js:60703`).
-  `audio_sync_event` is validated but has no consumer.
+- **To us, directly:** play, pause, next, previous, volume, seek, repeat and shuffle from the
+  zone control (`AudioServerRepository.play/pause/setVolume/…`, `shared-app.js:20806-21000`,
+  called by the control at `:76027-76043`). A zone that is in a group gets the grouped form
+  instead: `audio/grouped/play|pause|volume/…`. Everything is sent through a typed schema;
+  the only exceptions in the whole client are the dialog button (`sendDirect`) and the two
+  uploads (`putFile`).
+- **To the Miniserver:** volume when the zone is configured for external up/down
+  (`details.volumeModes`), and the legacy card code in `controls1.js`, as
+  `jdev/sps/io/<zone uuid>/<cmd>` with `play`, `pause`, `on`, `off`, `svpower/on|off`, `next`,
+  `prev`, `volume/%d`, `volstep/%d`, `volUp`, `volDown`, `progress/%d`, `playZoneFav/%d`,
+  `roomfav/plus`, `tts/%s`, `presence/on|off` (`scripts5.js:496-515`).
+- **Read from the Miniserver, not from us:** grouping and per-zone `clientState`
+  (`GroupingRepository` at `shared-app.js:22151`; `AudioServerStateContainer` at
+  `AppHub.js:60703`), and what a zone can do — equalizer, Bluetooth, center gain, fixed group
+  — from the control's `details` in the structure file (`:75830-75900`). `audio_sync_event` is
+  validated but has no consumer.
+
+### Playing an item
+
+`playItem` (`shared-app.js:20548`) picks the command by what the row is:
+
+| Row | Command |
+|---|---|
+| a room favourite (`type` 4) | `roomfav/play/<id>` |
+| a line-in | `linein/<id>` |
+| a local playlist | `playlist/play/<audioPath>` |
+| a radio station | `serviceplay/radio/nouser/<audioPath>` — fails without an `audioPath` |
+| a Spotify or Soundsuit row | `serviceplay/<cmd>/<account id>/<audioPath>` |
+| a library track or folder | `library/play/<audioPath>` |
+| anything else with an `audioPath` | `playurl/<audioPath>` |
+
+A failed service, library or url play is caught and logged; a failed favourite, line-in or
+playlist play is not.
+
+### What is marked as playing
+
+`isItemPlaying` (`shared-app.js:20768`) marks a row when the zone's `audio_event` has
+`mode: "play"` and one of: `parent.id` equals the row's audio path; or `audiopath` equals it,
+with `spotify@<account>` and `spotify` treated as the same prefix.
+
+There is a catch in the first rule. Once an event has a `parent` and its `audiopath` starts
+with `spotify` — which is every streaming service we bridge — the app looks the playing
+account up by `sourceName === <service entry>.user`, and marks **nothing** when that finds no
+account or a different one than the row's. Not the container, and not the track either.
+
+The same field does more: the big player shows `sourceName` as the account under the Spotify
+logo and resolves the service from it (`getPlayedItemInfoForBigPlayer`, `:80171`), `parent.name`
+replaces the album in the mini player's subtitle (`:79474`) and titles the queue screen
+(`:101053`), and `parent.audiopath` opens the container from the now-playing screen (`:100948`).
+
+What we send, both decided in `ws/zoneStateProjection.ts`:
+
+- **`sourceName`** — for a streaming zone, the `user` of the account that is playing, exactly
+  as `getservices` lists it: "Apple Music" for a bridged service, the account's name for real
+  Spotify. The account is read from the audiopath (`spotify@<account>:`), or is the one real
+  Spotify account when the path names none. When it cannot be told for certain — two real
+  accounts and a bare path, or two entries with the same name — the zone keeps its own source
+  name, the fixed word "Spotify". The zone state itself is not changed; this is the Loxone
+  projection only.
+- **`parent`** — the container the zone's queue was started from (`ZoneManager.getPlayContext`),
+  named. For a streaming zone only when its account is known, because that is when the app's
+  lookup succeeds; otherwise the zone keeps what it had, the track row marked and the album
+  not. A library zone needs no account.
+
+Pinned in `tests/loxonePlayContext.test.ts`, with the app's rule transcribed.
+
+### The admin interface link
+
+The app's "open admin interface" builds its url from the connection target with the port
+removed (`adminInterfaceUrl`, `shared-app.js:19732`): `http://<audioserver ip>/` on the local
+network. A Loxone Audioserver answers there on port 80; our admin interface is on :7090.
 
 ---
 

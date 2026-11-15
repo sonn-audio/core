@@ -3,6 +3,7 @@ import type { StorageConfig } from '@/adapters/content/storage/storageManager';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import {
   toLoxoneZoneState,
+  type LoxoneServiceAccount,
   type LoxoneZoneState,
 } from '@/adapters/loxone/ws/zoneStateProjection';
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
@@ -18,6 +19,8 @@ export class LoxoneWsNotifier {
   private outputProtocolLookup: OutputProtocolLookup | null = null;
   private mixedGroupLookup: (() => boolean) | null = null;
   private audiopathToLoxone: ((audiopath: string) => string) | null = null;
+  private playContextLookup: ((zoneId: number) => { path: string; name: string } | null) | null = null;
+  private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
 
   constructor(
     private readonly registry: ConnectionRegistry,
@@ -55,6 +58,22 @@ export class LoxoneWsNotifier {
   }
 
   /**
+   * Read access to what each zone is playing from, surfaced in `audio_event` as `parent`.
+   * When unset, no zone has a parent (unchanged behaviour).
+   */
+  public setPlayContextLookup(lookup: ((zoneId: number) => { path: string; name: string } | null) | null): void {
+    this.playContextLookup = lookup;
+  }
+
+  /**
+   * The streaming accounts as `getservices` lists them. With these a streaming zone reports
+   * its account's name as `sourceName` and may carry a `parent`; without them neither changes.
+   */
+  public setServiceAccountsLookup(lookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null): void {
+    this.serviceAccountsLookup = lookup;
+  }
+
+  /**
    * Builds the Loxone-shaped payload for a zone. All the shaping lives in
    * `toLoxoneZoneState`; this only gathers the context that shaping needs, which
    * is the part that depends on the notifier's runtime lookups.
@@ -77,6 +96,8 @@ export class LoxoneWsNotifier {
       // No-op when the translator is unset or the path isn't a bridged
       // service-native id.
       audiopathToLoxone: (audiopath) => this.audiopathToLoxone?.(audiopath) ?? audiopath,
+      playContext: this.playContextLookup?.(state.id) ?? null,
+      serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
     });
   }
 

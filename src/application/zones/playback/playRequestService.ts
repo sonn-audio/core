@@ -23,6 +23,7 @@ import { getMusicAssistantProviderId } from '@/application/zones/internal/musicA
 import { isActiveInputMode } from '@/application/zones/playback/guards';
 import { resolveQueueAuthority } from '@/application/zones/playback/queueOps';
 import { resolvePlayRequest } from '@/application/zones/playback/playRequestResolution';
+import { forgetPlayContext, rememberPlayContext } from '@/application/zones/playback/playContext';
 import type { ResolvedPlayRequest } from '@/application/zones/playback/types';
 import { isSameAudiopath } from '@/application/zones/playback/targetResolution';
 import { buildQueueItemPlaybackPatch } from '@/application/zones/playback/patchBuilder';
@@ -116,6 +117,7 @@ export class PlayRequestService {
     }
 
     this.deps.audioManager.markPlayRequest(zoneId, { uri, type });
+    forgetPlayContext(ctx);
 
     if (hasSlowStreamResolution(req.provider)) {
       this.deps.notifier.notifyZoneStateChanged({
@@ -323,6 +325,10 @@ export class PlayRequestService {
     });
     ctx.queueController.setItems(queueItems, clampedIndex);
     ctx.metadata.queueShuffled = false;
+    rememberPlayContext(ctx, req, queueItems, {
+      resolveFolder: (service, user, folderId) => this.deps.contentPort.resolveFolder(service, user, folderId),
+      onRemembered: () => this.deps.notifier.notifyZoneStateChanged(ctx.state),
+    });
     const immediateCurrent = ctx.queueController.current();
     if (immediateCurrent && !hasSlowStreamResolution(req.provider)) {
       const immediatePatch = buildQueueItemPlaybackPatch(

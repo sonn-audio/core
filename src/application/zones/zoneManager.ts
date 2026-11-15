@@ -1,3 +1,5 @@
+import type { ZonePlayContext } from '@/domain/zones/playContext';
+import { readPlayContext } from '@/application/zones/playback/playContext';
 import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
@@ -1133,6 +1135,11 @@ export class ZoneManager {
     ) {
       this.audioManager.equalizerScheduler.schedule(zoneId);
     }
+  }
+
+  /** What a zone is playing from — see {@link readPlayContext}. */
+  public getPlayContext(zoneId: number): ZonePlayContext | null {
+    return readPlayContext(this.zoneRepo.get(zoneId));
   }
 
   /** Whether loudness compensation is switched on for a zone; null when the zone is unknown. */

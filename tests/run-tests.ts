@@ -210,6 +210,7 @@ import './loudness.test';
 import './loxoneClientLists.test';
 import './customRadioCover.test';
 import './loxoneDefaultAccount.test';
+import './loxonePlayContext.test';
 import './browseRef.test';
 import './libraryProjectionSource.test';
 import './streamFormat.test';
