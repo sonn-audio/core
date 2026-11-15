@@ -6,6 +6,7 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 import type { AudioServerConfig } from '@/domain/config/types';
 import {
   getAllGroups,
+  getGroupByExternalId,
   getGroupByLeader,
   getGroupByZone,
   onGroupChanged,
@@ -34,6 +35,10 @@ export class GroupManager {
   private zoneManager: ZoneManagerFacade | null = null;
   private readonly airplayGroup: AirplayGroupCoordinator;
   private readonly configPort: ConfigPort;
+  /** The Miniserver's fixed groups as last applied, each with the leader it has now. */
+  private fixedDefinitions: FixedGroupDefinition[] = [];
+  /** Set while a group is taken down only to be put up again in another shape. */
+  private regrouping = false;
 
   constructor(notifier: NotifierPort, airplayGroup: AirplayGroupCoordinator, configPort: ConfigPort) {
     this.notifier = notifier;
@@ -56,7 +61,9 @@ export class GroupManager {
           break;
         case 'remove': {
           this.log.info('group removed', context);
-          if (record?.members?.length) {
+          // Taken down to be put up again around another leader or as part of a larger group:
+          // its rooms keep playing, so none of them is stopped on the way.
+          if (record?.members?.length && !this.regrouping) {
             void this.airplayGroup.stopGroupMembers(record.leader, record.members);
             const membersToStop = record.members.filter((memberId) => memberId !== record.leader);
             membersToStop.forEach((memberId) => {
@@ -335,27 +342,44 @@ export class GroupManager {
     if (record.source === 'manual') {
       void this.unpersistGroup(record.leader);
     }
+    // A fixed group the dynamic one had taken in is there again once it is gone.
+    if (this.fixedDefinitions.length) {
+      this.applyFixedGroups();
+    }
   }
 
   public upsert(input: Omit<GroupRecord, 'updatedAt'>): void {
     let record = input;
     if (record.source !== 'fixed') {
-      // A zone in a fixed group stays there: it cannot lead or join another group.
-      const leaderGroup = getGroupByZone(record.leader);
-      if (leaderGroup?.source === 'fixed') {
-        this.log.info('zone is in a fixed group; group not changed', {
+      const zones = [record.leader, ...record.members];
+      const touched = this.fixedDefinitions.filter((definition) =>
+        definition.members.some((zoneId) => zones.includes(zoneId)),
+      );
+      if (touched.length) {
+        // The players of a fixed group always play the same source (Loxone's own definition of
+        // it), so a dynamic group that takes in one of them takes in all of them.
+        const all = Array.from(new Set([...zones, ...touched.flatMap((definition) => definition.members)]));
+        const only = touched.length === 1 ? touched[0]! : null;
+        if (only && all.length === only.members.length) {
+          // Exactly the fixed group: nothing to form, only who leads it.
+          this.leadFixedGroup(record.leader);
+          return;
+        }
+        this.log.info('dynamic group takes in a fixed group', {
           leader: record.leader,
-          fixedGroup: leaderGroup.externalId,
+          fixedGroups: touched.map((definition) => definition.externalId),
+          members: all,
         });
-        return;
-      }
-      const members = record.members.filter((zoneId) => getGroupByZone(zoneId)?.source !== 'fixed');
-      if (members.length !== record.members.length) {
-        this.log.info('zones in a fixed group left out of the group', {
-          leader: record.leader,
-          leftOut: record.members.filter((zoneId) => !members.includes(zoneId)),
-        });
-        record = { ...record, members };
+        for (const definition of touched) {
+          if (definition.members.includes(record.leader)) {
+            definition.leader = record.leader;
+          }
+          const fixed = getGroupByExternalId(definition.externalId);
+          if (fixed?.source === 'fixed') {
+            this.regroup(() => removeGroupByLeader(fixed.leader));
+          }
+        }
+        record = { ...record, members: all };
       }
     }
     const previous = getGroupByLeader(record.leader);
@@ -394,21 +418,22 @@ export class GroupManager {
    * Called with the full list every time a config arrives (and at startup from the stored
    * one): groups no longer in it are removed, new ones are created, changed membership is
    * applied. The players then follow their leader through the same machinery as a dynamic
-   * group, which matters because the Loxone app sends every command for a fixed group to its
-   * first player only.
+   * group.
    *
-   * A zone can only be in one group, and the fixed group wins: a dynamic group that holds one
-   * of its zones lets go of it, and is dissolved when its leader is one of them or fewer than
-   * two zones are left. Dynamic groups that share no zone with a fixed group are not touched.
+   * Loxone gives a fixed group no master: its players always play the same source, whichever of
+   * them it was started on. So the leader is only who plays for the group right now. It starts
+   * as the first player and moves to whichever player content is started on
+   * (`leadFixedGroup`); a new config keeps the leader the group already has.
    */
   public reconcileFixedGroups(definitions: readonly FixedGroupDefinition[]): void {
+    const previous = new Map(this.fixedDefinitions.map((definition) => [definition.externalId, definition.leader]));
     const claimed = new Set<number>();
-    const wanted = new Map<string, FixedGroupDefinition>();
+    const wanted: FixedGroupDefinition[] = [];
     for (const definition of definitions) {
       const zones = Array.from(
         new Set([definition.leader, ...definition.members].filter((id) => Number.isInteger(id) && id > 0)),
       );
-      if (zones.length < 2 || !definition.externalId || wanted.has(definition.externalId)) {
+      if (zones.length < 2 || !definition.externalId || wanted.some((w) => w.externalId === definition.externalId)) {
         continue;
       }
       const taken = zones.filter((zoneId) => claimed.has(zoneId));
@@ -420,42 +445,88 @@ export class GroupManager {
         continue;
       }
       zones.forEach((zoneId) => claimed.add(zoneId));
-      wanted.set(definition.externalId, { externalId: definition.externalId, leader: zones[0]!, members: zones });
+      const kept = previous.get(definition.externalId);
+      const leader = kept !== undefined && zones.includes(kept) ? kept : zones[0]!;
+      wanted.push({ externalId: definition.externalId, leader, members: zones });
     }
+    this.fixedDefinitions = wanted;
+    this.applyFixedGroups();
+  }
+
+  /**
+   * Make `zoneId` the leader of the fixed group it is in. True when the group was handed over.
+   *
+   * With `endPreviousLeader` the old leader's own playback is ended first: content is about to
+   * be started on the new one, and what the old leader played would otherwise go on as a session
+   * nobody hears. A regroup from the app leaves it alone.
+   */
+  public leadFixedGroup(zoneId: number, opts: { endPreviousLeader?: boolean } = {}): boolean {
+    const record = getGroupByZone(zoneId);
+    if (!record || record.source !== 'fixed' || record.leader === zoneId) {
+      return false;
+    }
+    const definition = this.fixedDefinitions.find((d) => d.externalId === record.externalId);
+    if (definition) {
+      definition.leader = zoneId;
+    }
+    this.log.info('fixed group led by another player', {
+      externalId: record.externalId,
+      from: record.leader,
+      to: zoneId,
+    });
+    this.regroup(() => removeGroupByLeader(record.leader));
+    if (opts.endPreviousLeader) {
+      try {
+        this.zones.handleCommand(record.leader, 'stop');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log.warn('failed to stop the previous leader of a fixed group', { zoneId: record.leader, message });
+      }
+    }
+    this.upsert({
+      leader: zoneId,
+      members: record.members,
+      backend: record.backend,
+      externalId: record.externalId,
+      source: 'fixed',
+    });
+    return true;
+  }
+
+  /** Put the tracked fixed groups up as `fixedDefinitions` says, around the dynamic groups. */
+  private applyFixedGroups(): void {
+    const wanted = new Map(this.fixedDefinitions.map((definition) => [definition.externalId, definition]));
 
     for (const record of getAllGroups()) {
       if (record.source !== 'fixed') continue;
       const next = record.externalId ? wanted.get(record.externalId) : undefined;
-      if (!next || next.leader !== record.leader) {
+      if (!next) {
         removeGroupByLeader(record.leader);
+      } else if (next.leader !== record.leader) {
+        this.regroup(() => removeGroupByLeader(record.leader));
       }
     }
 
+    // A dynamic group that holds a player of a fixed group holds all of them.
     for (const record of getAllGroups()) {
       if (record.source === 'fixed') continue;
-      const remaining = record.members.filter((zoneId) => !claimed.has(zoneId));
-      if (remaining.length === record.members.length) continue;
-      if (claimed.has(record.leader) || remaining.length < 2) {
-        this.log.info('dynamic group dissolved: its zones are in a fixed group', {
-          leader: record.leader,
-          externalId: record.externalId,
-        });
-        removeGroupByLeader(record.leader);
-        if (record.source === 'manual') {
-          void this.unpersistGroup(record.leader);
-        }
-        continue;
-      }
+      const touched = this.fixedDefinitions.filter((definition) =>
+        definition.members.some((zoneId) => record.members.includes(zoneId)),
+      );
+      const missing = touched.flatMap((d) => d.members).filter((zoneId) => !record.members.includes(zoneId));
+      if (!missing.length) continue;
       this.upsert({
         leader: record.leader,
-        members: remaining,
+        members: record.members,
         backend: record.backend,
         externalId: record.externalId,
         source: record.source,
       });
     }
 
-    for (const definition of wanted.values()) {
+    for (const definition of this.fixedDefinitions) {
+      const holder = getGroupByZone(definition.leader);
+      if (holder && holder.source !== 'fixed') continue;
       this.upsert({
         leader: definition.leader,
         members: definition.members,
@@ -463,6 +534,15 @@ export class GroupManager {
         externalId: definition.externalId,
         source: 'fixed',
       });
+    }
+  }
+
+  private regroup(step: () => void): void {
+    this.regrouping = true;
+    try {
+      step();
+    } finally {
+      this.regrouping = false;
     }
   }
 

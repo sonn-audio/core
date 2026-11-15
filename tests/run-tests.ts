@@ -1829,6 +1829,22 @@ test('the players of a Loxone fixed group follow the leader the app drives (#434
   assert.equal(groupTracker.getGroupByZone(MEMBER), undefined, 'gone once the config no longer has it');
 });
 
+test('content started on a zone is announced first, so a fixed group can follow it (#430)', async () => {
+  const { zoneManager } = await getZoneHarness();
+  await zoneManager.replaceAll([createZoneConfig(31, 'Study')], { spotify: {} });
+  const seen: number[] = [];
+  zoneManager.setContentStartHook((zoneId) => {
+    seen.push(zoneId);
+    throw new Error('a failing hook does not stop the play');
+  });
+  try {
+    await zoneManager.playContent(31, 'radioparadise:0', 'serviceplay').catch(() => undefined);
+    assert.deepEqual(seen, [31]);
+  } finally {
+    zoneManager.setContentStartHook(null);
+  }
+});
+
 test('group join/leave emits audio sync payloads', async () => {
   const harness = await getZoneHarness();
   const {

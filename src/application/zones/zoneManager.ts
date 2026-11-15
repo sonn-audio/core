@@ -148,6 +148,8 @@ export type ZoneQueueOps = Pick<
 
 export class ZoneManager {
   private readonly log = createLogger('Zones', 'Manager');
+  /** Told first whenever content is started on a zone; see `setContentStartHook`. */
+  private contentStartHook: ((zoneId: number) => void) | null = null;
   private readonly zoneRepo = new ZoneRepository();
   private readonly stateStore: ZoneStateStore;
   private readonly queueController: ZoneQueueController;
@@ -599,6 +601,15 @@ export class ZoneManager {
     }
   }
 
+  /**
+   * Runs before content is started on a zone. The group manager uses it to hand a Loxone fixed
+   * group to the player the content was started on, since such a group has no master: whichever
+   * player is played, the whole group plays it (#430).
+   */
+  public setContentStartHook(hook: ((zoneId: number) => void) | null): void {
+    this.contentStartHook = hook;
+  }
+
   public async playContent(
     zoneId: number,
     uri: string,
@@ -606,6 +617,12 @@ export class ZoneManager {
     metadata?: PlaybackMetadata,
     options?: { startAtSec?: number },
   ): Promise<void> {
+    try {
+      this.contentStartHook?.(zoneId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.warn('content start hook failed', { zoneId, message });
+    }
     // Music started in a room that follows its leader's stream is music for the group. Started
     // on the member it became a session of the member's own, which its speaker never played:
     // the room showed a track the group was not playing until the leader moved on (#409).

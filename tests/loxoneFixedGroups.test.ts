@@ -196,7 +196,7 @@ test('at startup the fixed groups come from the stored config (#434)', async () 
   }
 });
 
-test('dgroup cannot dissolve or regroup a fixed group (#434)', async () => {
+test('dgroup cannot dissolve a fixed group (#434)', async () => {
   const { setconfig, handlers, cleanUp } = setUp();
   try {
     await setconfig(payload([{ uuid: GROUP, players: [14, 15] }]));
@@ -204,41 +204,102 @@ test('dgroup cannot dissolve or regroup a fixed group (#434)', async () => {
     await handlers.audioCfgDynamicGroup(`audio/cfg/dgroup/update/${GROUP}`);
     await handlers.audioCfgDynamicGroup('audio/cfg/dgroup/update/grp-14-sendspin-abc');
     assert.deepEqual(getGroupByZone(15)?.members, [14, 15], 'an ungroup leaves it alone');
-
-    const refused = await handlers.audioCfgDynamicGroup('audio/cfg/dgroup/update/new/14,16');
-    assert.match(JSON.stringify(refused), /fixed-group/);
-    await handlers.audioCfgDynamicGroup(`audio/cfg/dgroup/update/${GROUP}/15,16`);
-    assert.deepEqual(getGroupByZone(14)?.members, [14, 15], 'its leader cannot lead another group');
-
-    await handlers.audioCfgDynamicGroup('audio/cfg/dgroup/update/new/16,15,19');
-    assert.deepEqual(getGroupByZone(16)?.members, [16, 19], 'its players cannot join one');
-    assert.deepEqual(getGroupByZone(15)?.members, [14, 15]);
+    assert.equal(getGroupByZone(15)?.source, 'fixed');
   } finally {
     cleanUp();
   }
 });
 
-test('a zone that becomes part of a fixed group leaves its dynamic group (#434)', async () => {
+test('grouping exactly the players of a fixed group hands it to the leader asked for (#430)', async () => {
+  // The app still offers "Create group" for those players, and sonn refused it: the
+  // speakers stayed apart and the reporter could not group them at all.
+  const { setconfig, handlers, commands, cleanUp } = setUp();
+  try {
+    await setconfig(payload([{ uuid: GROUP, players: [14, 15] }]));
+    commands.length = 0;
+
+    const reply = await handlers.audioCfgDynamicGroup('audio/cfg/dgroup/update/new/15,14');
+    assert.doesNotMatch(JSON.stringify(reply), /error/);
+    assert.match(JSON.stringify(reply), new RegExp(GROUP), 'the group they are in is the fixed one');
+    const group = getGroupByZone(14);
+    assert.equal(group?.leader, 15);
+    assert.equal(group?.source, 'fixed');
+    assert.deepEqual(commands, [], 'nothing is stopped on the way');
+  } finally {
+    cleanUp();
+  }
+});
+
+test('a dynamic group with a player of a fixed group takes in all of them, and gives them back (#430)', async () => {
+  const { cfg, setconfig, handlers, commands, cleanUp } = setUp();
+  try {
+    await setconfig(payload([{ uuid: GROUP, players: [14, 15] }]));
+    commands.length = 0;
+
+    const reply = await handlers.audioCfgDynamicGroup('audio/cfg/dgroup/update/new/16,15');
+    const id = (JSON.stringify(reply).match(/grp-16-[^"\\]+/) ?? [])[0];
+    assert.ok(id, 'a dynamic group is formed');
+    const group = getGroupByZone(14);
+    assert.equal(group?.leader, 16);
+    assert.deepEqual(group?.members, [16, 14, 15], 'its fixed partner comes along');
+    assert.equal(group?.source, 'manual');
+    assert.deepEqual(commands, [], 'nothing is stopped on the way');
+
+    await handlers.audioCfgDynamicGroup(`audio/cfg/dgroup/update/${id}`);
+    assert.equal(getGroupByZone(16), undefined);
+    assert.deepEqual(getGroupByZone(15)?.members, [14, 15], 'the fixed group is back');
+    assert.equal(getGroupByZone(15)?.source, 'fixed');
+    assert.deepEqual(cfg.groups?.audioGroups, [], 'and the dynamic one is forgotten');
+  } finally {
+    cleanUp();
+  }
+});
+
+test('content started on another player of a fixed group makes it the leader (#430)', async () => {
+  // Loxone gives a fixed group no master: whichever player is played, the group plays it.
+  const { groupManager, setconfig, commands, cleanUp } = setUp();
+  try {
+    await setconfig(payload([{ uuid: GROUP, players: [14, 15] }]));
+    commands.length = 0;
+
+    assert.equal(groupManager.leadFixedGroup(15, { endPreviousLeader: true }), true);
+    assert.equal(getGroupByZone(14)?.leader, 15);
+    assert.deepEqual(getGroupByZone(14)?.members, [15, 14]);
+    assert.deepEqual(commands, ['14:stop'], 'only what the old leader played is ended');
+
+    assert.equal(groupManager.leadFixedGroup(15, { endPreviousLeader: true }), false, 'already leading');
+    assert.equal(groupManager.leadFixedGroup(16), false, 'not in a fixed group');
+
+    await setconfig(payload([{ uuid: GROUP, players: [14, 15, 16] }]));
+    assert.equal(getGroupByZone(16)?.leader, 15, 'a new config keeps the leader it has');
+  } finally {
+    cleanUp();
+  }
+});
+
+test('a dynamic group that holds a player of a new fixed group takes in the rest of it (#430)', async () => {
   const { cfg, groupManager, setconfig, cleanUp } = setUp();
   try {
-    // 16+15 and 19+20+14 were grouped in the app; 15 and 14 are now configured as fixed.
     groupManager.upsert({ leader: 16, members: [16, 15], externalId: 'grp-16', backend: 'Unknown', source: 'manual' });
-    groupManager.upsert({ leader: 19, members: [19, 20, 14], externalId: 'grp-19', backend: 'Unknown', source: 'manual' });
+    groupManager.upsert({ leader: 19, members: [19, 20], externalId: 'grp-19', backend: 'Unknown', source: 'manual' });
     await setconfig(payload([{ uuid: GROUP, players: [14, 15] }]));
 
-    assert.equal(getGroupByZone(16), undefined, 'a dynamic group left with one zone is dissolved');
-    assert.deepEqual(getGroupByZone(19)?.members, [19, 20], 'one with zones to spare keeps them');
+    assert.deepEqual(getGroupByZone(14)?.members, [16, 14, 15]);
+    assert.deepEqual(getGroupByZone(19)?.members, [19, 20], 'a group without its players is untouched');
+    assert.equal(
+      getAllGroups().filter((g) => g.source === 'fixed').length,
+      0,
+      'the fixed group waits until the dynamic one is dissolved',
+    );
+    assert.deepEqual(
+      [...(cfg.groups?.audioGroups?.find((g) => g.externalId === 'grp-16')?.members ?? [])].sort(),
+      [14, 15, 16],
+      'the persisted dynamic group follows',
+    );
+
+    groupManager.removeGroup('grp-16');
     assert.deepEqual(getGroupByZone(15)?.members, [14, 15]);
-    assert.deepEqual(
-      cfg.groups?.audioGroups,
-      [{ leader: 19, members: [19, 20], externalId: 'grp-19' }],
-      'the persisted dynamic groups follow',
-    );
-    assert.deepEqual(
-      groupManager.getGroupSyncPayload().map((g) => g.group),
-      ['grp-19'],
-      'dynamic groups are still announced',
-    );
+    assert.equal(getGroupByZone(15)?.source, 'fixed');
   } finally {
     cleanUp();
   }

@@ -457,6 +457,9 @@ export function createRuntime(): Runtime {
   lineInActivationService.initOnce({ zoneManager });
   snapcastCore.initOnce({ zoneManager });
   groupManager.initOnce({ zoneManager });
+  zoneManager.setContentStartHook((zoneId) => {
+    groupManager.leadFixedGroup(zoneId, { endPreviousLeader: true });
+  });
   mixedGroupController.initOnce({ zoneManager });
   favoritesManager.initOnce({ zoneManager });
   alertsManager.initOnce({ zoneManager, configPort });

@@ -39,6 +39,7 @@ export type ZoneManagerFacade = Pick<
   | 'inputs'
   | 'queue'
   | 'playContent'
+  | 'setContentStartHook'
   | 'handoff'
   | 'renameZone'
   | 'setOutputLatency'
