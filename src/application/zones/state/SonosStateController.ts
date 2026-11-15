@@ -521,7 +521,7 @@ export class SonosStateController implements ZoneStateController {
     const mode = mapPlaybackState(group.playbackState);
     const audiotype = resolveAudiotype(group, track?.mediaUrl ?? '', container?.type ?? '');
     const sourceName = resolveSourceName(audiotype, container?.name ?? '', group.name, this.zone.name);
-    this.noteSpeakerSource(ownStream, trackMediaUrl, mode, sourceName);
+    this.noteSpeakerSource(ownStream, trackMediaUrl, mode, sourceName, audiotype);
     const title = cleanString(track?.name) || cleanString(container?.name) || sourceName;
     const artist = cleanString(track?.artist?.name) || cleanString(metadata?.streamInfo) || '';
     const album = cleanString(track?.album?.name) || '';
@@ -597,13 +597,27 @@ export class SonosStateController implements ZoneStateController {
    * - a stopped or paused speaker, which is also how our own pause comes back (#345);
    * - no URL at all, which the speaker reports for a moment while it loads ours;
    * - `x-rincon:`, a speaker following a group coordinator, which is how our own grouping looks.
+   *
+   * TV audio and a line-in are the exception to the first two: a soundbar reports its TV input as
+   * stopped, and sometimes without a URL, while the TV plays through it. Only the speaker itself
+   * switches to those, so seeing one after our stream is a takeover whatever state it reports.
    */
-  private noteSpeakerSource(ownStream: boolean, mediaUrl: string, mode: ZoneState['mode'], sourceName: string): void {
+  private noteSpeakerSource(
+    ownStream: boolean,
+    mediaUrl: string,
+    mode: ZoneState['mode'],
+    sourceName: string,
+    audiotype: number,
+  ): void {
     if (ownStream) {
       this.ownStreamSeen = true;
       return;
     }
-    if (!this.ownStreamSeen || mode !== 'play' || !mediaUrl || /^x-rincon:/i.test(mediaUrl)) {
+    if (!this.ownStreamSeen || /^x-rincon:/i.test(mediaUrl)) {
+      return;
+    }
+    const ownInput = audiotype === AudioType.LineIn;
+    if (!ownInput && (mode !== 'play' || !mediaUrl)) {
       return;
     }
     this.ownStreamSeen = false;

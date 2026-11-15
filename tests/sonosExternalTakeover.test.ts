@@ -63,6 +63,23 @@ test('a sonos speaker that goes to TV audio while it plays our stream is a takeo
   assert.equal(takeovers.length, 1);
 });
 
+test('TV audio a soundbar reports as stopped is still a takeover (#430)', () => {
+  // The reporter's soundbar showed its TV input as STOPPED while the TV played through it, so the
+  // session went on and its next track took the speaker back.
+  const { takeovers, report } = createController();
+  report(speaker('PLAYBACK_STATE_PLAYING', OWN_TRACK_1));
+  report(speaker('PLAYBACK_STATE_IDLE', TV, { type: 'linein', name: 'TV Audio' }));
+  assert.equal(takeovers.length, 1);
+  assert.equal(takeovers[0]?.sourceName, 'TV Audio');
+});
+
+test('a line-in reported without a URL after our stream is a takeover (#430)', () => {
+  const { takeovers, report } = createController();
+  report(speaker('PLAYBACK_STATE_PLAYING', OWN_TRACK_1));
+  report(speaker('PLAYBACK_STATE_IDLE', '', { type: 'linein', name: 'TV Audio' }));
+  assert.equal(takeovers.length, 1);
+});
+
 test('our own stream, under any URL of ours, is never a takeover (#430)', () => {
   const { takeovers, report } = createController();
   report(speaker('PLAYBACK_STATE_PLAYING', OWN_TRACK_1));
