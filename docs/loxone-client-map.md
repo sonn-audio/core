@@ -24,7 +24,8 @@ send, and what must we send back for it to accept it".
   - `shared-app.js` — typed command library and repositories
   - `scripts10.js`, `scripts11.js`, `scripts5.js`, `controls1.js` — legacy `MediaServerComp`
 - **Executable form of this contract:** `tests/loxoneClientEvents.test.ts` (events),
-  `tests/loxoneClientCommands.test.ts` (command answers) and
+  `tests/loxoneClientCommands.test.ts` (command answers), `tests/loxoneClientLists.test.ts`
+  (the rows of browse lists) and
   `tests/loxoneClientSchemas.test.ts` (queue, recents, favourites) transcribe the client's zod
   schemas and parse what we emit with them. When this document and those tests disagree, the
   tests are what `npm test` enforces.
@@ -487,9 +488,19 @@ schema describes. These answered in a shape the app could not read and were corr
 `pause`, `volume` (a boolean), `position` (`[{position}]`), `repeat`, `shuffle`, `serviceplay`
 (`"ok"`), `playurl` (`{uri}`), `playlist/play` (under `linein_result`), `library/play` (under
 `play_result`), `linein`, `roomfav/plus`, `audio/cfg/rescan`, `audio/cfg/seteq` (two shapes),
-and `recent/clear`, which shared a route with reading the list and cleared nothing. Not yet
-compared item by item: the contents of `getservicefolder`, `getmediafolder`, `getplaylists2`,
-`getinputs` and the search results.
+and `recent/clear`, which shared a route with reading the list and cleared nothing.
+
+**Lists.** The rows of `getservicefolder`, `getmediafolder`, `getplaylists2`, `getinputs`,
+`getradios` and `getservices` are parsed by the app's raw schemas in
+`tests/loxoneClientLists.test.ts`. The library, playlists, line-ins, radio menu and services
+passed as they were. Service rows did not, in three cases that depended on the producer: a
+container described by `kind` alone has no `tag` and fits no row shape, which fails the whole
+folder; a `category` is a container to us and has to be a `Folder` (type 1) to the app; and a
+track without a `thumbnail` is accepted by the last shape on the list and drawn as a radio
+station. `shapeServiceItemsForLoxone` (`commands/utils/loxoneItems.ts`) now applies those rules
+in the one place every service row passes — service folders and streaming search results —
+instead of in each provider. Not covered: rows from a live provider (the tests use rows built
+the way providers build them), `getavailableservices`, and the Soundsuit shapes we never send.
 
 **Events:** `service_changed_event`, `restart_event`, `reboot_event`, `usbchanged_event` and
 `customurl_changed_event` were sent as arrays, and `playlistchanged_event` without `name` on

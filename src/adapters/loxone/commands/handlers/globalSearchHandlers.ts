@@ -1,5 +1,8 @@
 import { buildResponse } from '@/adapters/loxone/commands/responses';
-import { forLoxoneSearchResult } from '@/adapters/loxone/commands/utils/loxoneItems';
+import {
+  forLoxoneSearchResult,
+  forLoxoneServiceSearchResult,
+} from '@/adapters/loxone/commands/utils/loxoneItems';
 import { splitCommand, decodeSegment, parseNumberPart } from '@/adapters/loxone/commands/utils/commandUtils';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
@@ -28,9 +31,12 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
         try {
           const { result, user, providerId } = await contentManager.globalSearch(source, query);
           const provider = (providerId || source.split('@')[0] || 'spotify').split('@')[0] ?? 'spotify';
+          // The library and the radio have row schemas of their own; everything else reaches
+          // the app as a streaming service and has to fit its service rows.
+          const isOwnSchema = ['local', 'library', 'tunein', 'radio'].includes(provider.toLowerCase());
           notifier.notifyGlobalSearchResult(
             {
-              ...forLoxoneSearchResult(result),
+              ...(isOwnSchema ? forLoxoneSearchResult(result) : forLoxoneServiceSearchResult(result)),
               user,
               query,
             },
@@ -81,7 +87,9 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
       const account = isLocal ? 'local' : isRadio ? 'tunein' : `${service}@${user}`;
       try {
         const found = await contentManager.globalSearch(`${account}:${tag}#${wanted}`, query);
-        const result = forLoxoneSearchResult(found.result) as Record<string, unknown>;
+        const result = (
+          where === 'spotify' ? forLoxoneServiceSearchResult(found.result) : forLoxoneSearchResult(found.result)
+        ) as Record<string, unknown>;
         const rows = result[`${tag}s`] ?? result[tag];
         const all = Array.isArray(rows) ? rows : [];
         const totals = (found.result as { _totals?: Record<string, number> })._totals;

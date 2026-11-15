@@ -11,7 +11,7 @@ import {
   encodeLoxoneId,
 } from '@/adapters/loxone/commands/utils/loxoneIdCodec';
 import type { ContentFolderItem } from '@/ports/ContentTypes';
-import { forLoxoneFolder } from '@/adapters/loxone/commands/utils/loxoneItems';
+import { forLoxoneFolder, forLoxoneServiceFolder } from '@/adapters/loxone/commands/utils/loxoneItems';
 import { toProviderNode, rootItemsForLoxone } from '@/adapters/loxone/commands/utils/loxoneServiceFolders';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import { decodeBase64Segment, safeJsonParse } from '@/adapters/loxone/commands/utils/payload';
@@ -247,7 +247,7 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
         // total would advertise rows that are not in the payload.
         projected = { ...folder, items, totalitems: items.length };
       }
-      return buildResponse(command, 'getservicefolder', [forLoxoneFolder(projected)]);
+      return buildResponse(command, 'getservicefolder', [forLoxoneServiceFolder(projected)]);
     },
     audioCfgRescan: (command: string) => {
       void contentManager.rescanLibrary();
