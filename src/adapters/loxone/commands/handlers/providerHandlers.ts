@@ -126,6 +126,18 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
         return buildResponse(command, 'radios', { action: 'add', name, url, error: 1 });
       }
     },
+    // PUT audio/cfg/radios/coverurl/<id> — a picture for a custom stream, as the request body.
+    // The app sends this ahead of `add`'s follow-up or `modify` and only looks at the status.
+    audioCfgRadiosCoverUrl: async (command: string, payload?: Buffer) => {
+      const parts = splitCommand(command);
+      const id = parts[4] ? decodeURIComponent(parts[4]) : '';
+      const coverurl = id && payload?.length ? await contentManager.setCustomRadioCover(id, payload) : null;
+      if (coverurl) {
+        notifier.notifyCustomUrlChanged('changed', id);
+      }
+      // CustomRadioError: NONE=0, FILE_NOT_FOUND=-3 (no such station, or not an image).
+      return buildResponse(command, 'radios', { action: 'coverurl', id, coverurl: coverurl ?? '', error: coverurl ? 0 : -3 });
+    },
     // audio/cfg/radios/del/<id> — remove a custom stream.
     audioCfgRadiosDel: async (command: string) => {
       const parts = splitCommand(command);

@@ -50,6 +50,12 @@ import {
 } from '@/adapters/content/providerCapabilities';
 import { createLogger } from '@/shared/logging/logger';
 import type { CustomRadioStore } from '@/adapters/content/providers/customRadioStore';
+import { resolveCoverHost } from '@/shared/utils/net';
+import {
+  CUSTOM_RADIO_COVER_DIR,
+  removeCustomRadioCover,
+  saveCustomRadioCover,
+} from '@/adapters/content/providers/customRadioCovers';
 
 const AVAILABLE_SERVICES = [
   {
@@ -374,9 +380,35 @@ export class ContentManager {
     return entry ? { id: entry.id, name: entry.name, stream: entry.stream } : null;
   }
 
+  /**
+   * Give a custom radio stream an uploaded picture (native `PUT audio/cfg/radios/coverurl`).
+   *
+   * Returns the url the picture is served at, or null when the station is unknown or the bytes
+   * are not an image. The url carries a timestamp: the file name is the station's, so a
+   * replaced picture would otherwise be the old one to every client that had cached it.
+   */
+  public async setCustomRadioCover(id: string, data: Buffer): Promise<string | null> {
+    const station = (await this.customRadioStore.list()).find((entry) => entry.id === id);
+    if (!station) {
+      return null;
+    }
+    const fileName = await saveCustomRadioCover(id, data);
+    if (!fileName) {
+      return null;
+    }
+    const host = resolveCoverHost(this.getConfigPort().getSystemConfig().audioserver.ip);
+    const coverurl = `http://${host}:7090/music/${CUSTOM_RADIO_COVER_DIR}/${fileName}?cb=${Date.now()}`;
+    await this.customRadioStore.update(id, { coverurl });
+    return coverurl;
+  }
+
   /** Remove a custom radio stream by id (native `audio/cfg/radios/del`). */
   public async removeCustomRadio(id: string): Promise<boolean> {
-    return this.customRadioStore.remove(id);
+    const removed = await this.customRadioStore.remove(id);
+    if (removed) {
+      await removeCustomRadioCover(id);
+    }
+    return removed;
   }
 
   public getPlaylists(

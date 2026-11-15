@@ -460,8 +460,6 @@ Compared with `src/adapters/loxone/commands/router/routeRegistry.ts` and
   the app as a Spotify account, and without `asdefault` the app opens the first one in every
   zone (`getDefaultSpotifyIdForPlayer`, `shared-app.js:20108`). Needs the choice persisted per
   account and returned in `getservices`.
-- `PUT audio/cfg/radios/coverurl/<id>` — a picture for a custom station. We have nowhere to
-  keep and serve an uploaded cover; the upload is accepted and ignored.
 - `audio/cfg/servicecfg/add` and `…/update` — schemas exist in the app, nothing in 17.3.0 calls
   them; account sign-in goes through `getlink`.
 - `audio/<pid>/centergain` — only offered when the Miniserver's structure file sets the
@@ -474,6 +472,11 @@ so the app offers the switch. What it does is ours to define — the app only se
 bass and treble lift that follows the zone's volume (`src/domain/zones/loudness.ts`), applied by
 the engine's own DSP on top of the zone's equalizer. Pinned in `tests/loudness.test.ts`. Not yet
 checked: how a Miniserver reacts to an Audioserver announcing 18.1.
+
+**Custom station pictures** (`PUT audio/cfg/radios/coverurl/<id>`) are stored under
+`data/music/customradio/` — the tree the `/music` route on :7090 already serves — and the
+station's `coverurl` points there. Only JPEG, PNG, GIF and WebP are accepted, told by their
+first bytes. Pinned in `tests/customRadioCover.test.ts`.
 
 **Closed since the first comparison:** `audio/cfg/search/…` (paged category search),
 `audio/<pid>/queue/move/<uid>/end`, `audio/cfg/roomfavs/<pid>/setplus/…`,

@@ -208,6 +208,7 @@ import './loxoneClientEvents.test';
 import './loxoneClientCommands.test';
 import './loudness.test';
 import './loxoneClientLists.test';
+import './customRadioCover.test';
 import './browseRef.test';
 import './libraryProjectionSource.test';
 import './streamFormat.test';
