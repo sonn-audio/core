@@ -49,6 +49,8 @@ export interface LoxoneZoneState {
   mode: 'play' | 'pause' | 'stop';
   name: string;
   parent: LoxoneParentMeta | null;
+  /** Which transport controls to offer; absent when all of them work. */
+  pbr?: number;
   playerid: number;
   plrepeat: number;
   plshuffle: number;
@@ -97,6 +99,8 @@ export type ZoneStateProjectionContext = {
    * by its id in every audiopath; a real Spotify account is not always.
    */
   serviceAccounts?: () => ReadonlyArray<LoxoneServiceAccount>;
+  /** What the zone's transport controls will do right now — see {@link toLoxonePbr}. */
+  transport?: LoxoneTransport | null;
 };
 
 function clamp01to100(value: unknown): number {
@@ -143,6 +147,46 @@ function blankAudiopathStation(station: string | undefined): string {
     return '';
   }
   return looksLikeAudiopath(raw) ? '' : (station ?? '');
+}
+
+export type LoxoneTransport = { skip: boolean; seek: boolean; shuffle: boolean; repeat: boolean };
+
+/** `PlaybackControlBit` in the client. Each bit is something the zone *can* do. */
+const PlaybackControlBit = {
+  TRACKSEEK: 32,
+  PREV: 512,
+  NEXT: 1024,
+  SHUFFLE: 2048,
+  REPEAT_ALL: 4096,
+  REPEAT_ONE: 8192,
+} as const;
+
+/**
+ * Set on every mask we send. The client reads a mask of zero as "no mask" for next/previous
+ * and for seeking (`!r.pbr`), so a zone that can do none of the four would otherwise get all
+ * of its skip and seek controls back. No client code reads this bit.
+ */
+const PBR_PRESENT = 1;
+
+/**
+ * `pbr` — which transport controls the client should offer for this zone.
+ *
+ * Left out when everything works, which is every zone playing from a queue of its own: no
+ * mask is what the client has always had from us, and it then offers everything. A mask goes
+ * out only for the zones where a button would be ignored — AirPlay, Bluetooth, a line-in,
+ * Spotify Connect — and says what is left.
+ */
+function toLoxonePbr(transport: LoxoneTransport | null | undefined): number | undefined {
+  if (!transport || (transport.skip && transport.seek && transport.shuffle && transport.repeat)) {
+    return undefined;
+  }
+  return (
+    PBR_PRESENT |
+    (transport.skip ? PlaybackControlBit.NEXT | PlaybackControlBit.PREV : 0) |
+    (transport.seek ? PlaybackControlBit.TRACKSEEK : 0) |
+    (transport.shuffle ? PlaybackControlBit.SHUFFLE : 0) |
+    (transport.repeat ? PlaybackControlBit.REPEAT_ALL | PlaybackControlBit.REPEAT_ONE : 0)
+  );
 }
 
 export type LoxoneServiceAccount = { id: string; user: string; fake?: boolean };
@@ -232,6 +276,7 @@ export function toLoxoneZoneState(
     mode: state.mode,
     name: state.name,
     parent: toLoxoneParent(audiopath, account, ctx),
+    pbr: toLoxonePbr(ctx.transport),
     playerid: state.id,
     plrepeat: state.plrepeat,
     plshuffle: state.plshuffle,

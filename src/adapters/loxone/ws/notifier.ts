@@ -4,6 +4,7 @@ import type { ZoneState } from '@/domain/zones/zoneState';
 import {
   toLoxoneZoneState,
   type LoxoneServiceAccount,
+  type LoxoneTransport,
   type LoxoneZoneState,
 } from '@/adapters/loxone/ws/zoneStateProjection';
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
@@ -32,6 +33,7 @@ export class LoxoneWsNotifier {
   private playContextLookup: ((zoneId: number) => { path: string; name: string } | null) | null = null;
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
   private settingsUrlLookup: (() => string | null) | null = null;
+  private transportLookup: ((zoneId: number) => LoxoneTransport | null) | null = null;
   private readonly dialogThrottle = new DialogThrottle();
 
   constructor(
@@ -85,6 +87,14 @@ export class LoxoneWsNotifier {
     this.serviceAccountsLookup = lookup;
   }
 
+  /**
+   * What each zone's transport controls will do, surfaced in `audio_event` as `pbr`. When
+   * unset, no zone carries a mask and the app offers every control (unchanged behaviour).
+   */
+  public setTransportLookup(lookup: ((zoneId: number) => LoxoneTransport | null) | null): void {
+    this.transportLookup = lookup;
+  }
+
   /** Where the audio server's own settings can be opened — the link on a dialog's button. */
   public setSettingsUrlLookup(lookup: (() => string | null) | null): void {
     this.settingsUrlLookup = lookup;
@@ -116,10 +126,35 @@ export class LoxoneWsNotifier {
 
   /** A zone was asked to play and nothing would start. Said once per zone in twenty seconds. */
   public notifyPlaybackFailed(zoneId: number, failure: PlaybackFailure): void {
-    const dialog = playbackFailedDialog({ zoneId, zoneName: failure.zoneName, title: failure.title });
+    // The account was turned away, not the track: that is the other dialog, with the way to
+    // the settings on it.
+    if (failure.refusal) {
+      this.notifyServiceRefused(this.accountOf(failure.audiopath), failure.refusal);
+      return;
+    }
+    const dialog = playbackFailedDialog({
+      zoneId,
+      zoneName: failure.zoneName,
+      title: failure.title,
+      reason: failure.reason,
+    });
     if (this.dialogThrottle.allow(dialog.ID, PLAYBACK_FAILED_QUIET_MS)) {
       this.notifyDialog(dialog);
     }
+  }
+
+  /**
+   * The streaming account an audiopath belongs to, as an id of `getservices`: the one named in
+   * its Loxone form, or the only real Spotify account there is. Empty when it cannot be told.
+   */
+  private accountOf(audiopath: string): string {
+    const loxone = this.audiopathToLoxone?.(audiopath) ?? audiopath;
+    const named = /^spotify@([^:]+)/i.exec(loxone)?.[1];
+    if (named) {
+      return named;
+    }
+    const real = (this.serviceAccountsLookup?.() ?? []).filter((entry) => !entry.fake);
+    return real.length === 1 ? real[0]!.id : '';
   }
 
   /**
@@ -147,6 +182,7 @@ export class LoxoneWsNotifier {
       audiopathToLoxone: (audiopath) => this.audiopathToLoxone?.(audiopath) ?? audiopath,
       playContext: this.playContextLookup?.(state.id) ?? null,
       serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
+      transport: this.transportLookup?.(state.id) ?? null,
     });
   }
 

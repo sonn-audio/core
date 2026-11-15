@@ -538,12 +538,27 @@ streaming service reaches the app as a Spotify account, so this decides which se
 opens on. Pinned in `tests/loxoneDefaultAccount.test.ts`.
 
 **Dialogs** (`dialog_event`) are raised for two things the app cannot show any other way and
-only the listener can fix: a streaming account that was signed out or refused, noticed when
-one of its folders is opened, and a zone that was asked to play and found nothing in its queue
-that would start. The pop-up appears in every connected app at once and the client never
-closes it by itself (`ttl` is required and unused), so each is throttled — once per account
-in ten minutes, once per zone in twenty seconds. `ws/dialogs.ts`, pinned in
-`tests/loxoneDialogs.test.ts`.
+only the listener can fix. The pop-up appears in every connected app at once and the client
+never closes it by itself (`ttl` is required and unused), so each is throttled.
+
+- *A streaming account that was signed out or refused* — noticed when one of its folders is
+  opened, when it is searched, and when a play request is turned away. Once per account in ten
+  minutes, with a button to our settings. Only a provider that throws
+  `ProviderUnavailableError` can be noticed this way, and today that is real Spotify alone: a
+  bridged service that lost its sign-in still answers with an empty list.
+- *A zone that was asked to play and found nothing that would start* — once per zone in
+  twenty seconds, with what the provider reported sorted into copy-protected, refused or no
+  stream, and its own wording kept at the end.
+
+`ws/dialogs.ts`, pinned in `tests/loxoneDialogs.test.ts`.
+
+**Transport controls** (`pbr` in `audio_event`): a mask of what the zone can do — next and
+previous, seek, shuffle, repeat. The app greys out what is missing. We send it only for a zone
+where a control would be ignored (AirPlay, Bluetooth, a line-in, Spotify Connect, Music
+Assistant); a zone playing its own queue carries no mask and gets every control, as before.
+What a zone can do is read off the command handlers
+(`application/zones/playback/transportCapabilities.ts`). Pinned in
+`tests/loxoneTransport.test.ts`, with the app's rules transcribed.
 
 **Custom station pictures** (`PUT audio/cfg/radios/coverurl/<id>`) are stored under
 `data/music/customradio/` — the tree the `/music` route on :7090 already serves — and the

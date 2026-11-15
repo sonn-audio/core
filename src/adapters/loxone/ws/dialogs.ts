@@ -77,19 +77,49 @@ export function serviceRefusedDialog(args: {
  * "… could not be played" — shown when a zone was asked to play and nothing in its queue would
  * start. The app otherwise just stays silent, on a screen that still shows the track.
  */
-export function playbackFailedDialog(args: { zoneId: number; zoneName: string; title?: string }): LoxoneDialog {
+export function playbackFailedDialog(args: {
+  zoneId: number;
+  zoneName: string;
+  title?: string;
+  /** What the provider reported, in its own words — see {@link explainPlaybackFailure}. */
+  reason?: string;
+}): LoxoneDialog {
   const what = args.title?.trim() ? `"${args.title.trim()}"` : 'The selected music';
   return {
     ID: `playback-failed:${args.zoneId}`,
     state: 'show',
     level: DialogLevel.Warning,
     title: `Nothing is playing in ${args.zoneName}`,
-    message: `${what} could not be played. The service may be unreachable, or it may not offer this for playback here.`,
+    message: `${what} could not be played. ${explainPlaybackFailure(args.reason)}`,
     messagetype: 'playback',
     buttons: [],
     cancelbtn: { title: 'Close' },
     ttl: 0,
   };
+}
+
+/**
+ * A sentence for why nothing played, from what the provider reported.
+ *
+ * Providers report in their own words and for a log, not for a listener: "tidal stream is DRM
+ * protected", "deezer stream url unavailable", "widevine missing". Three things can be told
+ * apart in those, and each asks something different of the listener — nothing (it is
+ * protected), the account (it was refused), or patience (no stream came back). The provider's
+ * own wording is kept at the end either way: it is what someone helping the listener will ask
+ * for.
+ */
+export function explainPlaybackFailure(reason: string | undefined): string {
+  const said = reason?.trim();
+  if (!said) {
+    return 'The service may be unreachable, or it may not offer this for playback here.';
+  }
+  const lower = said.toLowerCase();
+  const explanation = /drm|widevine|protected/.test(lower)
+    ? 'It is copy-protected, and the service only plays it in its own apps.'
+    : /refus|denied|forbidden|unauthori|not allowed/.test(lower)
+      ? 'The service refused to play it for this account.'
+      : 'The service did not hand out a stream for it.';
+  return `${explanation} (${said})`;
 }
 
 /**

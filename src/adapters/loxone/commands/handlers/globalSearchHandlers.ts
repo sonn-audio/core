@@ -1,3 +1,4 @@
+import { ProviderUnavailableError } from '@/adapters/content/providerUnavailable';
 import { buildResponse } from '@/adapters/loxone/commands/responses';
 import {
   forLoxoneSearchResult,
@@ -8,6 +9,15 @@ import type { ContentManager } from '@/adapters/content/contentManager';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 
 export function createGlobalSearchHandlers(contentManager: ContentManager, notifier: LoxoneWsNotifier) {
+  // A search that comes back empty because the account was signed out looks like a search
+  // with no hits. The app can be told the difference.
+  const reportRefusal = (error: unknown, account: string): void => {
+    if (error instanceof ProviderUnavailableError && (error.reason === 'auth' || error.reason === 'denied')) {
+      notifier.notifyServiceRefused(account, error.reason);
+    }
+  };
+  /** The account in a search source such as `spotify@<account>:track#5,album#5`. */
+  const accountOfSource = (source: string): string => /@([^:]+)/.exec(source)?.[1] ?? '';
   return {
     audioCfgGlobalSearchDescribe: async (command: string) => {
       const desc = contentManager.getGlobalSearchDescription();
@@ -43,8 +53,9 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
             provider,
             unique,
           );
-        } catch {
+        } catch (error) {
           notifier.notifyGlobalSearchError(source || 'unknown', unique);
+          reportRefusal(error, accountOfSource(source));
         }
       })();
 
@@ -98,7 +109,8 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
         // settles it.
         const total = totals?.[`${tag}s`] ?? (all.length >= wanted ? wanted + count : all.length);
         return reply(all.slice(start, wanted), Math.max(total, all.length), isLocal ? 'local' : found.user || user);
-      } catch {
+      } catch (error) {
+        reportRefusal(error, user);
         return reply([], 0, fallbackUser);
       }
     },

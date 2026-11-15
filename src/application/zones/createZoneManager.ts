@@ -33,6 +33,7 @@ export type ZoneManagerFacade = Pick<
   | 'applySourceDuration'
   | 'setEqualizerBands'
   | 'getPlayContext'
+  | 'getTransportCapabilities'
   | 'getLoudness'
   | 'setLoudness'
   | 'handleCommand'

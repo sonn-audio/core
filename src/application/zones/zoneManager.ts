@@ -1,5 +1,9 @@
 import type { ZonePlayContext } from '@/domain/zones/playContext';
 import { readPlayContext } from '@/application/zones/playback/playContext';
+import {
+  zoneTransportCapabilities,
+  type ZoneTransportCapabilities,
+} from '@/application/zones/playback/transportCapabilities';
 import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
@@ -1136,6 +1140,14 @@ export class ZoneManager {
     ) {
       this.audioManager.equalizerScheduler.schedule(zoneId);
     }
+  }
+
+  /** What the zone's transport controls will do right now; null when the zone is unknown. */
+  public getTransportCapabilities(zoneId: number): ZoneTransportCapabilities | null {
+    const ctx = this.zoneRepo.get(zoneId);
+    return ctx
+      ? zoneTransportCapabilities(ctx, (authority) => this.queueController.isLocalQueueAuthority(authority))
+      : null;
   }
 
   /** What a zone is playing from — see {@link readPlayContext}. */

@@ -24,4 +24,15 @@ export type PlaybackFailure = {
   /** What the zone was trying to play, when it has a title. */
   title?: string;
   audiopath: string;
+  /**
+   * What the service said, in its own words, when it said anything: "tidal stream is DRM
+   * protected", "deezer stream url unavailable". Free text from the provider that failed.
+   */
+  reason?: string;
+  /**
+   * Set when the service turned the account away rather than the track: its sign-in has
+   * expired (`auth`) or it does not allow the request (`denied`). The listener's remedy is
+   * then the account, not another track.
+   */
+  refusal?: 'auth' | 'denied';
 };

@@ -24,6 +24,7 @@ import { isActiveInputMode } from '@/application/zones/playback/guards';
 import { resolveQueueAuthority } from '@/application/zones/playback/queueOps';
 import { resolvePlayRequest } from '@/application/zones/playback/playRequestResolution';
 import { forgetPlayContext, rememberPlayContext } from '@/application/zones/playback/playContext';
+import { recentPlaybackErrorReason, serviceRefusalOf } from '@/application/zones/playback/playbackFailure';
 import type { ResolvedPlayRequest } from '@/application/zones/playback/types';
 import { isSameAudiopath } from '@/application/zones/playback/targetResolution';
 import { buildQueueItemPlaybackPatch } from '@/application/zones/playback/patchBuilder';
@@ -167,12 +168,28 @@ export class PlayRequestService {
       return;
     }
 
-    const queueBuild = await this.rebuildQueue(ctx, req, metadata);
-    if (!queueBuild) {
-      this.deps.log.debug('queue build skipped; request superseded', { zoneId: ctx.id, uri: req.uri });
-      return;
+    try {
+      const queueBuild = await this.rebuildQueue(ctx, req, metadata);
+      if (!queueBuild) {
+        this.deps.log.debug('queue build skipped; request superseded', { zoneId: ctx.id, uri: req.uri });
+        return;
+      }
+      await this.startFromCurrentQueueItem(ctx, req, queueBuild, options?.startAtSec);
+    } catch (error) {
+      // A service that turned the account away is not a track that failed: say which it was,
+      // so a client can point the listener at the account. The error still travels on — what
+      // the caller does with a failed play request is unchanged.
+      const refusal = serviceRefusalOf(error);
+      if (refusal) {
+        this.deps.notifier.notifyPlaybackFailed?.(ctx.id, {
+          zoneName: ctx.name,
+          title: metadata?.title || undefined,
+          audiopath: req.queueAudiopath || uri,
+          refusal,
+        });
+      }
+      throw error;
     }
-    await this.startFromCurrentQueueItem(ctx, req, queueBuild, options?.startAtSec);
   }
 
   private prefetchOnDemandSource(ctx: ZoneContext, req: ResolvedPlayRequest, requestType: string): void {
@@ -587,6 +604,7 @@ export class PlayRequestService {
       zoneName: ctx.name,
       title: ctx.queueController.current()?.title || ctx.state.title || undefined,
       audiopath: itemAudiopath,
+      reason: recentPlaybackErrorReason(ctx),
     });
     const shouldStayOnline =
       this.deps.audioHelpers.isMusicAssistantAudiopath(itemAudiopath) ||
