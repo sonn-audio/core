@@ -481,6 +481,16 @@ app could not read were renamed to what its schemas name: `roomfavs_setid_result
 `roomfavs_setname_result` (an array of `{rename_slot, rename_to}`) and the `storage/delete`
 result (`{id, error}`). All of these are pinned in `tests/loxoneClientCommands.test.ts`.
 
+**Answers.** A command with a route is not yet a command the app accepts: it resolves a request
+only with the value under the exact `<name>_result` key its schema names, in the shape that
+schema describes. These answered in a shape the app could not read and were corrected: `play`,
+`pause`, `volume` (a boolean), `position` (`[{position}]`), `repeat`, `shuffle`, `serviceplay`
+(`"ok"`), `playurl` (`{uri}`), `playlist/play` (under `linein_result`), `library/play` (under
+`play_result`), `linein`, `roomfav/plus`, `audio/cfg/rescan`, `audio/cfg/seteq` (two shapes),
+and `recent/clear`, which shared a route with reading the list and cleared nothing. Not yet
+compared item by item: the contents of `getservicefolder`, `getmediafolder`, `getplaylists2`,
+`getinputs` and the search results.
+
 **Events:** `service_changed_event`, `restart_event`, `reboot_event`, `usbchanged_event` and
 `customurl_changed_event` were sent as arrays, and `playlistchanged_event` without `name` on
 delete/update; the client drops such frames. Corrected in `notifier.ts` together with

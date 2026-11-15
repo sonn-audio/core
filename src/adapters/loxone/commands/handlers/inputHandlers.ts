@@ -140,7 +140,7 @@ function audioLineIn(deps: LineInDeps, command: string) {
   const iconType = selected?.iconType ?? DEFAULT_ICON_TYPE;
 
   deps.lineIn.activateLineIn(zoneId, audiopath, { title, iconType });
-  return buildEmptyResponse(command);
+  return buildResponse(command, 'linein', { action: 'play' });
 }
 
 function extractLineInValue(rawId: string): string {

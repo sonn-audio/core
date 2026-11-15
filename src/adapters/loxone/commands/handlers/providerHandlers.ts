@@ -4,7 +4,7 @@ import {
   parseNumberPart,
   decodeSegment,
 } from '@/adapters/loxone/commands/utils/commandUtils';
-import { buildEmptyResponse, buildResponse } from '@/adapters/loxone/commands/responses';
+import { buildResponse } from '@/adapters/loxone/commands/responses';
 import {
   BASE_PLAYLIST,
   decodeLoxoneId,
@@ -251,7 +251,8 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
     },
     audioCfgRescan: (command: string) => {
       void contentManager.rescanLibrary();
-      return buildEmptyResponse(command);
+      // The app reads a boolean: the scan was started.
+      return buildResponse(command, 'rescan', true);
     },
     // The app reads the state off a field: `0 !== data[0].scanning`. A bare number
     // makes that read `undefined`, so the library counts as permanently re-indexing —

@@ -8,6 +8,7 @@ import { createZoneHandlers } from '../src/adapters/loxone/commands/handlers/zon
 import { createProviderHandlers } from '../src/adapters/loxone/commands/handlers/providerHandlers';
 import { createGlobalSearchHandlers } from '../src/adapters/loxone/commands/handlers/globalSearchHandlers';
 import { createQueueEditHandlers } from '../src/adapters/loxone/commands/handlers/queueEditHandlers';
+import { createInputHandlers } from '../src/adapters/loxone/commands/handlers/inputHandlers';
 import type { CommandResult } from '../src/adapters/loxone/commands/types';
 
 /**
@@ -435,4 +436,202 @@ test('client commands: the commands the app sends each have a route', async () =
   for (const [command, name] of expected) {
     assert.equal(await routedName(command), name, `${command} is not routed`);
   }
+});
+
+// --- transport and play commands (shared-app.js 11940–17911) ------------------------
+
+/** `PlaySchema`, `PauseSchema`, `SetVolumeSchema`: a bare boolean each. */
+const PlayResponse = BaseResponse.extend({ play_result: z.boolean() });
+const PauseResponse = BaseResponse.extend({ pause_result: z.boolean() });
+const VolumeResponse = BaseResponse.extend({ volume_result: z.boolean() });
+/** `SetPositionScheme`: an array, of which the client takes the first. */
+const PositionResponse = BaseResponse.extend({ position_result: z.array(z.object({ position: z.number() })).min(1) });
+/** `RepeatSchema`: `RepeatMode` is 0, 1 or 3. */
+const RepeatResponse = BaseResponse.extend({
+  repeat_result: z.object({ repeat: z.union([z.literal(0), z.literal(1), z.literal(3)]) }),
+});
+/** `ShuffleSchema`. */
+const ShuffleResponse = BaseResponse.extend({ shuffle_result: z.object({ shuffle: z.boolean() }) });
+/** `ServicePlayScheme`: the string, or an error object. */
+const ServicePlayResponse = BaseResponse.extend({
+  serviceplay_result: z.union([z.literal('ok'), z.object({ error: z.number(), message: z.string() })]).optional(),
+});
+/** `PlayUrlScheme`. */
+const PlayUrlResponse = BaseResponse.extend({ playurl_result: z.object({ uri: z.string() }).optional() });
+/** `LineInPlayScheme` — and `PlaylistPlayScheme`, which reads the same key. */
+const LineInResponse = BaseResponse.extend({ linein_result: z.object({ action: z.literal('play') }).optional() });
+/** `LibraryPlayScheme`: anything, under `play_result`. */
+const LibraryPlayResponse = BaseResponse.extend({ play_result: z.unknown().optional() });
+/** `RoomFavPlayScheme` / `RoomFavPlusScheme`. */
+const RoomFavResponse = BaseResponse.extend({
+  roomfav_result: z.array(z.object({ playerid: z.number(), playing_slot: z.number() })).optional(),
+});
+/** `ClearRecentlyPlayedScheme`: the list has to come back empty. */
+const RecentClearResponse = BaseResponse.extend({
+  recent_result: z.object({ items: z.array(z.unknown()).max(0), ts: z.number() }),
+});
+/** `SetAllEqualizerLevelsSchema` and `SetSingleEqualizerLevelSchema` — one command, two answers. */
+const SetEqAllResponse = BaseResponse.extend({
+  seteq_result: z.array(z.object({ band: z.number(), value: z.number() })).min(1),
+});
+const SetEqSingleResponse = BaseResponse.extend({
+  seteq_result: z.object({ id: z.string(), name: z.string(), type: z.string(), values: z.array(z.number()) }),
+});
+/** `RescanScheme`. */
+const RescanResponse = BaseResponse.extend({ rescan_result: z.boolean() });
+
+function playbackHandlers(options: { shuffle?: number; commands?: unknown[][]; played?: unknown[][] } = {}) {
+  const bands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  return createZoneHandlers(
+    {
+      getState: () => ({ plshuffle: options.shuffle ?? 0, audiopath: '' }),
+      getMetadata: () => ({}),
+      handleCommand: (...args: unknown[]) => options.commands?.push(args),
+      playContent: async (...args: unknown[]) => {
+        options.played?.push(args);
+      },
+      queue: { setPendingShuffle: () => {}, seekInQueue: () => false },
+      setEqualizerBands: async (zoneId: number, next: number[]) => ({
+        zoneId,
+        bands: next,
+        equalizerSettings: next.join(','),
+      }),
+    } as any,
+    {
+      cleared: [] as number[],
+      clear: async function (this: { cleared: number[] }, zoneId: number) {
+        this.cleared.push(zoneId);
+      },
+      get: async function (this: { cleared: number[] }) {
+        return this.cleared.length ? { items: [], ts: 1700000000 } : { items: [{ title: 'x' }], ts: 1 };
+      },
+    } as any,
+    { get: async () => ({ items: [] }) } as any,
+    { resolveMetadata: async () => null } as any,
+    { getConfig: () => ({ zones: [{ id: 7, equalizer: { bands } }] }) } as any,
+  );
+}
+
+test('client commands: play, pause, volume, seek, repeat and shuffle each answer in their own shape', async () => {
+  const commands: unknown[][] = [];
+  const handlers = playbackHandlers({ commands });
+  assert.equal(clientResult(PlayResponse, await handlers.audioDynamicCommand('audio/7/play'), 'play_result'), true);
+  assert.equal(clientResult(PauseResponse, await handlers.audioDynamicCommand('audio/7/pause'), 'pause_result'), true);
+  assert.equal(clientResult(VolumeResponse, await handlers.audioDynamicCommand('audio/7/volume/35'), 'volume_result'), true);
+  assert.equal(clientResult(VolumeResponse, await handlers.audioDynamicCommand('audio/7/volume/+3'), 'volume_result'), true);
+  assert.deepEqual(
+    clientResult(PositionResponse, await handlers.audioDynamicCommand('audio/7/position/42'), 'position_result'),
+    [{ position: 42 }],
+  );
+  for (const mode of [0, 1, 3]) {
+    assert.deepEqual(
+      clientResult(RepeatResponse, await handlers.audioDynamicCommand(`audio/7/repeat/${mode}`), 'repeat_result'),
+      { repeat: mode },
+    );
+  }
+  assert.deepEqual(commands[0], [7, 'play', '']);
+  assert.deepEqual(commands[2], [7, 'volume', '35']);
+});
+
+test('client commands: shuffle is a switch when told, and a toggle when not', async () => {
+  const off = playbackHandlers({ shuffle: 0 });
+  const on = playbackHandlers({ shuffle: 1 });
+  const shuffle = async (handlers: ReturnType<typeof playbackHandlers>, command: string) =>
+    (clientResult(ShuffleResponse, await handlers.audioDynamicCommand(command), 'shuffle_result') as { shuffle: boolean })
+      .shuffle;
+  assert.equal(await shuffle(off, 'audio/7/shuffle/enable'), true);
+  assert.equal(await shuffle(on, 'audio/7/shuffle/disable'), false);
+  assert.equal(await shuffle(off, 'audio/7/shuffle'), true, 'a bare shuffle turns it on from off');
+  assert.equal(await shuffle(on, 'audio/7/shuffle'), false, 'and off from on');
+});
+
+test('client commands: the four ways to start something each answer what the app reads', async () => {
+  const played: unknown[][] = [];
+  const handlers = playbackHandlers({ played });
+  assert.equal(
+    clientResult(
+      ServicePlayResponse,
+      await handlers.audioServicePlay('audio/7/serviceplay/spotify/bridge-1/spotify:track:abc/noshuffle'),
+      'serviceplay_result',
+    ),
+    'ok',
+  );
+  const url = clientResult(PlayUrlResponse, await handlers.audioPlayUrl('audio/7/playurl/library:local:track:9'), 'playurl_result');
+  assert.equal(typeof (url as { uri: string }).uri, 'string');
+  // The playlist command answers under the line-in name: that is the key the app's schema holds.
+  assert.deepEqual(
+    clientResult(LineInResponse, await handlers.audioPlaylistPlay('audio/7/playlist/play/playlist:5/noshuffle'), 'linein_result'),
+    { action: 'play' },
+  );
+  clientResult(LibraryPlayResponse, await handlers.audioLibraryPlay('audio/7/library/play/library:local:track:9'), 'play_result');
+  assert.equal(played.length, 4, 'and each of them still starts the zone');
+});
+
+test('client commands: roomfav/plus answers with the slot it went to', async () => {
+  const handlers = createZoneHandlers(
+    {
+      getState: () => ({ audiopath: 'a' }),
+      getMetadata: () => ({ lastFavoriteId: 1 }),
+      playContent: async () => {},
+      handleCommand: () => {},
+      queue: { setPendingShuffle: () => {} },
+    } as any,
+    {} as any,
+    {
+      get: async () => ({
+        items: [
+          { id: 1, slot: 1, plus: true, audiopath: 'a', name: 'A', type: 'tunein' },
+          { id: 4, slot: 2, plus: true, audiopath: 'b', name: 'B', type: 'tunein' },
+        ],
+      }),
+      getForPlayback: async () => undefined,
+    } as any,
+    { resolveMetadata: async () => null } as any,
+  );
+  assert.deepEqual(clientResult(RoomFavResponse, await handlers.audioRoomFavPlus('audio/7/roomfav/plus'), 'roomfav_result'), [
+    { playerid: 7, playing_slot: 4 },
+  ]);
+});
+
+test('client commands: clearing recently played clears it and hands the empty list back', async () => {
+  const handlers = playbackHandlers();
+  const before = JSON.parse(serializeResult(await handlers.audioRecent('audio/7/recent')));
+  assert.equal(before.recent_result.items.length, 1, 'reading the list does not clear it');
+  assert.deepEqual(clientResult(RecentClearResponse, await handlers.audioRecent('audio/7/recent/clear'), 'recent_result'), {
+    items: [],
+    ts: 1700000000,
+  });
+});
+
+test('client commands: setting the whole equalizer and setting one band answer differently', async () => {
+  const handlers = playbackHandlers();
+  const all = clientResult(SetEqAllResponse, await handlers.audioCfgSetEq('audio/cfg/seteq/7/1,2,3,0,0,0,0,0,-1,-2'), 'seteq_result');
+  assert.deepEqual((all as Array<{ band: number; value: number }>)[1], { band: 1, value: 2 });
+  const one = clientResult(SetEqSingleResponse, await handlers.audioCfgSetEq('audio/cfg/seteq/7/2/4'), 'seteq_result') as {
+    id: string;
+    values: number[];
+  };
+  assert.equal(one.id, '2');
+  assert.equal(one.values[2], 4);
+});
+
+test('client commands: a rescan answers that it started', async () => {
+  const handlers = providerHandlers({ rescanLibrary: async () => {} });
+  assert.equal(clientResult(RescanResponse, await handlers.audioCfgRescan('audio/cfg/rescan'), 'rescan_result'), true);
+});
+
+test('client commands: starting a line-in answers that it plays', async () => {
+  const activated: unknown[][] = [];
+  const handlers = createInputHandlers({} as any, {
+    lineIn: {
+      listLineInInputs: () => [{ id: 'linein-1', name: 'Turntable', iconType: 8 }],
+      activateLineIn: (...args: unknown[]) => activated.push(args),
+    },
+    notifier: {},
+  } as any);
+  assert.deepEqual(clientResult(LineInResponse, await handlers.audioLineIn('audio/7/linein/linein-1'), 'linein_result'), {
+    action: 'play',
+  });
+  assert.equal(activated.length, 1);
+  assert.equal(activated[0]![0], 7);
 });

@@ -1,3 +1,4 @@
+import type { CommandResult } from '@/adapters/loxone/commands/types';
 import { buildEmptyResponse, buildResponse } from '@/adapters/loxone/commands/responses';
 import type { ContentManager } from '@/adapters/content/contentManager';
 import {
@@ -91,6 +92,10 @@ function audioCfgGetQueue(zoneManager: ZoneManagerFacade, command: string) {
 async function audioRecent(recentsManager: RecentsManager, command: string) {
   const parts = splitCommand(command);
   const zoneId = parseNumberPart(parts[1], 0);
+  // `audio/<zone>/recent/clear` shares the route; the app wants the emptied list back.
+  if ((parts[3] ?? '').toLowerCase() === 'clear') {
+    await recentsManager.clear(zoneId);
+  }
   const recents = await recentsManager.get(zoneId);
   return buildResponse(command, 'recent', recents ?? {});
 }
@@ -108,7 +113,10 @@ async function audioPlaylistPlay(
   const hasNoShuffle = /\/noshuffle(?:\/|$)/i.test(command);
   zoneManager.queue.setPendingShuffle(zoneIdForShuffle, !hasNoShuffle);
 
-  return playToZone(zoneManager, contentManager, fadeController, command, 'playlistplay', (parts) => {
+  // The app waits for `linein_result: { action: 'play' }` here — its playlist schema was copied
+  // from the line-in one and the name went with it.
+  const answer = () => ({ name: 'linein', payload: { action: 'play' } });
+  return playToZone(zoneManager, contentManager, fadeController, command, 'playlistplay', answer, (parts) => {
     // Local library playlists arrive as `audio/<zone>/playlist/play/<encId>[/parentid/.../...][/noshuffle]`.
     // If parts[4] decodes as a Loxone-encoded id with a BASE_PLAYLIST offset, rewrite to
     // `library:playlist:<numericId>` so the queue builder expands tracks via getMediaFolder.
@@ -127,7 +135,9 @@ async function audioLibraryPlay(
   fadeController: FadeControllerPort,
   command: string,
 ) {
-  return playToZone(zoneManager, contentManager, fadeController, command, 'libraryplay', (parts) =>
+  // `play_result`, with anything in it.
+  const answer = () => ({ name: 'play', payload: true });
+  return playToZone(zoneManager, contentManager, fadeController, command, 'libraryplay', answer, (parts) =>
     extractPayload(parts.slice(4)),
   );
 }
@@ -190,7 +200,9 @@ async function audioServicePlay(
   const hasNoShuffle = /\/noshuffle(?:\/|$)/i.test(command);
   zoneManager.queue.setPendingShuffle(zoneId, !hasNoShuffle);
   const resolvedCommand = resolveParentIdInCommand(command);
-  const response = await playToZone(zoneManager, contentManager, fadeController, resolvedCommand, 'serviceplay', (parts) => {
+  // `serviceplay_result` is the string "ok", or `{ error, message }` — never a list.
+  const answer = () => ({ name: 'serviceplay', payload: 'ok' });
+  const response = await playToZone(zoneManager, contentManager, fadeController, resolvedCommand, 'serviceplay', answer, (parts) => {
     const decoded = extractPayload(parts.slice(4));
     const withoutNouser = decoded.startsWith('nouser/')
       ? decoded.slice('nouser/'.length)
@@ -240,7 +252,8 @@ async function audioPlayUrl(
   fadeController: FadeControllerPort,
   command: string,
 ) {
-  return playToZone(zoneManager, contentManager, fadeController, command, 'playurl', (parts) => {
+  const answer = (uri: string) => ({ name: 'playurl', payload: { uri } });
+  return playToZone(zoneManager, contentManager, fadeController, command, 'playurl', answer, (parts) => {
     // Loxone occasionally appends `/parentid/<x>/<y>` after the encoded id;
     // strip it so the leading segment is a clean base64url payload that
     // decodeLoxoneId can parse.
@@ -371,8 +384,21 @@ async function audioCfgSetEq(
     return buildEmptyResponse(command);
   }
 
-  await updateEqualizerBands(zoneManager, configPort, zoneId, rawSettings);
-  return buildEmptyResponse(command);
+  const updated = await updateEqualizerBands(zoneManager, configPort, zoneId, rawSettings);
+  if (!updated) {
+    return buildEmptyResponse(command);
+  }
+  // One command, two answers: a single band answers with the whole equalizer as one object,
+  // the full set with a row per band. The app has a schema for each.
+  if (value !== undefined) {
+    return buildResponse(command, 'seteq', {
+      id: String(bandId),
+      name: EQUALIZER_BAND_NAMES[Number(bandId)] ?? `B${bandId}`,
+      type: 'equalizer',
+      values: [...updated.bands],
+    });
+  }
+  return buildResponse(command, 'seteq', updated.bands.map((bandValue, band) => ({ band, value: bandValue })));
 }
 
 function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
@@ -380,12 +406,36 @@ function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
   const zoneId = parseNumberPart(parts[1], 0);
   const cmd = (parts[2] ?? '').toLowerCase();
   const payload = parts.slice(3).join('/');
+  const shuffleBefore = Boolean(zoneManager.getState(zoneId)?.plshuffle);
   zoneManager.handleCommand(zoneId, cmd, payload);
-  // Client schema expects `{action:"queueplus"|"queueminus"}` for next/previous.
-  if (cmd === 'queueplus' || cmd === 'queueminus') {
-    return buildResponse(command, cmd, { action: cmd });
+  // Each of these has its own answer in the app's schemas, and an answer it cannot read is a
+  // command it reports as failed — after we carried it out.
+  switch (cmd) {
+    case 'queueplus':
+    case 'queueminus':
+      return buildResponse(command, cmd, { action: cmd });
+    case 'play':
+    case 'pause':
+    case 'resume':
+    case 'volume':
+      return buildResponse(command, cmd, true);
+    case 'position':
+      return buildResponse(command, cmd, [{ position: Number(payload) || 0 }]);
+    case 'repeat':
+      return buildResponse(command, cmd, { repeat: Number(payload) || 0 });
+    case 'shuffle': {
+      // With a value it is a switch; without one it is a toggle of what the zone had.
+      const wanted = payload.toLowerCase();
+      const shuffle = ['enable', 'on', '1'].includes(wanted)
+        ? true
+        : ['disable', 'off', '0'].includes(wanted)
+          ? false
+          : !shuffleBefore;
+      return buildResponse(command, cmd, { shuffle });
+    }
+    default:
+      return buildEmptyResponse(command);
   }
-  return buildEmptyResponse(command);
 }
 
 async function audioCfgGetRoomFavs(
@@ -508,12 +558,12 @@ async function audioRoomFavPlus(
   // Only the favourites switched on for the round; with none switched on there is no round.
   const favorites = { ...all, items: all.items.filter((item) => item.plus !== false) };
   if (!favorites.items.length) {
-    return buildEmptyResponse(command);
+    return roomFavPlusAnswer(command, zoneId);
   }
 
   const metadata = zoneManager.getMetadata(zoneId);
   if (!metadata) {
-    return buildEmptyResponse(command);
+    return roomFavPlusAnswer(command, zoneId);
   }
   const state = zoneManager.getState(zoneId);
 
@@ -539,7 +589,16 @@ async function audioRoomFavPlus(
     metadata.lastFavoriteId = next.id;
   }
 
-  return buildEmptyResponse(command);
+  return roomFavPlusAnswer(command, zoneId, next?.id);
+}
+
+/** The same answer `roomfav/play` gives: which slot the zone went to, or none. */
+function roomFavPlusAnswer(command: string, zoneId: number, favoriteId?: number) {
+  return buildResponse(
+    command,
+    'roomfav',
+    typeof favoriteId === 'number' ? [{ playerid: zoneId, playing_slot: favoriteId }] : [],
+  );
 }
 
 async function playFavorite(
@@ -584,7 +643,10 @@ async function playToZone(
   contentManager: ContentManager,
   fadeController: FadeControllerPort,
   command: string,
+  /** How the play is labelled inside the zone — not the name of the answer. */
   name: string,
+  /** The answer the app's schema for this command reads; they differ per command. */
+  answer: (uri: string) => { name: string; payload: CommandResult['payload'] },
   payloadResolver: (parts: string[]) => string,
 ) {
   const parts = splitCommand(command);
@@ -625,7 +687,8 @@ async function playToZone(
     const duration = fadeOpts.fadeDurationMs ?? 120_000;
     void fadeController.fadeIn(zoneId, duration);
   }
-  return buildResponse(command, name, [{ zoneId, uri }]);
+  const reply = answer(uri);
+  return buildResponse(command, reply.name, reply.payload);
 }
 
 function sanitizeMetadataTarget(uri: string): string {
@@ -703,8 +766,10 @@ async function updateEqualizerBands(
   return updated;
 }
 
+const EQUALIZER_BAND_NAMES = ['31 Hz', '63 Hz', '125 Hz', '250 Hz', '500 Hz', '1 kHz', '2 kHz', '4 kHz', '8 kHz', '16 kHz'];
+
 function buildGetEqPayload(bands: ReadonlyArray<number>): Array<Record<string, number | string>> {
-  const names = ['31 Hz', '63 Hz', '125 Hz', '250 Hz', '500 Hz', '1 kHz', '2 kHz', '4 kHz', '8 kHz', '16 kHz'];
+  const names = EQUALIZER_BAND_NAMES;
   return bands.map((value, id) => ({
     id,
     high: 10,
