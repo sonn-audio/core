@@ -539,6 +539,12 @@ export interface ZoneEqualizerConfig {
   provider?: ZoneEqualizerProvider;
   /** Provider-specific callback URL. Used by 'squeezelite-mr'. */
   callbackUrl?: string;
+  /**
+   * Loudness compensation — a bass and treble lift that follows the zone's volume. Applied by the
+   * audioserver's own DSP whatever `provider` says: it is a switch on the zone, not an equalizer
+   * setting someone else could be asked to apply.
+   */
+  loudness?: boolean;
 }
 
 export type ZoneEqualizerProvider = 'off' | 'builtin' | 'squeezelite-mr';

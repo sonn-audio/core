@@ -1,3 +1,4 @@
+import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ZoneConfig, InputConfig, GroupConfig } from '@/domain/config/types';
@@ -1120,7 +1121,46 @@ export class ZoneManager {
   }
 
   public applyPatch(zoneId: number, patch: Partial<ZoneState>, force = false): void {
+    const ctx = typeof patch.volume === 'number' ? this.zoneRepo.get(zoneId) : undefined;
+    const volumeBefore = ctx?.state.volume;
     this.stateStore.patch(zoneId, patch, force);
+    // Loudness follows the volume, so a volume change may move the curve. Only when it really
+    // does: the lift moves in half-dB steps, and most volume changes land inside one.
+    if (
+      ctx?.config.equalizer?.loudness &&
+      typeof volumeBefore === 'number' &&
+      loudnessContourChanges(volumeBefore, ctx.state.volume)
+    ) {
+      this.audioManager.equalizerScheduler.schedule(zoneId);
+    }
+  }
+
+  /** Whether loudness compensation is switched on for a zone; null when the zone is unknown. */
+  public getLoudness(zoneId: number): boolean | null {
+    const ctx = this.zoneRepo.get(zoneId);
+    return ctx ? ctx.config.equalizer?.loudness === true : null;
+  }
+
+  /** Switches loudness compensation for a zone and applies it to what is playing. */
+  public async setLoudness(zoneId: number, enabled: boolean): Promise<boolean | null> {
+    let found = false;
+    await this.configPort.updateConfig((cfg) => {
+      const zone = cfg.zones.find((entry) => entry.id === zoneId);
+      if (!zone) {
+        return;
+      }
+      found = true;
+      zone.equalizer = applyLoudnessFlag(zone.equalizer, enabled);
+    });
+    if (!found) {
+      return null;
+    }
+    const ctx = this.zoneRepo.get(zoneId);
+    if (ctx) {
+      ctx.config.equalizer = applyLoudnessFlag(ctx.config.equalizer, enabled);
+    }
+    this.audioManager.equalizerScheduler.schedule(zoneId);
+    return enabled;
   }
 
   public async setEqualizerBands(zoneId: number, bands: unknown): Promise<EqualizerUpdateResult | null> {
@@ -1168,10 +1208,12 @@ export class ZoneManager {
   private resolveBuiltinEqualizerBands(zoneId: number): ReadonlyArray<number> | null {
     const ctx = this.zoneRepo.get(zoneId);
     const eq = ctx?.config.equalizer;
-    if (!eq || eq.provider !== 'builtin' || !Array.isArray(eq.bands)) {
-      return null;
+    const bands = eq && eq.provider === 'builtin' && Array.isArray(eq.bands) ? eq.bands : null;
+    // Loudness is ours to apply whoever applies the equalizer — see `ZoneEqualizerConfig.loudness`.
+    if (ctx && eq?.loudness) {
+      return withLoudness(bands, ctx.state.volume);
     }
-    return eq.bands;
+    return bands;
   }
 
   /**
@@ -1443,3 +1485,14 @@ export class ZoneManager {
 
 }
 
+/** The equalizer config with the loudness switch set; the key is dropped rather than stored as false. */
+function applyLoudnessFlag(
+  equalizer: ZoneConfig['equalizer'],
+  enabled: boolean,
+): ZoneConfig['equalizer'] {
+  const { loudness: _previous, ...rest } = equalizer ?? {};
+  if (enabled) {
+    return { ...rest, loudness: true };
+  }
+  return Object.keys(rest).length > 0 ? rest : null;
+}

@@ -35,7 +35,11 @@ export interface LoxoneHttpConfig {
 // The two formats are not interchangeable: FIRMWARE_VERSION_NUMBER is the
 // LWSS / UDP discovery firmware string, MDNS_VERSION is the (zero-padded)
 // version advertised over Bonjour.
-const FIRMWARE_VERSION_NUMBER = '17.3.11.10';
+//
+// The Loxone app switches features on by this number (see docs/loxone-client-map.md, "Greeting").
+// 18.1.0.0 is the lowest that makes it offer the loudness switch; everything else it gates sits
+// at 17.0 or below.
+const FIRMWARE_VERSION_NUMBER = '18.1.0.0';
 const MDNS_VERSION = '16.00.09.16';
 
 const DEFAULT_FIRMWARE_VERSION = `LWSS V ${FIRMWARE_VERSION_NUMBER}`;

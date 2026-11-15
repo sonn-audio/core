@@ -463,11 +463,16 @@ Compared with `src/adapters/loxone/commands/router/routeRegistry.ts` and
   keep and serve an uploaded cover; the upload is accepted and ignored.
 - `audio/cfg/servicecfg/add` and `…/update` — schemas exist in the app, nothing in 17.3.0 calls
   them; account sign-in goes through `getlink`.
-- `audio/<pid>/loudness` — only offered from firmware 18.1.0.0; we announce 17.3.11.10.
 - `audio/<pid>/centergain` — only offered when the Miniserver's structure file sets the
   `CENTER_GAIN` bit in a zone's `speakerConfig` (`shared-app.js:75888`), i.e. for Loxone's own
   amplifier hardware.
 - `dialog_event` — we never send one.
+
+**Loudness** (`audio/<pid>/loudness[/<0|1>]`) is implemented, and we announce firmware 18.1.0.0
+so the app offers the switch. What it does is ours to define — the app only sends on or off: a
+bass and treble lift that follows the zone's volume (`src/domain/zones/loudness.ts`), applied by
+the engine's own DSP on top of the zone's equalizer. Pinned in `tests/loudness.test.ts`. Not yet
+checked: how a Miniserver reacts to an Audioserver announcing 18.1.
 
 **Closed since the first comparison:** `audio/cfg/search/…` (paged category search),
 `audio/<pid>/queue/move/<uid>/end`, `audio/cfg/roomfavs/<pid>/setplus/…`,

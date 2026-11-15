@@ -179,6 +179,7 @@ export function registerRoutes(
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/playurl\/.+$/, zoneHandlers.audioPlayUrl);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/equalizersettings\/[^/]+\/?$/, zoneHandlers.audioEqualizerSettings);
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/linein(?:\/.*)?$/, inputHandlers.audioLineIn);
+  router.registerRegex('audio', /^audio\/\d+\/loudness(?:\/[01])?\/?$/, zoneHandlers.audioLoudness);
 
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/tts\/.+\/\d+\/?$/, alertHandlers.audioZoneTts);
   router.registerRegex(

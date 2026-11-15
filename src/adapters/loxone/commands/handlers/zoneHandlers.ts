@@ -42,6 +42,7 @@ export function createZoneHandlers(
 ) {
   return {
     audioGetStatus: (command: string) => audioGetStatus(zoneManager, command),
+    audioLoudness: (command: string) => audioLoudness(zoneManager, command),
     audioCfgGetQueue: (command: string) => audioCfgGetQueue(zoneManager, command),
     audioRecent: (command: string) => audioRecent(recentsManager, command),
     audioPlaylistPlay: (command: string) => audioPlaylistPlay(zoneManager, contentManager, fadeController, command),
@@ -397,6 +398,21 @@ async function audioCfgGetRoomFavs(
   const limit = parseNumberPart(parts[5], 50);
   const favorites = await favoritesManager.get(zoneId, start, limit);
   return buildResponse(command, 'getroomfavs', [favorites]);
+}
+
+/**
+ * `audio/<zone>/loudness` reads the switch, `audio/<zone>/loudness/<0|1>` sets it. Both answer
+ * with the state the zone is in afterwards — the app shows what comes back, not what it sent.
+ */
+async function audioLoudness(zoneManager: ZoneManagerFacade, command: string) {
+  const parts = splitCommand(command);
+  const zoneId = parseNumberPart(parts[1], 0);
+  const value = parts[3];
+  if (value === undefined || value === '') {
+    return buildResponse(command, 'loudness', zoneManager.getLoudness(zoneId) === true);
+  }
+  const applied = await zoneManager.setLoudness(zoneId, value === '1' || value === 'true');
+  return buildResponse(command, 'loudness', applied === true);
 }
 
 async function audioCfgRoomFavs(

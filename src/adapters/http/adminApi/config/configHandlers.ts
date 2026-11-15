@@ -756,7 +756,11 @@ function normalizeEqualizerPayload(
 ): ZoneEqualizerConfig | null {
   if (payload === null) {
     const bands = current?.bands;
-    return bands && Array.isArray(bands) && bands.length > 0 ? { bands: [...bands] } : null;
+    const kept: ZoneEqualizerConfig = {
+      ...(bands && Array.isArray(bands) && bands.length > 0 ? { bands: [...bands] } : {}),
+      ...(current?.loudness ? { loudness: true } : {}),
+    };
+    return Object.keys(kept).length > 0 ? kept : null;
   }
   if (!payload || typeof payload !== 'object') {
     return current ?? null;
@@ -785,6 +789,12 @@ function normalizeEqualizerPayload(
     if (raw) next.callbackUrl = raw;
   } else if (current?.callbackUrl) {
     next.callbackUrl = current.callbackUrl;
+  }
+  // The loudness switch is set from the Loxone app, not from this form: keep what is there.
+  if (typeof record.loudness === 'boolean') {
+    if (record.loudness) next.loudness = true;
+  } else if (current?.loudness) {
+    next.loudness = true;
   }
   // callbackUrl only makes sense for the squeezelite-mr forwarder.
   if (next.provider !== 'squeezelite-mr') {
