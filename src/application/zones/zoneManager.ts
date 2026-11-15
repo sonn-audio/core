@@ -1241,6 +1241,49 @@ export class ZoneManager {
   }
 
   /**
+   * A member that just left its group shows its own music again (#409). While it followed the
+   * leader it mirrored the leader's track, and after the group was dissolved it kept showing
+   * that, although play on it restores the queue it had before it joined. It shows that queue's
+   * current item now, stopped, as play will pick it up.
+   */
+  public showOwnQueueAfterGroup(zoneId: number): void {
+    const ctx = this.zoneRepo.get(zoneId);
+    if (!ctx || getGroupByZone(zoneId)) {
+      return;
+    }
+    const current = ctx.queueController.current();
+    if (!current) {
+      this.applyPatch(zoneId, {
+        title: '',
+        artist: '',
+        album: '',
+        coverurl: '',
+        audiopath: '',
+        station: '',
+        time: 0,
+        duration: 0,
+      });
+      return;
+    }
+    const audiotype = this.audioHelpers.getStateAudiotype(ctx, current);
+    const sourceName = this.audioHelpers.resolveSourceName(audiotype, ctx, current);
+    this.applyPatch(zoneId, {
+      title: current.title,
+      artist: current.artist,
+      album: current.album,
+      coverurl: current.coverurl,
+      audiopath: current.audiopath,
+      station: current.station,
+      qindex: ctx.queueController.currentIndex(),
+      qid: current.unique_id,
+      time: 0,
+      duration: current.duration ?? 0,
+      ...(audiotype != null ? { audiotype } : {}),
+      ...(sourceName ? { sourceName } : {}),
+    });
+  }
+
+  /**
    * Bring a group's members in line with their leader, as the group is formed or changed.
    *
    * A member whose speaker now plays the leader's stream first ends whatever it played on

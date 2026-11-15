@@ -69,6 +69,7 @@ export class GroupManager {
             membersToStop.forEach((memberId) => {
               try {
                 this.zones.handleCommand(memberId, 'stop');
+                this.zones.showOwnQueueAfterGroup(memberId);
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 this.log.warn('failed to stop zone after group removal', {
@@ -398,6 +399,7 @@ export class GroupManager {
             void this.airplayGroup.stopGroupMembers(record.leader, [memberId]);
             try {
               this.zones.handleCommand(memberId, 'stop');
+              this.zones.showOwnQueueAfterGroup(memberId);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               this.log.warn('failed to stop zone after member removal', { zoneId: memberId, message });

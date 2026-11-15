@@ -52,6 +52,7 @@ export type ZoneManagerFacade = Pick<
   | 'prepareAlertStart'
   | 'stopAlert'
   | 'syncGroupMembersToLeader'
+  | 'showOwnQueueAfterGroup'
   | 'refreshContentProviders'
   | 'setNotifier'
   | 'removeZone'

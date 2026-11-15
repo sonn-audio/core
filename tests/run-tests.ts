@@ -1915,6 +1915,36 @@ test('group join/leave emits audio sync payloads', async () => {
   setNotifier(noopNotifier);
 });
 
+test('a member that leaves its group shows its own queue again (#409)', async () => {
+  // After the group was dissolved the member went on showing the leader's last track, although
+  // play on it restores the queue it had before it joined.
+  const harness = await getZoneHarness();
+  const { zoneManager, groupTracker } = harness;
+  await zoneManager.replaceAll([createZoneConfig(41, 'Kitchen'), createZoneConfig(42, 'Utility')], {
+    spotify: {},
+  });
+  const ctx = (zoneManager as any).zoneRepo.get(42);
+  ctx.queueController.setItems(
+    [
+      { audiopath: 'spotify:track:own-1', unique_id: 'own-1', title: 'Own One', artist: 'B', album: 'List B' },
+      { audiopath: 'spotify:track:own-2', unique_id: 'own-2', title: 'Own Two', artist: 'B', album: 'List B' },
+    ],
+    1,
+  );
+
+  groupTracker.upsertGroup({ leader: 41, members: [42], backend: 'internal', externalId: 'g-409', source: 'manual' });
+  zoneManager.applyPatch(41, { title: 'Group Track', artist: 'A', album: 'List A', audiopath: 'spotify:track:a' });
+  assert.equal(zoneManager.getState(42)?.title, 'Group Track', 'the member mirrors its leader');
+
+  groupTracker.removeGroupByLeader(41);
+  const member = zoneManager.getState(42);
+  assert.equal(member?.title, 'Own Two');
+  assert.equal(member?.album, 'List B');
+  assert.equal(member?.audiopath, 'spotify:track:own-2');
+  assert.equal(member?.qindex, 1);
+  assert.equal(zoneManager.getState(41)?.title, 'Group Track', 'the leader keeps its own');
+});
+
 test('output routing switches active output and stops previous', () => {
   const { dispatchOutputs } = require('../src/application/zones/services/outputOrchestrator') as typeof import('../src/application/zones/services/outputOrchestrator');
 
