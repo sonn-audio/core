@@ -690,7 +690,10 @@ export class SonosStateController implements ZoneStateController {
     });
   }
 
-  private async dispatchCommand(action: 'play' | 'pause' | 'stop' | 'next' | 'previous'): Promise<void> {
+  private async dispatchCommand(
+    action: 'play' | 'pause' | 'stop' | 'next' | 'previous',
+    retried = false,
+  ): Promise<void> {
     const group = this.client?.player?.group;
     if (!group) {
       // handleCommand() already declines in this case; this only catches a group disappearing
@@ -709,11 +712,21 @@ export class SonosStateController implements ZoneStateController {
 
       this.log.info('sonos command sent', { zoneId: this.zone.id, action });
     } catch (err) {
-      this.log.warn('sonos command failed', {
-        zoneId: this.zone.id,
-        action,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      if (!retried && /groupCoordinatorChanged/i.test(message)) {
+        // Sonos moved the group to another speaker (a soundbar leaving it for the TV does that)
+        // and the client still addresses the old one. Rebuild the view and send it again (#430).
+        this.log.info('sonos group moved under us; reconnecting and retrying', {
+          zoneId: this.zone.id,
+          action,
+        });
+        await this.connect();
+        if (this.client?.player?.group) {
+          await this.dispatchCommand(action, true);
+          return;
+        }
+      }
+      this.log.warn('sonos command failed', { zoneId: this.zone.id, action, message });
     }
   }
 

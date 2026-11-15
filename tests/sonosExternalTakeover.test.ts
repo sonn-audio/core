@@ -218,3 +218,41 @@ test('the speaker is not asked for its source before our stream played on it (#4
   };
   await controller.checkSpeakerSource();
 });
+
+test('a command Sonos refuses because the group moved is sent again after a reconnect (#430)', async () => {
+  const { controller } = createController();
+  const sent: string[] = [];
+  controller.client = {
+    player: {
+      group: {
+        stop: async () => {
+          throw new Error('Command failed: groupCoordinatorChanged');
+        },
+      },
+    },
+  };
+  controller.connect = async () => {
+    controller.client = { player: { group: { stop: async () => void sent.push('stop') } } };
+  };
+  await controller.dispatchCommand('stop');
+  assert.deepEqual(sent, ['stop']);
+
+  // Once only: a group that keeps moving is not chased forever.
+  let attempts = 0;
+  const moving = () => ({
+    player: {
+      group: {
+        stop: async () => {
+          attempts += 1;
+          throw new Error('Command failed: groupCoordinatorChanged');
+        },
+      },
+    },
+  });
+  controller.client = moving();
+  controller.connect = async () => {
+    controller.client = moving();
+  };
+  await controller.dispatchCommand('stop');
+  assert.equal(attempts, 2, 'the first try and one retry');
+});
