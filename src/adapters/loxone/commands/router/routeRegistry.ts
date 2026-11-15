@@ -63,7 +63,11 @@ export function registerRoutes(
     contentManager: dependencies.contentManager,
     spotifyInputService: dependencies.spotifyInputService,
   });
-  const providerHandlers = createProviderHandlers(dependencies.contentManager, dependencies.loxoneNotifier);
+  const providerHandlers = createProviderHandlers(
+    dependencies.contentManager,
+    dependencies.loxoneNotifier,
+    dependencies.configPort,
+  );
   const globalSearchHandlers = createGlobalSearchHandlers(dependencies.contentManager, dependencies.loxoneNotifier);
   const zoneHandlers = createZoneHandlers(
     dependencies.zoneManager,
@@ -159,6 +163,7 @@ export function registerRoutes(
   router.registerPrefix('audio', 'audio/cfg/timezone', placeholder('timezone'));
   router.registerPrefix('audio', 'audio/cfg/servicecfg/getlink', configHandlers.serviceCfgGetLink);
   router.registerPrefix('audio', 'audio/cfg/servicecfg/delete', configHandlers.serviceCfgDelete);
+  router.registerPrefix('audio', 'audio/cfg/servicecfg/set/', configHandlers.serviceCfgSet);
   router.registerPrefix('audio', 'audio/cfg/upload/audioupload/add/', alertHandlers.audioCfgUploadAudiouploadAdd);
 
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/status\/?$/, zoneHandlers.audioGetStatus);

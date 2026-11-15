@@ -1,3 +1,4 @@
+import { parsePlayerIds } from '@/adapters/loxone/commands/utils/loxoneServiceDefaults';
 import {
   generateKeyPairSync,
   privateDecrypt,
@@ -302,6 +303,29 @@ export function createConfigHandlers(config: LoxoneHttpConfig, options: ConfigHa
       loxoneNotifier?.notifyServiceChanged();
 
       return buildResponse(command, 'servicecfg', { action: 'deleted', error: 0 });
+    }),
+    // audio/cfg/servicecfg/set/<service>/<account>/asdefault/player/<id,id,…> — "use this
+    // account in these rooms". A room has one default, so naming a new one replaces the old.
+    serviceCfgSet: handler(async (command) => {
+      const parts = command.split('/');
+      const account = decodeURIComponent(parts[5] ?? '');
+      const players = parsePlayerIds(parts[8]);
+      const services = (contentManager?.getServices() ?? []) as unknown as Array<{ id?: unknown }>;
+      const known = services.some((entry) => entry.id === account);
+      // The app reads `error` as a number and nothing else; 8 is its "not found".
+      if (parts[6] !== 'asdefault' || parts[7] !== 'player' || !players.length || !known) {
+        return buildResponse(command, 'servicecfg', { command: 'asdefault', error: 8 });
+      }
+      await configPort.updateConfig((cfg) => {
+        for (const zone of cfg.zones) {
+          if (players.includes(zone.id)) {
+            zone.streamingAccount = account;
+          }
+        }
+      });
+      // The app holds the list of services with their defaults; this makes it fetch it again.
+      loxoneNotifier?.notifyServiceChanged();
+      return buildResponse(command, 'servicecfg', { command: 'asdefault', error: 0 });
     }),
   };
 }

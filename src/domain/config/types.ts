@@ -525,6 +525,12 @@ export interface ZoneConfig {
   state?: ZoneStateConfig;
   volumes: ZoneVolumesConfig;
   inputs?: ZoneInputConfig;
+  /**
+   * The streaming account this zone opens by default — the id of a Spotify account or of a
+   * streaming service. Set from a client ("use this account in this room"); when unset, or
+   * when the account is gone, a client falls back to the first one there is.
+   */
+  streamingAccount?: string;
 }
 
 export interface ZoneEqualizerConfig {

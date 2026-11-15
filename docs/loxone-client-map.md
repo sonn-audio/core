@@ -455,11 +455,6 @@ Compared with `src/adapters/loxone/commands/router/routeRegistry.ts` and
 
 **Client commands with no route:**
 
-- `audio/cfg/servicecfg/set/<svc>/<user>/asdefault/player/<ids>` — the app's "default account
-  for this zone". Worth having here in particular: every bridged streaming service shows up in
-  the app as a Spotify account, and without `asdefault` the app opens the first one in every
-  zone (`getDefaultSpotifyIdForPlayer`, `shared-app.js:20108`). Needs the choice persisted per
-  account and returned in `getservices`.
 - `audio/cfg/servicecfg/add` and `…/update` — schemas exist in the app, nothing in 17.3.0 calls
   them; account sign-in goes through `getlink`.
 - `audio/<pid>/centergain` — only offered when the Miniserver's structure file sets the
@@ -472,6 +467,12 @@ so the app offers the switch. What it does is ours to define — the app only se
 bass and treble lift that follows the zone's volume (`src/domain/zones/loudness.ts`), applied by
 the engine's own DSP on top of the zone's equalizer. Pinned in `tests/loudness.test.ts`. Not yet
 checked: how a Miniserver reacts to an Audioserver announcing 18.1.
+
+**The default account of a room** (`audio/cfg/servicecfg/set/<svc>/<account>/asdefault/player/<ids>`)
+is kept on the zone (`ZoneConfig.streamingAccount`) and handed back the way the app keeps it:
+per account, as the players it is the default for (`asdefault` in `getservices`). Every
+streaming service reaches the app as a Spotify account, so this decides which service a room
+opens on. Pinned in `tests/loxoneDefaultAccount.test.ts`.
 
 **Custom station pictures** (`PUT audio/cfg/radios/coverurl/<id>`) are stored under
 `data/music/customradio/` — the tree the `/music` route on :7090 already serves — and the

@@ -17,6 +17,8 @@ import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import { decodeBase64Segment, safeJsonParse } from '@/adapters/loxone/commands/utils/payload';
 import { decryptWithAudioCfgKey } from '@/adapters/loxone/commands/handlers/configHandlers';
 import { createLogger } from '@/shared/logging/logger';
+import type { ConfigPort } from '@/ports/ConfigPort';
+import { withDefaultPlayers } from '@/adapters/loxone/commands/utils/loxoneServiceDefaults';
 import { ProviderUnavailableError } from '@/adapters/content/providerUnavailable';
 
 const log = createLogger('Loxone', 'ProviderHandlers');
@@ -57,15 +59,21 @@ function normalizeItemId(raw: string | undefined): string {
   return decoded.replace(/\]+$/, '');
 }
 
-export function createProviderHandlers(contentManager: ContentManager, notifier: LoxoneWsNotifier) {
+export function createProviderHandlers(
+  contentManager: ContentManager,
+  notifier: LoxoneWsNotifier,
+  configPort?: ConfigPort,
+) {
   return {
     audioCfgGetAvailableServices: (command: string) => {
       const services = contentManager.getAvailableServices();
       return buildResponse(command, 'getavailableservices', services);
     },
     audioCfgGetServices: (command: string) => {
-      const services = contentManager.getServices();
-      return buildResponse(command, 'getservices', services);
+      const services = contentManager.getServices() as unknown as Array<Record<string, unknown>>;
+      // Which rooms each account is the default for lives on the zones, not on the account.
+      const zones = configPort?.getConfig().zones ?? [];
+      return buildResponse(command, 'getservices', withDefaultPlayers(services, zones));
     },
     audioCfgGetMediaFolder: async (command: string) => {
       const rawParts = splitCommand(command);
