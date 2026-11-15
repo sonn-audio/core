@@ -100,12 +100,17 @@ const SLOT_NODES: Record<string, ServiceSlots> = {
     },
     projectRoot: false,
   },
-  // Tidal's account sections: its mixes where the app shows featured content, the account's own
-  // playlists, and the favourites by kind. The root goes out under its own names (My Collection
-  // has no slot of its own; its sections do).
+  // Tidal's account sections: its mixes where the app shows featured content, TIDAL's New Music
+  // and Top Music pages in the two rows below that (the app titles a row with the folder's own
+  // name and leaves out a row that comes back empty, as both do for a token that may not read
+  // TIDAL's pages), the account's own playlists, and the favourites by kind. The root goes out
+  // under its own names (My Collection has no slot of its own; its sections do). Podcasts stays
+  // empty: TIDAL has none, and the app's tile says Podcasts whatever is behind it.
   tidal: {
     nodes: {
       '0': 'mixes',
+      '1': 'new-music',
+      '2': 'top-music',
       '3': 'playlists',
       '4': 'collection-tracks',
       '5': 'collection-albums',

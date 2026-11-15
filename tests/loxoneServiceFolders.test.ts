@@ -280,9 +280,12 @@ test('the projected root advertises the number of items it actually contains', (
 });
 
 // Tidal publishes its account sections by name; the app's slots reach the ones it has a place for.
-test('Tidal maps the app slots onto its mixes, own playlists and favourites', () => {
+test('Tidal maps the app slots onto its mixes, pages, own playlists and favourites', () => {
   const tidal = 'bridge-tidal-t1';
   assert.equal(slot(tidal, '0'), 'mixes');
+  assert.equal(slot(tidal, '1'), 'new-music', 'the row under the mixes is New Music');
+  assert.equal(slot(tidal, '2'), 'top-music', 'and the one under that Top Music');
+  assert.equal(slot(tidal, '7'), '7', 'TIDAL has no podcasts');
   assert.equal(slot(tidal, '3'), 'playlists');
   assert.equal(slot(tidal, '4'), 'collection-tracks');
   assert.equal(slot(tidal, '5'), 'collection-albums');
