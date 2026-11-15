@@ -40,6 +40,11 @@ The one exception is the API: **[INTEGRATING.md](INTEGRATING.md)** in this repos
 API's single source of truth, kept next to the code it describes. The website renders it at
 [/docs/reference/](https://sonn-audio.github.io/docs/reference/).
 
+For contributors working on Loxone compatibility there is one more document here:
+**[docs/loxone-client-map.md](docs/loxone-client-map.md)** maps the Loxone app's Audioserver
+client — connection, authentication, every command and event, and what it requires of a server.
+It sits next to the tests that enforce it.
+
 ## Contributing
 
 Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under
