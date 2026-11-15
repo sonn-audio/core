@@ -114,6 +114,7 @@ export function registerRoutes(
   router.registerPrefix('audio', 'audio/cfg/getavailableservices', providerHandlers.audioCfgGetAvailableServices);
   router.registerPrefix('audio', 'audio/cfg/getservices', providerHandlers.audioCfgGetServices);
   router.registerPrefix('audio', 'audio/cfg/radios/add', providerHandlers.audioCfgRadiosAdd);
+  router.registerPrefix('audio', 'audio/cfg/radios/modify/', providerHandlers.audioCfgRadiosModify);
   router.registerPrefix('audio', 'audio/cfg/radios/del', providerHandlers.audioCfgRadiosDel);
   router.registerPrefix('audio', 'audio/cfg/radios/delete', providerHandlers.audioCfgRadiosDel);
   router.registerPrefix('audio', 'audio/cfg/getradios', providerHandlers.audioCfgGetRadios);

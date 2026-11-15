@@ -114,6 +114,7 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
       }
       try {
         const entry = await contentManager.addCustomRadio(name, url, cover);
+        notifier.notifyCustomUrlChanged('added', entry.id);
         return buildResponse(command, 'radios', {
           action: 'add',
           id: entry.id,
@@ -130,7 +131,44 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
       const parts = splitCommand(command);
       const id = parts[4] ? decodeURIComponent(parts[4]) : '';
       const removed = id ? await contentManager.removeCustomRadio(id) : false;
+      if (removed) {
+        notifier.notifyCustomUrlChanged('delete', id);
+      }
       return buildResponse(command, 'radios', { action: 'del', id, error: removed ? 0 : -3 });
+    },
+    // audio/cfg/radios/modify/<id>/<name>/<url>[/?q&<auth>] — rename or re-point a custom
+    // stream. The url spans several decoded segments, as in `add`; the optional `?q&` tail
+    // carries credentials we have no use for and is cut off.
+    audioCfgRadiosModify: async (command: string) => {
+      const parts = splitCommand(command);
+      const id = parts[4] ? decodeURIComponent(parts[4]) : '';
+      const name = parts[5] ? decodeURIComponent(parts[5]).trim() : '';
+      const url = (parts.length > 6 ? decodeURIComponent(parts.slice(6).join('/')) : '')
+        .replace(/\/\?q&.*$/, '')
+        .trim();
+      // CustomRadioError: NONE=0, INVALID_URL=-1, FILE_NOT_FOUND=-3, MISSING_PAYLOAD=-4.
+      if (!id || !name || !url) {
+        return buildResponse(command, 'radios', { action: 'modify', id, name, url, error: -4 });
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        return buildResponse(command, 'radios', { action: 'modify', id, name, url, error: -1 });
+      }
+      try {
+        const entry = await contentManager.updateCustomRadio(id, name, url);
+        if (!entry) {
+          return buildResponse(command, 'radios', { action: 'modify', id, name, url, error: -3 });
+        }
+        notifier.notifyCustomUrlChanged('changed', entry.id);
+        return buildResponse(command, 'radios', {
+          action: 'modify',
+          id: entry.id,
+          name: entry.name,
+          url: entry.stream,
+          error: 0,
+        });
+      } catch {
+        return buildResponse(command, 'radios', { action: 'modify', id, name, url, error: 1 });
+      }
     },
     audioCfgGetPlaylists: async (command: string) => {
       const parts = splitCommand(command);

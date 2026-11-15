@@ -364,6 +364,16 @@ export class ContentManager {
     return { id: entry.id, name: entry.name, stream: entry.stream };
   }
 
+  /** Rename or re-point a custom radio stream (native `audio/cfg/radios/modify`). */
+  public async updateCustomRadio(
+    id: string,
+    name: string,
+    stream: string,
+  ): Promise<{ id: string; name: string; stream: string } | null> {
+    const entry = await this.customRadioStore.update(id, { name, stream });
+    return entry ? { id: entry.id, name: entry.name, stream: entry.stream } : null;
+  }
+
   /** Remove a custom radio stream by id (native `audio/cfg/radios/del`). */
   public async removeCustomRadio(id: string): Promise<boolean> {
     return this.customRadioStore.remove(id);
