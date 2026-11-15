@@ -66,12 +66,17 @@ export function createQueueEditHandlers(
     },
 
     queueMove: (command: string) => {
-      // audio/<id>/queue/move/<srcUid>/before/<targetUid|end>
+      // audio/<id>/queue/move/<srcUid>/before/<targetUid>, or audio/<id>/queue/move/<srcUid>/end
+      // — the app sends the second form, without `before`, when an item is dropped past the
+      // last row.
       const parts = splitCommand(command);
       const zoneId = parseNumberPart(parts[1], 0);
       const beforeIdx = parts.indexOf('before', 4);
+      const toEnd = beforeIdx <= 4 && parts.length > 5 && parts[parts.length - 1] === 'end';
       const src =
-        beforeIdx > 4 ? decodeSegment(parts.slice(4, beforeIdx).join('/')) : extractPayload(parts.slice(4));
+        beforeIdx > 4
+          ? decodeSegment(parts.slice(4, beforeIdx).join('/'))
+          : extractPayload(toEnd ? parts.slice(4, -1) : parts.slice(4));
       const target = beforeIdx > 4 ? decodeSegment(parts.slice(beforeIdx + 1).join('/')) : 'end';
       const moved = zoneManager.queue.moveBeforeUniqueId(zoneId, src, target || 'end');
       if (!moved) {

@@ -200,7 +200,7 @@ export function registerRoutes(
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/queue\/play\/.+$/, queueEditHandlers.queuePlay);
   router.registerRegex(
     'audio',
-    /^audio\/(?:cfg\/)?\d+\/queue\/move\/.+\/before\/.+$/,
+    /^audio\/(?:cfg\/)?\d+\/queue\/move\/.+\/(?:before\/.+|end)$/,
     queueEditHandlers.queueMove,
   );
   router.registerRegex('audio', /^audio\/(?:cfg\/)?\d+\/queue\/remove\/.+$/, queueEditHandlers.queueRemove);
