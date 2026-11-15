@@ -6,7 +6,14 @@ import https from 'node:https';
 import os from 'node:os';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { isDevBuild, readBuildChannel, readBuildVersion, readGitBranch, readPackageVersion } from '@/shared/serverVersion';
+import {
+  isDevBuild,
+  readBuildChannel,
+  readBuildVersion,
+  readGitBranch,
+  readPackageVersion,
+  writeInstalledRelease,
+} from '@/shared/serverVersion';
 import { compareVersions } from '@/shared/semver';
 import {
   describeBundle,
@@ -1175,6 +1182,16 @@ async function performServerUpdate(
       if (code !== 0) {
         throw new Error(stderr.trim() || `npm install exited with code ${code}`);
       }
+    }
+
+    // The image's BUILD_CHANNEL still names whatever the image was built as; record what
+    // is installed now, so a dev image updated to a beta stops reporting itself as dev.
+    try {
+      writeInstalledRelease(readPackageVersion());
+    } catch (err) {
+      deps.log.warn('server update: could not record the installed release', {
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
 
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});

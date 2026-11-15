@@ -3,7 +3,14 @@ import { test } from './testHarness';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readBuildChannel, readGitBranch } from '../src/shared/serverVersion';
+import {
+  INSTALLED_RELEASE_FILE,
+  isDevBuild,
+  readBuildChannel,
+  readBuildVersion,
+  readGitBranch,
+  writeInstalledRelease,
+} from '../src/shared/serverVersion';
 
 /** A throwaway working copy with just enough of a .git to be read. */
 function withCheckout(head: string, fn: (dir: string) => void, asFile = false): void {
@@ -155,4 +162,36 @@ test('an image has no repository, so the branch never speaks for it', () => {
       assert.equal(readBuildChannel(), 'stable', 'a declared channel still wins');
     });
   });
+});
+
+test('a dev image updated in place to a beta release reports the beta', () => {
+  // The update swaps dist/ and package.json but not the image's environment, which
+  // still says dev and still carries the dev build stamp.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sonn-installed-'));
+  const previous = process.cwd();
+  try {
+    process.chdir(dir);
+    const pkg = (version: string) => fs.writeFileSync('package.json', JSON.stringify({ version }));
+    withEnv({ BUILD_CHANNEL: 'dev', BUILD_TIMESTAMP: 'dev-20261115.3' }, () => {
+      pkg('4.0.0-beta.24');
+      assert.equal(readBuildChannel(), 'dev', 'before any update the image speaks');
+      assert.equal(readBuildVersion(), '4.0.0-beta.24+dev-20261115.3');
+
+      writeInstalledRelease('4.0.0-beta.24');
+      assert.equal(readBuildChannel(), 'beta');
+      assert.equal(isDevBuild(), false, 'and it no longer gets the dev pass on the bundle gate');
+      assert.equal(readBuildVersion(), '4.0.0-beta.24', 'without the dev stamp');
+
+      writeInstalledRelease('4.0.0');
+      pkg('4.0.0');
+      assert.equal(readBuildChannel(), 'stable');
+
+      pkg('4.0.1-beta.1');
+      assert.equal(readBuildChannel(), 'dev', 'code put there another way is judged by its image again');
+      assert.ok(fs.existsSync(INSTALLED_RELEASE_FILE));
+    });
+  } finally {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

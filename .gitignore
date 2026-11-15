@@ -129,3 +129,6 @@ public/alerts/cache
 public/admin
 public/player
 public/alerts/Event_Sounds/*
+
+# Written by the in-place core update on a deployment
+installed-release.json

@@ -4,7 +4,7 @@
  * Shared so the admin API's `/info` and the public API's `/api/health` can never
  * disagree about what is running.
  */
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export function readPackageVersion(): string {
@@ -31,6 +31,43 @@ export function readPackageVersion(): string {
 export type BuildChannel = 'dev' | 'testing' | 'beta' | 'stable';
 
 const BUILD_CHANNELS: readonly BuildChannel[] = ['dev', 'testing', 'beta', 'stable'];
+
+/**
+ * Written next to `package.json` by the in-place core update.
+ *
+ * The image states its channel in `BUILD_CHANNEL` and `BUILD_TIMESTAMP`, and an in-place
+ * update cannot change those: it swaps `dist/` and the manifests, not the environment. A dev
+ * image updated to a beta release would go on calling itself dev, with the dev build stamp
+ * on the beta version and the dev pass on the bundle gate. This file says what was really
+ * installed, and holds only while `package.json` still carries the version it was written
+ * for, so code put there any other way is judged by its image again.
+ */
+export const INSTALLED_RELEASE_FILE = 'installed-release.json';
+
+type InstalledRelease = { version: string; channel: BuildChannel };
+
+export function writeInstalledRelease(version: string, cwd: string = process.cwd()): void {
+  const channel: BuildChannel = version.includes('-') ? 'beta' : 'stable';
+  const record: InstalledRelease = { version, channel };
+  writeFileSync(resolve(cwd, INSTALLED_RELEASE_FILE), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+function readInstalledRelease(): InstalledRelease | null {
+  try {
+    const raw = JSON.parse(readFileSync(resolve(process.cwd(), INSTALLED_RELEASE_FILE), 'utf8')) as
+      Partial<InstalledRelease>;
+    if (
+      typeof raw.version !== 'string' ||
+      raw.version !== readPackageVersion() ||
+      !(BUILD_CHANNELS as readonly unknown[]).includes(raw.channel)
+    ) {
+      return null;
+    }
+    return { version: raw.version, channel: raw.channel as BuildChannel };
+  } catch {
+    return null;
+  }
+}
 
 /** Branches that stand for a channel. Anything else is somebody's working branch. */
 const BRANCH_CHANNELS: Readonly<Record<string, BuildChannel>> = {
@@ -70,6 +107,10 @@ export function readGitBranch(cwd: string = process.cwd()): string | null {
 }
 
 export function readBuildChannel(): BuildChannel {
+  const installed = readInstalledRelease();
+  if (installed) {
+    return installed.channel;
+  }
   const declared = process.env.BUILD_CHANNEL?.trim().toLowerCase();
   if (declared && (BUILD_CHANNELS as readonly string[]).includes(declared)) {
     return declared as BuildChannel;
@@ -105,6 +146,10 @@ export function readBuildChannel(): BuildChannel {
  * dev except to try a fix, and what they need there is the newest of everything.
  */
 export function isDevBuild(): boolean {
+  const installed = readInstalledRelease();
+  if (installed) {
+    return installed.channel === 'dev';
+  }
   const declared = process.env.BUILD_CHANNEL?.trim().toLowerCase();
   if (declared && (BUILD_CHANNELS as readonly string[]).includes(declared)) {
     return declared === 'dev';
@@ -121,6 +166,10 @@ export function isDevBuild(): boolean {
 
 /** Appends the CI build stamp when present, so nightly builds are distinguishable. */
 export function readBuildVersion(pkgVersion: string = readPackageVersion()): string {
+  // A release installed by the update is that release; the image's build stamp is not its.
+  if (readInstalledRelease()) {
+    return pkgVersion;
+  }
   const tsRaw = process.env.BUILD_TIMESTAMP?.trim();
   if (!tsRaw) {
     return pkgVersion;
