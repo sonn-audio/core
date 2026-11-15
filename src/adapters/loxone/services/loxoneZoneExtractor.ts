@@ -2,7 +2,8 @@ import type { ZoneConfig } from '@/domain/config/types';
 
 export interface ZoneDescriptor {
   id: number;
-  name: string;
+  /** Absent when the Miniserver sent the player without a name, which it may do for all (#441). */
+  name?: string;
   sourceSerial: string;
   sourceMac: string;
   sourceLabel: string;
@@ -108,16 +109,13 @@ export function extractZonesFromLoxoneConfig(
     return { serial, label };
   };
 
-  return players.map((player: Record<string, unknown>, index: number) => {
+  return players.map((player: Record<string, unknown>) => {
     const id = Number(player.playerid ?? player.id ?? 0);
     const resolved = resolvePlayerSource(player);
 
     return {
       id,
-      name:
-        typeof player.name === 'string' && player.name.trim()
-          ? player.name.trim()
-          : `Zone ${id || index + 1}`,
+      name: typeof player.name === 'string' && player.name.trim() ? player.name.trim() : undefined,
       sourceSerial: resolved.serial,
       sourceMac: resolved.serial,
       sourceLabel: resolved.label,
@@ -148,15 +146,16 @@ export function buildZoneConfigs(
     if (current) {
       return {
         ...current,
-        // Loxone-owned identity, refreshed on every push.
-        name: descriptor.name,
+        // Loxone-owned identity, refreshed on every push. A player pushed without a name keeps
+        // the one it has: a placeholder made up here overwrote every room's name (#441).
+        name: descriptor.name ?? current.name,
         sourceMac: descriptor.sourceMac,
         sourceSerial: descriptor.sourceSerial,
       };
     }
     return {
       id: descriptor.id,
-      name: descriptor.name,
+      name: descriptor.name ?? `Zone ${descriptor.id}`,
       sourceMac: descriptor.sourceMac,
       sourceSerial: descriptor.sourceSerial,
       output: null,

@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from './testHarness';
 import { createConfigHandlers } from '../src/adapters/loxone/commands/handlers/configHandlers';
 import { serializeResult } from '../src/adapters/loxone/commands/responses';
+import {
+  buildZoneConfigs,
+  extractZonesFromLoxoneConfig,
+} from '../src/adapters/loxone/services/loxoneZoneExtractor';
+import type { ZoneConfig } from '../src/domain/config/types';
 
 // The Miniserver's audio/cfg/setconfig, as tobsch traced it on a Miniserver stuck in its handshake:
 // the reply went out keyed by the base64 payload (#440), players pushed without a name lost the
@@ -45,4 +50,27 @@ test('setconfig and miniservertime answer under their own names (#440)', async (
 
   const time = await handlers.miniserverTime('audio/cfg/miniservertime/1794746998');
   assert.equal(keyOf(time), 'miniservertime_result');
+});
+
+test('a player pushed without a name keeps the name it has (#441)', () => {
+  const existing = [
+    { id: 1, name: 'Kitchen', output: { type: 'sendspin' }, inputs: {}, volumes: {} },
+    { id: 2, name: 'Office', output: null, inputs: {}, volumes: {} },
+  ] as unknown as ZoneConfig[];
+  const descriptors = extractZonesFromLoxoneConfig(
+    music([{ playerid: 1, name: null }, { playerid: 2, name: 'Study' }, { playerid: 3, name: null }]),
+    OUR_MAC,
+  );
+  const zones = buildZoneConfigs(descriptors, existing);
+
+  assert.deepEqual(
+    zones.map((z) => [z.id, z.name]),
+    [
+      [1, 'Kitchen'],
+      [2, 'Study'],
+      [3, 'Zone 3'],
+    ],
+    'a known room keeps its name, a real name still wins, only a new room gets a placeholder',
+  );
+  assert.deepEqual(zones[0]?.output, { type: 'sendspin' });
 });
