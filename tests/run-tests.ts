@@ -205,6 +205,7 @@ import './loxoneProjectionBoundary.test';
 import './loxoneServiceEntries.test';
 import './loxoneClientSchemas.test';
 import './loxoneClientEvents.test';
+import './loxoneClientCommands.test';
 import './browseRef.test';
 import './libraryProjectionSource.test';
 import './streamFormat.test';

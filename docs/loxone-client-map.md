@@ -23,7 +23,8 @@ send, and what must we send back for it to accept it".
   - `AppHub.js` — transport, events, manager
   - `shared-app.js` — typed command library and repositories
   - `scripts10.js`, `scripts11.js`, `scripts5.js`, `controls1.js` — legacy `MediaServerComp`
-- **Executable form of this contract:** `tests/loxoneClientEvents.test.ts` (events) and
+- **Executable form of this contract:** `tests/loxoneClientEvents.test.ts` (events),
+  `tests/loxoneClientCommands.test.ts` (command answers) and
   `tests/loxoneClientSchemas.test.ts` (queue, recents, favourites) transcribe the client's zod
   schemas and parse what we emit with them. When this document and those tests disagree, the
   tests are what `npm test` enforces.
@@ -453,14 +454,27 @@ Compared with `src/adapters/loxone/commands/router/routeRegistry.ts` and
 
 **Client commands with no route:**
 
-- `audio/cfg/search/…` — and we advertise links to it in global search results
-  (`notifier.ts`, `buildCategory`).
-- `audio/cfg/servicecfg/add`, `…/set`, `…/update`.
-- `audio/cfg/storage/edit`.
-- `audio/cfg/radios/modify`; `PUT audio/cfg/radios/coverurl/<id>`.
-- `audio/cfg/roomfavs/<pid>/setplus/…`.
-- `audio/<pid>/loudness`, `audio/<pid>/centergain` (loudness is gated on firmware 18.1).
-- `audio/<pid>/queue/move/<uid>/end` — our route requires `/before/`.
+- `audio/cfg/servicecfg/set/<svc>/<user>/asdefault/player/<ids>` — the app's "default account
+  for this zone". Worth having here in particular: every bridged streaming service shows up in
+  the app as a Spotify account, and without `asdefault` the app opens the first one in every
+  zone (`getDefaultSpotifyIdForPlayer`, `shared-app.js:20108`). Needs the choice persisted per
+  account and returned in `getservices`.
+- `PUT audio/cfg/radios/coverurl/<id>` — a picture for a custom station. We have nowhere to
+  keep and serve an uploaded cover; the upload is accepted and ignored.
+- `audio/cfg/servicecfg/add` and `…/update` — schemas exist in the app, nothing in 17.3.0 calls
+  them; account sign-in goes through `getlink`.
+- `audio/<pid>/loudness` — only offered from firmware 18.1.0.0; we announce 17.3.11.10.
+- `audio/<pid>/centergain` — only offered when the Miniserver's structure file sets the
+  `CENTER_GAIN` bit in a zone's `speakerConfig` (`shared-app.js:75888`), i.e. for Loxone's own
+  amplifier hardware.
+- `dialog_event` — we never send one.
+
+**Closed since the first comparison:** `audio/cfg/search/…` (paged category search),
+`audio/<pid>/queue/move/<uid>/end`, `audio/cfg/roomfavs/<pid>/setplus/…`,
+`audio/cfg/storage/edit/…`, `audio/cfg/radios/modify/…`. Along the way three answers that the
+app could not read were renamed to what its schemas name: `roomfavs_setid_result`,
+`roomfavs_setname_result` (an array of `{rename_slot, rename_to}`) and the `storage/delete`
+result (`{id, error}`). All of these are pinned in `tests/loxoneClientCommands.test.ts`.
 
 **Events:** `service_changed_event`, `restart_event`, `reboot_event`, `usbchanged_event` and
 `customurl_changed_event` were sent as arrays, and `playlistchanged_event` without `name` on
