@@ -1,3 +1,4 @@
+import { forLoxoneFavorite } from '@/adapters/loxone/commands/utils/loxoneFavorites';
 import type { CommandResult } from '@/adapters/loxone/commands/types';
 import { buildEmptyResponse, buildResponse } from '@/adapters/loxone/commands/responses';
 import type { ContentManager } from '@/adapters/content/contentManager';
@@ -55,7 +56,7 @@ export function createZoneHandlers(
     audioCfgSetEq: (command: string) => audioCfgSetEq(zoneManager, configPort, command),
     audioEqualizerSettings: (command: string) => audioEqualizerSettings(zoneManager, configPort, command),
     audioDynamicCommand: (command: string) => audioDynamicCommand(zoneManager, command),
-    audioCfgGetRoomFavs: (command: string) => audioCfgGetRoomFavs(favoritesManager, command),
+    audioCfgGetRoomFavs: (command: string) => audioCfgGetRoomFavs(favoritesManager, contentManager, command),
     audioCfgRoomFavs: (command: string) => audioCfgRoomFavs(favoritesManager, command),
     audioFavoritePlay: (command: string) =>
       audioFavoritePlay(zoneManager, favoritesManager, contentManager, fadeController, command),
@@ -442,6 +443,7 @@ function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
 
 async function audioCfgGetRoomFavs(
   favoritesManager: FavoritesManager,
+  contentManager: ContentManager,
   command: string,
 ) {
   const parts = splitCommand(command);
@@ -449,7 +451,10 @@ async function audioCfgGetRoomFavs(
   const start = parseNumberPart(parts[4], 0);
   const limit = parseNumberPart(parts[5], 50);
   const favorites = await favoritesManager.get(zoneId, start, limit);
-  return buildResponse(command, 'getroomfavs', [favorites]);
+  // Favourites are kept in the server's own terms; the app can only open one it can place.
+  const registry = contentManager.getBridgeRegistry();
+  const items = favorites.items.map((item) => forLoxoneFavorite(item, registry));
+  return buildResponse(command, 'getroomfavs', [{ ...favorites, items }]);
 }
 
 /**
