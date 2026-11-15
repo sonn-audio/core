@@ -39,6 +39,7 @@ import { ContentCacheManager } from '@/adapters/content/utils/contentCacheManage
 import type { StorageConfig } from '@/adapters/content/storage/storageManager';
 import {
   addStorage,
+  updateStorage,
   deleteStorage,
   listStorages,
 } from '@/adapters/content/storage/storageManager';
@@ -1090,6 +1091,13 @@ export class ContentManager {
 
   public async addStorage(config: Omit<StorageConfig, 'id'> & { id?: string }): Promise<StorageConfig> {
     return addStorage(config);
+  }
+
+  public async updateStorage(
+    id: string,
+    changes: Partial<Omit<StorageConfig, 'id'>>,
+  ): Promise<StorageConfig | null> {
+    return updateStorage(id, changes);
   }
 
   public async deleteStorage(id: string): Promise<void> {

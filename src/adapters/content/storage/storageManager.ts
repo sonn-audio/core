@@ -278,6 +278,39 @@ export async function addStorage(
   return storage;
 }
 
+/**
+ * Change a storage in place: same id, new details.
+ *
+ * A mount cannot be edited, only replaced, so this unmounts the old one and mounts the new.
+ * When the new details do not mount, the old storage is put back — an edit with a typo in it
+ * should cost nothing, not the share that was working.
+ */
+export async function updateStorage(
+  id: string,
+  changes: Partial<Omit<StorageConfig, 'id'>>,
+): Promise<StorageConfig | null> {
+  const file = await loadStorageFile();
+  const existing = file.storages.find((storage) => storage.id === id);
+  if (!existing) {
+    return null;
+  }
+  const defined = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
+  const next: StorageConfig = { ...existing, ...defined, id };
+  await deleteStorage(id);
+  try {
+    return await addStorage(next);
+  } catch (err) {
+    await bestEffort(() => addStorage(existing), {
+      fallback: undefined,
+      onError: 'debug',
+      log,
+      label: 'restoring the storage after a failed edit failed',
+      context: { id },
+    });
+    throw err;
+  }
+}
+
 export async function deleteStorage(id: string): Promise<void> {
   const file = await loadStorageFile();
   const idx = file.storages.findIndex((storage) => storage.id === id);

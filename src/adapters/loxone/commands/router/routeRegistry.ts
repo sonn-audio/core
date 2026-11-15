@@ -110,6 +110,7 @@ export function registerRoutes(
   router.registerPrefix('audio', 'audio/cfg/storage/add', providerHandlers.audioCfgStorageAdd);
   router.registerPrefix('audio', 'audio/cfg/storage/list', providerHandlers.audioCfgStorageList);
   router.registerPrefix('audio', 'audio/cfg/storage/del', providerHandlers.audioCfgStorageDel);
+  router.registerPrefix('audio', 'audio/cfg/storage/edit/', providerHandlers.audioCfgStorageEdit);
   router.registerPrefix('audio', 'audio/cfg/getavailableservices', providerHandlers.audioCfgGetAvailableServices);
   router.registerPrefix('audio', 'audio/cfg/getservices', providerHandlers.audioCfgGetServices);
   router.registerPrefix('audio', 'audio/cfg/radios/add', providerHandlers.audioCfgRadiosAdd);

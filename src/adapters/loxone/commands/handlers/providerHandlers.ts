@@ -231,7 +231,7 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
         name: storage.name,
         server: storage.server,
         folder: storage.folder,
-        guest: storage.guest,
+        guest: !!storage.guest,
         username: storage.username ?? undefined,
         type: storage.type,
       }));
@@ -283,7 +283,7 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
           name: storage.name,
           server: storage.server,
           folder: storage.folder,
-          guest: storage.guest,
+          guest: !!storage.guest,
           username: storage.username ?? undefined,
         });
       } catch (err) {
@@ -308,13 +308,70 @@ export function createProviderHandlers(contentManager: ContentManager, notifier:
           notifier.notifyStorageRemoved(id);
           notifier.notifyStorageListUpdated(await contentManager.listStorages());
           void contentManager.rescanLibrary();
-          return buildResponse(command, 'storage', { configerror: 0 });
+          // The app reads `id` and `error` here and nothing else; `configerror` stays for
+          // whoever read it before.
+          return buildResponse(command, 'storage', { id, error: false, configerror: 0 });
         } catch (err) {
           const cfgErr = mapMountErrorToConfigError(err);
-          return buildResponse(command, 'storage', { configerror: cfgErr || 1 });
+          return buildResponse(command, 'storage', { id, error: true, configerror: cfgErr || 1 });
         }
       }
-      return buildResponse(command, 'storage', { configerror: 1 });
+      return buildResponse(command, 'storage', { id: '', error: true, configerror: 1 });
+    },
+    // audio/cfg/storage/edit/<id>/<base64 JSON> — the same payload as `add`, for a share
+    // that already exists.
+    audioCfgStorageEdit: async (command: string) => {
+      const parts = splitCommand(command);
+      const id = decodeSegment(parts[4]);
+      const encoded = decodeSegment(parts.slice(5).join('/'));
+      const payload = encoded
+        ? safeJsonParse<any>(decodeBase64Segment(decodeURIComponent(encoded)))
+        : null;
+      const echo = {
+        id,
+        name: payload?.name ?? '',
+        server: payload?.server ?? '',
+        folder: payload?.folder ?? '',
+        guest: !!payload?.guest,
+        username: payload?.username ?? undefined,
+      };
+      if (!id || !payload) {
+        return buildResponse(command, 'storage', { ...echo, configerror: 1 });
+      }
+      // No password in the payload means "leave it": the app does not get the old one back
+      // to send again.
+      const password =
+        typeof payload.password === 'string' && payload.password
+          ? (decryptWithAudioCfgKey(payload.password) ?? payload.password)
+          : undefined;
+      try {
+        const storage = await contentManager.updateStorage(id, {
+          name: payload.name || undefined,
+          server: payload.server || undefined,
+          folder: payload.folder || undefined,
+          guest: typeof payload.guest === 'boolean' ? payload.guest : undefined,
+          username: payload.username,
+          password,
+          type: payload.type,
+          options: payload.options,
+        });
+        if (!storage) {
+          return buildResponse(command, 'storage', { ...echo, configerror: 1 });
+        }
+        notifier.notifyStorageListUpdated(await contentManager.listStorages());
+        void contentManager.rescanLibrary();
+        return buildResponse(command, 'storage', {
+          configerror: 0,
+          id: storage.id,
+          name: storage.name,
+          server: storage.server,
+          folder: storage.folder,
+          guest: !!storage.guest,
+          username: storage.username ?? undefined,
+        });
+      } catch (err) {
+        return buildResponse(command, 'storage', { ...echo, configerror: mapMountErrorToConfigError(err) });
+      }
     },
     audioCfgIsFollowed: (command: string) => {
       const parts = splitCommand(command);
