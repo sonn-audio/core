@@ -55,6 +55,13 @@ export class ExternalStateRouter {
       const propagated: Partial<ZoneState> = { ...patch };
       delete propagated.time;
       delete propagated.duration;
+      // A controller that cannot name what it plays (Sonos always reports '') says nothing
+      // about our content. Taking its empty audiopath blanked the path of the stream we were
+      // playing, so a favourite saved from the app came out empty and would not play (#439).
+      // A speaker that really went elsewhere ends the session first (onExternalTakeover).
+      if (propagated.audiopath === '') {
+        delete propagated.audiopath;
+      }
       if (Object.keys(propagated).length === 0) return;
       this.deps.applyPatch(zoneId, propagated);
       return;
