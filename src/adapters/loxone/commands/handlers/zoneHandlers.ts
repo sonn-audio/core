@@ -419,13 +419,20 @@ async function audioCfgRoomFavs(
       const oldId = parseNumberPart(rest[0], 0);
       const newId = parseNumberPart(rest[1], 0);
       await favoritesManager.setId(zoneId, oldId, newId);
-      return buildResponse(command, 'roomfavs_set', { changed_from: oldId, changed_to: newId });
+      return buildResponse(command, 'roomfavs_setid', { changed_from: oldId, changed_to: newId });
     }
     case 'setname': {
       const id = parseNumberPart(rest[0], 0);
       const name = decodeSegment(rest.slice(1).join('/'));
       await favoritesManager.setName(zoneId, id, name);
-      return buildResponse(command, 'roomfavs_setname', { id, name });
+      // An array of one, in the app's own field names — it reads nothing else here.
+      return buildResponse(command, 'roomfavs_setname', [{ rename_slot: id, rename_to: name }]);
+    }
+    case 'setplus': {
+      const id = parseNumberPart(rest[0], 0);
+      const plus = rest[1] === '1' || rest[1] === 'true';
+      await favoritesManager.setPlus(zoneId, id, plus);
+      return buildResponse(command, 'roomfavs_setplus', { plus, id });
     }
     case 'delete': {
       const id = parseNumberPart(rest[0], 0);
@@ -481,7 +488,9 @@ async function audioRoomFavPlus(
 ) {
   const parts = splitCommand(command);
   const zoneId = parseNumberPart(parts[1], 0);
-  const favorites = await favoritesManager.get(zoneId);
+  const all = await favoritesManager.get(zoneId);
+  // Only the favourites switched on for the round; with none switched on there is no round.
+  const favorites = { ...all, items: all.items.filter((item) => item.plus !== false) };
   if (!favorites.items.length) {
     return buildEmptyResponse(command);
   }

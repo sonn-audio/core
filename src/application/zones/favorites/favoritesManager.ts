@@ -168,7 +168,8 @@ export class FavoritesManager {
         : {};
       return {
         ...item,
-        plus: true,
+        // On unless switched off: a favourite saved before `setplus` existed has no flag.
+        plus: item.plus !== false,
         audiopath: normalizedPath,
         type: resolvedType,
         service: hasMeaningfulService ? item.service : detectedService.name,
@@ -255,6 +256,16 @@ export class FavoritesManager {
     return this.persist(zoneId, items);
   }
 
+  /**
+   * Whether a favourite takes part in the "plus" round — what a T5 double click and the app's
+   * `roomfav/plus` step through. The Loxone app offers the switch per favourite.
+   */
+  public async setPlus(zoneId: number, id: number, plus: boolean): Promise<FavoriteResponse> {
+    const stored = await loadFavorites(zoneId);
+    const items = stored.items.map((item) => (item.id === id ? { ...item, plus } : item));
+    return this.persist(zoneId, items);
+  }
+
   public async reorder(zoneId: number, newOrder: readonly number[]): Promise<FavoriteResponse> {
     const stored = await loadFavorites(zoneId);
     const byId = new Map(stored.items.map((item) => [item.id, item]));
@@ -276,7 +287,6 @@ export class FavoritesManager {
     const items = ordered.map((item, index) => ({
       ...item,
       slot: index + 1,
-      plus: true,
     }));
 
     return this.persist(zoneId, items);
