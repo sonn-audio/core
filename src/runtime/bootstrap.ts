@@ -94,6 +94,7 @@ import { createRuntimePorts, createZoneManagerProxy } from '@/runtime/ports';
 import { alertsManager } from '@/application/alerts/alertsManager';
 import { fadeController } from '@/application/zones/fadeController';
 import { LoxoneNotifierAdapter } from '@/adapters/loxone/LoxoneNotifierAdapter';
+import { resolveCoverHost } from '@/shared/utils/net';
 import { ApiEventHub } from '@/adapters/http/api/apiEventHub';
 import { withApiEvents } from '@/adapters/http/api/apiNotifierTap';
 import { withDlnaReflection } from '@/adapters/inputs/dlna/dlnaNotifierTap';
@@ -436,6 +437,9 @@ export function createRuntime(): Runtime {
   zoneManagerRef = zoneManager;
   loxoneNotifier.setZoneStateLookup((zoneId) => zoneManager.getState(zoneId));
   loxoneNotifier.setPlayContextLookup((zoneId) => zoneManager.getPlayContext(zoneId));
+  loxoneNotifier.setSettingsUrlLookup(
+    () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,
+  );
   loxoneNotifier.setServiceAccountsLookup(() =>
     (contentManager.getServices() as unknown as Array<{ id?: string; user?: string; fake?: boolean }>)
       .filter((entry) => typeof entry.id === 'string' && typeof entry.user === 'string')

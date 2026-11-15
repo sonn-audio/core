@@ -9,6 +9,16 @@ import {
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
 import type { ConnectionRegistry } from '@/adapters/loxone/ws/connectionRegistry';
 import type { GroupTrackerPort } from '@/ports/GroupTrackerPort';
+import type { PlaybackFailure } from '@/ports/NotifierPort';
+import {
+  DialogThrottle,
+  PLAYBACK_FAILED_QUIET_MS,
+  SERVICE_REFUSED_QUIET_MS,
+  playbackFailedDialog,
+  serviceRefusedDialog,
+  type LoxoneDialog,
+  type ServiceRefusal,
+} from '@/adapters/loxone/ws/dialogs';
 
 type ZoneStateLookup = (zoneId: number) => ZoneState | undefined;
 type OutputProtocolLookup = (zoneId: number) => string | null;
@@ -21,6 +31,8 @@ export class LoxoneWsNotifier {
   private audiopathToLoxone: ((audiopath: string) => string) | null = null;
   private playContextLookup: ((zoneId: number) => { path: string; name: string } | null) | null = null;
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
+  private settingsUrlLookup: (() => string | null) | null = null;
+  private readonly dialogThrottle = new DialogThrottle();
 
   constructor(
     private readonly registry: ConnectionRegistry,
@@ -71,6 +83,43 @@ export class LoxoneWsNotifier {
    */
   public setServiceAccountsLookup(lookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null): void {
     this.serviceAccountsLookup = lookup;
+  }
+
+  /** Where the audio server's own settings can be opened — the link on a dialog's button. */
+  public setSettingsUrlLookup(lookup: (() => string | null) | null): void {
+    this.settingsUrlLookup = lookup;
+  }
+
+  /**
+   * Raises a pop-up in every connected app. See `dialogs.ts` for when that is warranted.
+   */
+  public notifyDialog(dialog: LoxoneDialog): void {
+    this.emit({ dialog_event: [dialog] }, 'dialog_event', { id: dialog.ID, state: dialog.state });
+  }
+
+  /**
+   * A streaming account was refused by its service. Said once per account in ten minutes:
+   * the app opens several folders at a time, and each of them is refused.
+   */
+  public notifyServiceRefused(accountId: string, reason: ServiceRefusal): void {
+    const account = this.serviceAccountsLookup?.().find((entry) => entry.id === accountId)?.user;
+    const dialog = serviceRefusedDialog({
+      account: account || 'The streaming service',
+      accountId,
+      reason,
+      settingsUrl: this.settingsUrlLookup?.() ?? null,
+    });
+    if (this.dialogThrottle.allow(dialog.ID, SERVICE_REFUSED_QUIET_MS)) {
+      this.notifyDialog(dialog);
+    }
+  }
+
+  /** A zone was asked to play and nothing would start. Said once per zone in twenty seconds. */
+  public notifyPlaybackFailed(zoneId: number, failure: PlaybackFailure): void {
+    const dialog = playbackFailedDialog({ zoneId, zoneName: failure.zoneName, title: failure.title });
+    if (this.dialogThrottle.allow(dialog.ID, PLAYBACK_FAILED_QUIET_MS)) {
+      this.notifyDialog(dialog);
+    }
   }
 
   /**

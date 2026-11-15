@@ -524,7 +524,6 @@ Compared with `src/adapters/loxone/commands/router/routeRegistry.ts` and
 - `audio/<pid>/centergain` — only offered when the Miniserver's structure file sets the
   `CENTER_GAIN` bit in a zone's `speakerConfig` (`shared-app.js:75888`), i.e. for Loxone's own
   amplifier hardware.
-- `dialog_event` — we never send one.
 
 **Loudness** (`audio/<pid>/loudness[/<0|1>]`) is implemented, and we announce firmware 18.1.0.0
 so the app offers the switch. What it does is ours to define — the app only sends on or off: a
@@ -537,6 +536,14 @@ is kept on the zone (`ZoneConfig.streamingAccount`) and handed back the way the 
 per account, as the players it is the default for (`asdefault` in `getservices`). Every
 streaming service reaches the app as a Spotify account, so this decides which service a room
 opens on. Pinned in `tests/loxoneDefaultAccount.test.ts`.
+
+**Dialogs** (`dialog_event`) are raised for two things the app cannot show any other way and
+only the listener can fix: a streaming account that was signed out or refused, noticed when
+one of its folders is opened, and a zone that was asked to play and found nothing in its queue
+that would start. The pop-up appears in every connected app at once and the client never
+closes it by itself (`ttl` is required and unused), so each is throttled — once per account
+in ten minutes, once per zone in twenty seconds. `ws/dialogs.ts`, pinned in
+`tests/loxoneDialogs.test.ts`.
 
 **Custom station pictures** (`PUT audio/cfg/radios/coverurl/<id>`) are stored under
 `data/music/customradio/` — the tree the `/music` route on :7090 already serves — and the

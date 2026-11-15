@@ -265,6 +265,7 @@ export class ZoneManager {
       notifyReloadMusicApp: (action, provider, userId) =>
         this.notifier.notifyReloadMusicApp(action, provider, userId),
       notifyAudioSyncEvent: (payload) => this.notifier.notifyAudioSyncEvent(payload),
+      notifyPlaybackFailed: (zoneId, failure) => this.notifier.notifyPlaybackFailed?.(zoneId, failure),
     };
     this.groupingCoordinator = new GroupingCoordinator({
       getState: (zoneId) => this.getState(zoneId),

@@ -48,5 +48,6 @@ export function withDlnaReflection(
     notifyReloadMusicApp: (action, provider, userId) =>
       inner.notifyReloadMusicApp(action, provider, userId),
     notifyAudioSyncEvent: (payload) => inner.notifyAudioSyncEvent(payload),
+    notifyPlaybackFailed: (zoneId, failure) => inner.notifyPlaybackFailed?.(zoneId, failure),
   };
 }

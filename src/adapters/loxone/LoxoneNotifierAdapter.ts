@@ -1,4 +1,4 @@
-import type { NotifierPort } from '@/ports/NotifierPort';
+import type { NotifierPort, PlaybackFailure } from '@/ports/NotifierPort';
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
 import type { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 
@@ -31,5 +31,9 @@ export class LoxoneNotifierAdapter implements NotifierPort {
 
   notifyAudioSyncEvent(payload: AudioSyncGroupPayload[]): void {
     this.notifier.notifyAudioSyncEvent(payload);
+  }
+
+  notifyPlaybackFailed(zoneId: number, failure: PlaybackFailure): void {
+    this.notifier.notifyPlaybackFailed(zoneId, failure);
   }
 }

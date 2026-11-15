@@ -253,6 +253,11 @@ export function createProviderHandlers(
           throw error;
         }
         log.warn('service folder refused', { service, user, folderId, reason: error.reason });
+        // An empty folder is all the list can show, but the app can be told why: an account
+        // that was signed out, or refused, is something only the listener can put right.
+        if (error.reason === 'auth' || error.reason === 'denied') {
+          notifier.notifyServiceRefused(user, error.reason);
+        }
         return buildResponse(command, 'getservicefolder', []);
       }
       if (!folder) {

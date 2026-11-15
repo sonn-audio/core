@@ -581,6 +581,13 @@ export class PlayRequestService {
       zoneId: ctx.id,
       audiopath: itemAudiopath,
     });
+    // Reached once per request, after every item of the queue was tried — so this says "nothing
+    // would start", not "one track was skipped".
+    this.deps.notifier.notifyPlaybackFailed?.(ctx.id, {
+      zoneName: ctx.name,
+      title: ctx.queueController.current()?.title || ctx.state.title || undefined,
+      audiopath: itemAudiopath,
+    });
     const shouldStayOnline =
       this.deps.audioHelpers.isMusicAssistantAudiopath(itemAudiopath) ||
       this.deps.audioHelpers.isSpotifyAudiopath(itemAudiopath) ||
