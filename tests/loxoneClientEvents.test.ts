@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { test } from './testHarness';
 import { LoxoneWsNotifier } from '../src/adapters/loxone/ws/notifier';
+import { createZoneHandlers } from '../src/adapters/loxone/commands/handlers/zoneHandlers';
 import { AudioEventType, AudioType, FileType } from '../src/domain/zones/enums';
 import type { ZoneState } from '../src/domain/zones/zoneState';
 
@@ -286,6 +287,31 @@ test('client events: a zone says which alert it plays, and only while it plays o
     assert.equal(frame.audio_event[0]!.eventype, alert);
     assert.ok(eventSchema.safeParse(frame).success, `the client drops an audio_event with eventype ${alert}`);
   }
+});
+
+test('client events: a status answer is the row an audio_event carries', async () => {
+  // The client files a status row under its `playerid`; the server's own state has an `id`.
+  const registry = { broadcastMessage: () => {} } as any;
+  const notifier = new LoxoneWsNotifier(registry, { getGroupByZone: () => undefined } as any);
+  const handlers = createZoneHandlers(
+    { getState: (zoneId: number) => (zoneId === 3 ? zoneState() : undefined) } as any,
+    {} as any,
+    {} as any,
+    {} as any,
+    undefined,
+    undefined,
+    (state) => notifier.projectForLoxone(state),
+  );
+
+  const answer = await handlers.audioGetStatus('audio/3/status');
+  assert.equal(answer.name, 'status');
+  const rows = answer.payload as Array<Record<string, unknown>>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.playerid, 3);
+  assert.ok(eventSchema.safeParse({ audio_event: rows }).success, 'the status row is not a valid audio_event row');
+
+  const unknown = await handlers.audioGetStatus('audio/9/status');
+  assert.deepEqual(unknown.payload, []);
 });
 
 test('client events: a failed search answers every scope with a ticket the client can read', () => {

@@ -14,6 +14,7 @@ import { decodeAudiopath } from '@/domain/zones/audiopath';
 import { isMusicAssistantAudiopath } from '@/application/zones/internal/zoneAudioHelpers';
 import type { PlaybackMetadata } from '@/ports/types/playback';
 import { BASE_LIBRARY, BASE_PLAYLIST, decodeLoxoneId } from '@/adapters/loxone/commands/utils/loxoneIdCodec';
+import type { ZoneState } from '@/domain/zones/zoneState';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { FadeControllerPort } from '@/ports/FadeControllerPort';
@@ -41,9 +42,11 @@ export function createZoneHandlers(
   contentManager: ContentManager,
   configPort?: ConfigPort,
   fadeController: FadeControllerPort = noopFadeController,
+  /** Shapes a zone's state the way `audio_event` carries it; a status answer is the same row. */
+  projectState: (state: ZoneState) => unknown = (state) => state,
 ) {
   return {
-    audioGetStatus: (command: string) => audioGetStatus(zoneManager, command),
+    audioGetStatus: (command: string) => audioGetStatus(zoneManager, projectState, command),
     audioLoudness: (command: string) => audioLoudness(zoneManager, command),
     audioCfgGetQueue: (command: string) => audioCfgGetQueue(zoneManager, command),
     audioRecent: (command: string) => audioRecent(recentsManager, command),
@@ -65,11 +68,16 @@ export function createZoneHandlers(
   };
 }
 
-function audioGetStatus(zoneManager: ZoneManagerFacade, command: string) {
+function audioGetStatus(
+  zoneManager: ZoneManagerFacade,
+  projectState: (state: ZoneState) => unknown,
+  command: string,
+) {
   const parts = splitCommand(command);
   const zoneId = parseNumberPart(parts[1], 0);
   const state = zoneManager.getState(zoneId);
-  return buildResponse(command, 'status', state ? [state] : []);
+  // A client files a status row under its `playerid`, exactly as it does an event.
+  return buildResponse(command, 'status', state ? [projectState(state)] : []);
 }
 
 function audioCfgGetQueue(zoneManager: ZoneManagerFacade, command: string) {

@@ -76,6 +76,7 @@ export function registerRoutes(
     dependencies.contentManager,
     dependencies.configPort,
     dependencies.fadeController,
+    (state) => dependencies.loxoneNotifier.projectForLoxone(state),
   );
   const alertHandlers = createAlertHandlers(dependencies.alerts);
   const groupHandlers = createGroupHandlers(
