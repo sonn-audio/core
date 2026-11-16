@@ -126,3 +126,44 @@ test('audio manager forces alert pre-delay floor even when zone power is already
   assert.equal(engine.lastStartOptions?.input.kind, 'url');
   assert.equal((engine.lastStartOptions?.input as any).preDelayMs, 2000);
 });
+
+// A station cannot say what rate it broadcasts at, so its first play runs at the output's default
+// and is converted if that is not the station's own. What ffmpeg reads off it then settles the
+// rate of the next play.
+test('audio manager runs a source at the rate it turned out to have, the next time it plays', async () => {
+  class ReportingEngine extends EngineSpy {
+    public override hasSession(): boolean {
+      return true;
+    }
+
+    public override getSessionStats(): EngineSessionStats[] {
+      return [{ sourceFormat: { codec: 'aac', sampleRate: 48000, channels: 2, bitDepth: null, bitrate: null } } as EngineSessionStats];
+    }
+  }
+  const engine = new ReportingEngine();
+  const prefs = new ZoneAudioPreferences();
+  const manager = new AudioManager(new PlaybackService(engine), outputNotifier, prefs);
+  (manager as unknown as { sourceRateLearnDelayMs: number }).sourceRateLearnDelayMs = 5;
+  prefs.setPreferredOutputSettings(1, { sampleRate: 44100, sampleRates: [44100, 48000] });
+  const station = { kind: 'url', url: 'https://radio.example/live' } as const;
+  const metadata = { title: '', artist: '', album: '', audiopath: 'radio:example', isRadio: true };
+
+  manager.startExternalPlayback(1, 'radio', station, metadata, false);
+  assert.equal(engine.lastStartOptions?.outputs[0]?.sampleRate, 44100, 'nothing known yet: the default');
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  manager.stopPlayback(1);
+  manager.startExternalPlayback(1, 'radio', station, metadata, false);
+  assert.equal(engine.lastStartOptions?.outputs[0]?.sampleRate, 48000);
+
+  // A source that states its own rate is believed over anything remembered.
+  manager.stopPlayback(1);
+  manager.startExternalPlayback(
+    1,
+    'radio',
+    { ...station, nativeFormat: { sampleRate: 44100, channels: 2, lossless: false } },
+    metadata,
+    false,
+  );
+  assert.equal(engine.lastStartOptions?.outputs[0]?.sampleRate, 44100);
+});

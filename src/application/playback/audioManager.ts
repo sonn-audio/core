@@ -60,6 +60,9 @@ type OutputNotifier = {
  * funnels through the audio manager so the same stream can be re-used by
  * future outputs (DLNA, AirPlay, Sendspin, ...).
  */
+/** How many sources' rates are remembered; the least recently learned goes first. */
+const LEARNED_SOURCE_RATES_MAX = 500;
+
 export class AudioManager {
   private readonly log = createLogger('Audio', 'Manager');
   private readonly sessions = new Map<number, PlaybackSession>();
@@ -72,6 +75,10 @@ export class AudioManager {
    * genuinely live source never answers and must not be polled for the rest of its life.
    */
   private readonly durationWatchers = new Map<number, NodeJS.Timeout>();
+  /** Rates read off sources that did not state one, by audiopath. See `learnSourceRateSoon`. */
+  private readonly learnedSourceRates = new Map<string, number>();
+  /** Long enough for ffmpeg to have opened the source and printed what it found. */
+  private readonly sourceRateLearnDelayMs = 4000;
   private readonly durationPollMs = 500;
   /**
    * How long to keep asking. Generous, because a stream whose index sits at the end only states its
@@ -674,6 +681,44 @@ export class AudioManager {
     this.durationWatchers.set(zoneId, timer);
   }
 
+  /**
+   * Note the rate of a source that could not say it, for the next time it is played.
+   *
+   * A radio station or a stream from a service that publishes no format has no rate to match the
+   * session to, so it starts at the output's default and is converted if that is not its own. Once
+   * ffmpeg has opened it the rate is known, though, and a station is the same station tomorrow: what
+   * is read here settles the session rate of its next start.
+   *
+   * Only ever a hint for choosing that rate. The source is still not declared to the engine, which
+   * goes on converting whatever actually arrives — a station that has changed its rate in the
+   * meantime costs one more converted session, never a wrong pitch.
+   */
+  private learnSourceRateSoon(zoneId: number, key: string): void {
+    const timer = setTimeout(() => {
+      const session = this.sessions.get(zoneId);
+      if (!session || (session.metadata?.audiopath ?? session.source) !== key) {
+        return;
+      }
+      if (!this.playbackService.hasSession(zoneSessionKey(zoneId))) {
+        return;
+      }
+      for (const stat of this.playbackService.getSessionStats(zoneSessionKey(zoneId))) {
+        const rate = stat.sourceFormat?.sampleRate;
+        if (typeof rate === 'number' && Number.isFinite(rate) && rate > 0) {
+          // Oldest out first: a Map keeps insertion order, and re-setting a key moves it to the end.
+          this.learnedSourceRates.delete(key);
+          this.learnedSourceRates.set(key, rate);
+          if (this.learnedSourceRates.size > LEARNED_SOURCE_RATES_MAX) {
+            const oldest = this.learnedSourceRates.keys().next().value;
+            if (oldest !== undefined) this.learnedSourceRates.delete(oldest);
+          }
+          return;
+        }
+      }
+    }, this.sourceRateLearnDelayMs);
+    timer.unref?.();
+  }
+
   private clearDurationWatch(zoneId: number): void {
     const timer = this.durationWatchers.get(zoneId);
     if (timer) {
@@ -958,7 +1003,12 @@ export class AudioManager {
       preferredProfile ? [preferredProfile] : undefined,
     );
     // Before the settings are read: the rate they carry depends on what is about to play.
-    this.prefs.matchSourceRate(zoneId, declaredSourceRate(effectiveSource));
+    const rateKey = metadata?.audiopath ?? label;
+    const declaredRate = declaredSourceRate(effectiveSource);
+    this.prefs.matchSourceRate(zoneId, declaredRate ?? this.learnedSourceRates.get(rateKey) ?? null);
+    if (declaredRate === null && (effectiveSource?.kind === 'url' || effectiveSource?.kind === 'file')) {
+      this.learnSourceRateSoon(zoneId, rateKey);
+    }
     const effectiveOutput = this.prefs.getEffectiveOutputSettings(zoneId);
     const outputSignature = this.buildOutputSignature(effectiveOutput);
     const outputOnly =
