@@ -62,6 +62,11 @@ export interface LoxoneZoneState {
   time: number;
   title: string;
   qid?: string;
+  /**
+   * Which alert the zone is playing. Present only while one plays: the app reads the mere
+   * presence of the field as "an event is on", and forgets it with the first frame without.
+   */
+  eventype?: AudioEventType;
   /** A `FileType`, or an `AudioEventType` while an alert plays. */
   type: FileType | AudioEventType;
   volume: number;
@@ -101,6 +106,8 @@ export type ZoneStateProjectionContext = {
   serviceAccounts?: () => ReadonlyArray<LoxoneServiceAccount>;
   /** What the zone's transport controls will do right now — see {@link toLoxonePbr}. */
   transport?: LoxoneTransport | null;
+  /** The alert the zone is playing right now; null or absent when it plays none. */
+  alertEvent?: AudioEventType | null;
 };
 
 function clamp01to100(value: unknown): number {
@@ -291,6 +298,7 @@ export function toLoxoneZoneState(
     time: state.time,
     title: titleOrFallback(state.title, state.name),
     qid: state.qid,
+    ...(ctx.alertEvent != null ? { eventype: ctx.alertEvent } : {}),
     type: state.type,
     volume: state.volume,
     syncedzones,

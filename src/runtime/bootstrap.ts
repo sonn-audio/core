@@ -441,6 +441,7 @@ export function createRuntime(): Runtime {
   zoneManagerRef = zoneManager;
   loxoneNotifier.setZoneStateLookup((zoneId) => zoneManager.getState(zoneId));
   loxoneNotifier.setPlayContextLookup((zoneId) => zoneManager.getPlayContext(zoneId));
+  loxoneNotifier.setAlertEventLookup((zoneId) => zoneManager.getActiveAlertEvent(zoneId));
   loxoneNotifier.setTransportLookup((zoneId) => zoneManager.getTransportCapabilities(zoneId));
   loxoneNotifier.setSettingsUrlLookup(
     () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,

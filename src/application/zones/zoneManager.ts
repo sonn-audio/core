@@ -8,6 +8,7 @@ import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ZoneConfig, InputConfig, GroupConfig } from '@/domain/config/types';
+import type { AudioEventType } from '@/domain/zones/enums';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import type { NotifierPort } from '@/ports/NotifierPort';
 import type { ContentPort } from '@/ports/ContentPort';
@@ -1179,6 +1180,12 @@ export class ZoneManager {
     return ctx
       ? zoneTransportCapabilities(ctx, (authority) => this.queueController.isLocalQueueAuthority(authority))
       : null;
+  }
+
+  /** The alert a zone is playing right now; null when it plays none or is unknown. */
+  public getActiveAlertEvent(zoneId: number): AudioEventType | null {
+    const alert = this.zoneRepo.get(zoneId)?.alert;
+    return alert ? this.audioHelpers.resolveAlertEventType(alert.type) : null;
   }
 
   /** What a zone is playing from — see {@link readPlayContext}. */

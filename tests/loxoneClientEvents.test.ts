@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { test } from './testHarness';
 import { LoxoneWsNotifier } from '../src/adapters/loxone/ws/notifier';
-import { AudioType, FileType } from '../src/domain/zones/enums';
+import { AudioEventType, AudioType, FileType } from '../src/domain/zones/enums';
 import type { ZoneState } from '../src/domain/zones/zoneState';
 
 /**
@@ -269,6 +269,23 @@ test('client events: audio_event parses for a playing, a stopped and a line-in z
       zoneState({ audiotype: AudioType.LineIn, type: FileType.LineIn, audiopath: 'linein:1', icontype: 8 } as any),
     ),
   );
+});
+
+test('client events: a zone says which alert it plays, and only while it plays one', () => {
+  // The client asks `hasOwnProperty("eventype")`, not what the value is: a zone that always
+  // carried a 0 would be a zone that is always in an event.
+  const frameFor = (alert: AudioEventType | null) =>
+    emitted((n) => {
+      n.setAlertEventLookup(() => alert);
+      n.notifyZoneStateChanged(zoneState());
+    })[0] as { audio_event: Array<Record<string, unknown>> };
+
+  assert.equal('eventype' in frameFor(null).audio_event[0]!, false);
+  for (const alert of [AudioEventType.Bell, AudioEventType.TTS, AudioEventType.Alarm, AudioEventType.Unknown]) {
+    const frame = frameFor(alert);
+    assert.equal(frame.audio_event[0]!.eventype, alert);
+    assert.ok(eventSchema.safeParse(frame).success, `the client drops an audio_event with eventype ${alert}`);
+  }
 });
 
 test('client events: a failed search answers every scope with a ticket the client can read', () => {

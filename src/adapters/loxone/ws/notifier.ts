@@ -7,6 +7,7 @@ import {
   type LoxoneTransport,
   type LoxoneZoneState,
 } from '@/adapters/loxone/ws/zoneStateProjection';
+import type { AudioEventType } from '@/domain/zones/enums';
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
 import type { ConnectionRegistry } from '@/adapters/loxone/ws/connectionRegistry';
 import type { GroupTrackerPort } from '@/ports/GroupTrackerPort';
@@ -30,6 +31,7 @@ export class LoxoneWsNotifier {
   private outputProtocolLookup: OutputProtocolLookup | null = null;
   private mixedGroupLookup: (() => boolean) | null = null;
   private audiopathToLoxone: ((audiopath: string) => string) | null = null;
+  private alertEventLookup: ((zoneId: number) => AudioEventType | null) | null = null;
   private playContextLookup: ((zoneId: number) => { path: string; name: string } | null) | null = null;
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
   private settingsUrlLookup: (() => string | null) | null = null;
@@ -93,6 +95,14 @@ export class LoxoneWsNotifier {
    */
   public setTransportLookup(lookup: ((zoneId: number) => LoxoneTransport | null) | null): void {
     this.transportLookup = lookup;
+  }
+
+  /**
+   * Which alert each zone is playing, surfaced in `audio_event` as `eventype`. When unset, no
+   * zone ever carries one (unchanged behaviour).
+   */
+  public setAlertEventLookup(lookup: ((zoneId: number) => AudioEventType | null) | null): void {
+    this.alertEventLookup = lookup;
   }
 
   /** Where the audio server's own settings can be opened — the link on a dialog's button. */
@@ -183,6 +193,7 @@ export class LoxoneWsNotifier {
       playContext: this.playContextLookup?.(state.id) ?? null,
       serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
       transport: this.transportLookup?.(state.id) ?? null,
+      alertEvent: this.alertEventLookup?.(state.id) ?? null,
     });
   }
 
