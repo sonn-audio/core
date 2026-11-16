@@ -414,7 +414,7 @@ export class FfmpegArgBuilder {
   /** Decoder args for a fade-in source during an inline crossfade. */
   public buildPcmDecoderArgsForSource(source: FadeInSource): string[] {
     const { sampleRate, channels, pcmBitDepth } = this.outputSettings;
-    const pcmOut = [...this.buildBusResampleArgs(),
+    const pcmOut = [...this.buildBusResampleArgs({ forOtherSource: true }),
       '-vn', '-acodec', pcmCodecFromBitDepth(pcmBitDepth),
       '-ar', String(sampleRate), '-ac', String(channels),
       '-f', pcmFormatFromBitDepth(pcmBitDepth), 'pipe:1'];
@@ -662,7 +662,15 @@ export class FfmpegArgBuilder {
    * The conversion into the two-stage intermediate bus: soxr at our settings, dithered when the bus
    * is 16-bit. No DSP — that runs in the encoder, which is the stage crossfade leaves attached.
    */
-  private buildBusResampleArgs(): string[] {
+  private buildBusResampleArgs(options: { forOtherSource?: boolean } = {}): string[] {
+    // A source that is already what the bus carries goes onto it as decoded. Converting it anyway
+    // meant a 16-bit lossless track picked up a layer of dither on its way to an output that was
+    // about to be told the stream was untouched — the two-stage path's one difference from the
+    // single process, and not one anybody asked for. Only for the builder's own source: the format
+    // of some other track handed in for a crossfade is not known here.
+    if (!options.forOtherSource && this.sourceMatchesBus()) {
+      return [];
+    }
     const osf = sampleFormatForDepth(this.outputSettings.pcmBitDepth);
     return [
       '-af',
@@ -674,6 +682,20 @@ export class FfmpegArgBuilder {
         async: this.source.kind !== 'pipe',
       }),
     ];
+  }
+
+  /** Whether the source's own rate, channels and (for lossless) depth are exactly the bus's. */
+  private sourceMatchesBus(): boolean {
+    const native = this.sourceNativeFormat;
+    if (!native) {
+      return false;
+    }
+    const { sampleRate, channels, pcmBitDepth } = this.outputSettings;
+    if (native.sampleRate !== sampleRate || native.channels !== channels) {
+      return false;
+    }
+    // As in `isBitPerfect`: a declared depth must match, an undeclared one cannot be lost.
+    return native.bitDepth === null || native.bitDepth === pcmBitDepth;
   }
 
   /**

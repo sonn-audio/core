@@ -399,3 +399,21 @@ test('a live producer keeps the low-latency open, the encoder behind it included
   assert.ok(builder.buildPcmEncoderArgs().includes('nobuffer'));
   assert.ok(builder.buildEngineDspEncoderArgs().includes('nobuffer'));
 });
+
+// The two-stage decoder converted everything onto the bus, a source already in the bus format
+// included: a 16-bit lossless track was dithered on its way to an output told it was untouched.
+test('the two-stage decoder leaves a source that already matches the bus alone', () => {
+  const native = { sampleRate: 44100, channels: 2, bitDepth: 16, lossless: true, codecName: 'flac' };
+  const source: PlaybackSource = { kind: 'file', path: '/music/a.flac', realTime: false };
+  const matching = new FfmpegArgBuilder(source, 'flac', defaultOutput, false, undefined, native);
+  assert.ok(!matching.buildPcmDecoderArgs().includes('-af'), 'no filter at all');
+
+  const hiRes = new FfmpegArgBuilder(source, 'flac', defaultOutput, false, undefined, { ...native, sampleRate: 96000, bitDepth: 24 });
+  assert.ok(hiRes.buildPcmDecoderArgs().includes('-af'), 'a different rate and depth is still converted, with dither');
+
+  const unknown = new FfmpegArgBuilder(source, 'flac', defaultOutput, false, undefined);
+  assert.ok(unknown.buildPcmDecoderArgs().includes('-af'), 'and so is a source nobody has described');
+
+  // Another track handed in for a crossfade is not this builder's source; its format is not known here.
+  assert.ok(matching.buildPcmDecoderArgsForSource({ kind: 'file', path: '/music/b.flac' }).includes('-af'));
+});
