@@ -4,11 +4,17 @@ import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
 
 const DEFAULT_PORT = 7070;
+/**
+ * Where a search is also answered, besides the port the probe came from. Loxone Config is
+ * reported to listen here for the answers to a probe it sent from elsewhere; not confirmed
+ * against Config itself, and an answer nobody listens for costs nothing.
+ */
+const REPLY_PORT = 7071;
+const BROADCAST_ADDRESS = '255.255.255.255';
 
 export class LoxoneUdpDiscovery {
   private readonly log = createLogger('Loxone', 'UDPDiscovery');
   private socket: dgram.Socket | null = null;
-  private responder: dgram.Socket | null = null;
   private responsePayload = Buffer.alloc(0);
   private readonly fixedTv = '3';
   private readonly fixedDi = '1';
@@ -20,8 +26,6 @@ export class LoxoneUdpDiscovery {
 
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     this.socket = socket;
-    const responder = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    this.responder = responder;
     this.responsePayload = Buffer.from(
       this.buildPayload(config, configPort, this.fixedTv, this.fixedDi),
       'utf8',
@@ -41,7 +45,9 @@ export class LoxoneUdpDiscovery {
         payload: payload.length <= 32 ? payload.toString('hex') : undefined,
       });
 
-      responder.send(this.responsePayload, rinfo.port, rinfo.address, (err) => {
+      // Every answer leaves from the socket the probe arrived on, so it comes from the
+      // discovery port itself.
+      socket.send(this.responsePayload, rinfo.port, rinfo.address, (err) => {
         if (err) {
           this.log.warn('udp discovery response failed', {
             message: err instanceof Error ? err.message : String(err),
@@ -55,15 +61,27 @@ export class LoxoneUdpDiscovery {
           di: this.fixedDi,
         });
       });
-    });
 
-    responder.bind(this.resolveUdpPort(config), () => {
-      this.log.info('udp discovery responder ready', {
-        port: this.resolveUdpPort(config),
-      });
+      // The same answer on the reply port: to the machine that asked, and to the whole
+      // network for a search whose probe reached us from another address than it listens on.
+      const alsoTo = [
+        ...(rinfo.port === REPLY_PORT ? [] : [rinfo.address]),
+        BROADCAST_ADDRESS,
+      ];
+      for (const address of alsoTo) {
+        socket.send(this.responsePayload, REPLY_PORT, address, (err) => {
+          if (err) {
+            this.log.debug('udp discovery reply-port response failed', {
+              to: `${address}:${REPLY_PORT}`,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        });
+      }
     });
 
     socket.bind(port, () => {
+      socket.setBroadcast(true);
       this.log.info('udp discovery listener started', {
         port,
         response: this.responsePayload.toString('utf8'),
@@ -76,14 +94,9 @@ export class LoxoneUdpDiscovery {
       return;
     }
     const socket = this.socket;
-    const responder = this.responder;
     this.socket = null;
-    this.responder = null;
     socket.close(() => {
       this.log.info('udp discovery listener stopped');
-    });
-    responder?.close(() => {
-      this.log.info('udp discovery responder stopped');
     });
   }
 
