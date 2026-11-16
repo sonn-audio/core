@@ -867,11 +867,11 @@ export class SonosOutput implements ZoneOutput {
   }
 
   /**
-   * Metadata that travels with the stream URL. The `id`/`service` block is what makes the
-   * speaker hand our own identity back in its playback metadata: without it the container comes
-   * back as `objectId=-1, serviceId=null` and nothing downstream can tell our stream apart from
-   * something a user started in the Sonos app. Music Assistant tags its containers the same way
-   * and keys its whole "is this mine?" decision off it (providers/sonos/player.py).
+   * Metadata that travels with the stream URL, tagged so we know it again: the speaker hands
+   * `service.id` and `id.objectId` back in its playback metadata, which is how the state
+   * controller tells our stream apart from something started in the Sonos app. An `id.serviceId`
+   * of ours does not come back (#430). The typings of node-sonos lack `service.id`; the speaker
+   * knows it.
    */
   private buildS2Container(session: PlaybackSession): SonosContainer {
     const title = session.metadata?.title || this.zoneName;
@@ -881,12 +881,8 @@ export class SonosOutput implements ZoneOutput {
       type: 'trackList',
       id: {
         _objectType: 'id',
-        serviceId: SONOS_OWN_CONTAINER_SERVICE_ID,
         objectId: `${SONOS_OWN_CONTAINER_SERVICE_ID}:${this.zoneId}:${session.stream.id}`,
       },
-      // The service id is what the speaker reliably hands back: Music Assistant identifies its
-      // own streams by it (`service.id == "mass"`), and leaves `id.serviceId` out. The typings
-      // of node-sonos do not know the field, the speaker does.
       service: {
         _objectType: 'service',
         name: SONOS_CONTAINER_SERVICE_NAME,

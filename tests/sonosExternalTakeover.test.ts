@@ -87,7 +87,7 @@ test('our own stream, under any URL of ours, is never a takeover (#430)', () => 
   report(speaker('PLAYBACK_STATE_BUFFERING', OWN_TRACK_2));
   report(speaker('PLAYBACK_STATE_PLAYING', 'x-rincon-mp3radio://192.168.1.10:7090/streams/5/current.mp3'));
   // The playStreamUrl path is known by its container, whatever URL the speaker shows.
-  report(speaker('PLAYBACK_STATE_PLAYING', 'https://cdn.example.com/x.mp3', { id: { serviceId: 'sonn' } }));
+  report(speaker('PLAYBACK_STATE_PLAYING', 'https://cdn.example.com/x.mp3', { service: { name: 'sonn', id: 'sonn' } }));
   assert.deepEqual(takeovers, []);
 });
 
@@ -219,7 +219,7 @@ test('a command Sonos refuses because the group moved is sent again after a reco
   assert.equal(attempts, 2, 'the first try and one retry');
 });
 
-test('our stream is known by the service id or object id Sonos hands back, as Music Assistant does (#430)', () => {
+test('our stream is known by the service id or object id Sonos hands back (#430)', () => {
   // lars909's soundbar echoed our container's name but not `id.serviceId`, so our stream was
   // never recognised and TV audio never counted as a takeover.
   for (const container of [
