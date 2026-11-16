@@ -367,3 +367,35 @@ function makeBuilderWithNative(
   );
 }
 
+
+/*
+ * `-fflags nobuffer` makes ffmpeg discard the packets it reads while identifying its input. On a
+ * live feed that is latency shed. On a track it is the opening of the music: measured with the
+ * bundled ffmpeg, 104 ms of a FLAC, 186 ms of a WAV and 1.28 s of a 192 kb/s MP3 never came out.
+ */
+test('a file or a stream is opened without discarding its beginning', () => {
+  const file: PlaybackSource = { kind: 'file', path: '/music/a.mp3', realTime: false };
+  const url: PlaybackSource = { kind: 'url', url: 'https://cdn.example/a.flac' };
+  for (const source of [file, url]) {
+    const builder = makeBuilder(source, 'flac');
+    for (const args of [builder.buildInputArgs(), builder.buildPcmDecoderArgs(), builder.buildF32DecoderArgs()]) {
+      assert.ok(!args.includes('nobuffer'), `${source.kind}: ${args.join(' ')}`);
+      // The quick open that the flag used to travel with stays.
+      assert.equal(args[args.indexOf('-analyzeduration') + 1], '0');
+    }
+    // Nor behind it: the encoder that takes our own PCM bus would drop the first block of it.
+    assert.ok(!builder.buildPcmEncoderArgs().includes('nobuffer'));
+    assert.ok(!builder.buildEngineDspEncoderArgs().includes('nobuffer'));
+  }
+  const fadeIn = makeBuilder(file, 'flac');
+  assert.ok(!fadeIn.buildPcmDecoderArgsForSource({ kind: 'file', path: '/music/b.mp3' }).includes('nobuffer'));
+  assert.ok(!fadeIn.buildPcmDecoderArgsForSource({ kind: 'url', url: 'https://cdn.example/b.flac' }).includes('nobuffer'));
+});
+
+test('a live producer keeps the low-latency open, the encoder behind it included', () => {
+  const pipe: PlaybackSource = { kind: 'pipe', path: 'linein', format: 's16le', sampleRate: 48000, channels: 2 };
+  const builder = makeBuilder(pipe, 'flac');
+  assert.ok(builder.buildInputArgs().includes('nobuffer'));
+  assert.ok(builder.buildPcmEncoderArgs().includes('nobuffer'));
+  assert.ok(builder.buildEngineDspEncoderArgs().includes('nobuffer'));
+});

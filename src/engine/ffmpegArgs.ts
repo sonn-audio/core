@@ -19,6 +19,16 @@ import type { OutputProfile, PlaybackSource } from '@/engine/audioSession';
 export const FFMPEG_LOW_LATENCY_ARGS: readonly string[] = [
   '-fflags', 'nobuffer', '-probesize', '32k', '-analyzeduration', '0',
 ];
+/**
+ * The same quick opening for a source that has a beginning worth hearing: a file or a stream.
+ *
+ * Without `-fflags nobuffer`, and that is the whole difference. The flag tells ffmpeg not to keep
+ * the packets it reads while working out what the input is — which for a live feed sheds a moment
+ * of latency, and for a track throws away its opening. Measured with the bundled ffmpeg 6.0 on a
+ * three-second file: 104 ms gone from a FLAC, 186 ms from a WAV, and 1.28 s from a 192 kb/s MP3,
+ * the full 32 KB probe. The probe limits alone give the same fast start and decode every sample.
+ */
+export const FFMPEG_FAST_OPEN_ARGS: readonly string[] = ['-probesize', '32k', '-analyzeduration', '0'];
 export const FFMPEG_BUFFERED_ARGS: readonly string[] = [
   '-probesize', '256k', '-analyzeduration', '1M',
 ];
@@ -275,7 +285,7 @@ export class FfmpegArgBuilder {
           ? ['-re']
           : [];
       return [
-        ...(lowLatency ? FFMPEG_LOW_LATENCY_ARGS : FFMPEG_BUFFERED_ARGS),
+        ...(lowLatency ? FFMPEG_FAST_OPEN_ARGS : FFMPEG_BUFFERED_ARGS),
         '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
         ...tlsArgs, ...decryptionArgs, ...headerArgs, ...inputFormatArgs,
         ...realtimeArgs,
@@ -298,7 +308,7 @@ export class FfmpegArgBuilder {
     }
 
     const loopArgs = this.source.loop ? ['-stream_loop', '-1'] : [];
-    const inputLatencyArgs = this.isAlertSource ? FFMPEG_BUFFERED_ARGS : FFMPEG_LOW_LATENCY_ARGS;
+    const inputLatencyArgs = this.isAlertSource ? FFMPEG_BUFFERED_ARGS : FFMPEG_FAST_OPEN_ARGS;
     // Pace file sources in real-time so downstream outputs (e.g., Snapcast) don't get flooded.
     const paceInput = this.source.realTime !== false;
     return [
@@ -373,7 +383,7 @@ export class FfmpegArgBuilder {
 
     if (this.source.kind === 'file') {
       const loopArgs = this.source.loop ? ['-stream_loop', '-1'] : [];
-      const latencyArgs = this.isAlertSource ? FFMPEG_BUFFERED_ARGS : FFMPEG_LOW_LATENCY_ARGS;
+      const latencyArgs = this.isAlertSource ? FFMPEG_BUFFERED_ARGS : FFMPEG_FAST_OPEN_ARGS;
       const realTimeArgs = this.source.realTime !== false ? ['-re'] : [];
       return [...log, ...latencyArgs, ...loopArgs, ...realTimeArgs,
         ...buildSeekArgs(this.source.startAtSec), '-i', this.source.path, ...pcmOut];
@@ -390,7 +400,7 @@ export class FfmpegArgBuilder {
       const realTimeArgs = this.source.realTime !== false ? ['-re'] : [];
       return [
         ...log,
-        ...(lowLatency ? FFMPEG_LOW_LATENCY_ARGS : FFMPEG_BUFFERED_ARGS),
+        ...(lowLatency ? FFMPEG_FAST_OPEN_ARGS : FFMPEG_BUFFERED_ARGS),
         '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
         ...tlsArgs, ...decryptionArgs, ...headerArgs, ...inputFormatArgs,
         ...realTimeArgs, ...buildSeekArgs(this.source.startAtSec), '-i', this.source.url,
@@ -411,14 +421,14 @@ export class FfmpegArgBuilder {
     const log = ['-hide_banner', '-loglevel', this.getLogLevel()];
 
     if (source.kind === 'file') {
-      return [...log, ...FFMPEG_LOW_LATENCY_ARGS, '-re', '-i', source.path, ...pcmOut];
+      return [...log, ...FFMPEG_FAST_OPEN_ARGS, '-re', '-i', source.path, ...pcmOut];
     }
 
     const headerLines = source.headers ? formatHeaders(source.headers) : '';
     const headerArgs = headerLines ? ['-headers', headerLines] : [];
     const decryptionArgs = source.decryptionKey ? ['-decryption_key', source.decryptionKey] : [];
     return [
-      ...log, ...FFMPEG_LOW_LATENCY_ARGS,
+      ...log, ...FFMPEG_FAST_OPEN_ARGS,
       '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
       ...decryptionArgs, ...headerArgs, '-re', '-i', source.url,
       ...pcmOut,
@@ -441,7 +451,7 @@ export class FfmpegArgBuilder {
     // The input format must track buildPcmDecoderArgs' output depth exactly — these
     // two are the same pipe.
     const pcmIn = [
-      '-fflags', 'nobuffer', '-probesize', '32', '-analyzeduration', '0',
+      ...this.busInputArgs(),
       '-f', pcmFormatFromBitDepth(pcmBitDepth),
       '-ar', String(sampleRate), '-ac', String(channels), '-i', 'pipe:0',
     ];
@@ -626,7 +636,7 @@ export class FfmpegArgBuilder {
     const { sampleRate, channels, pcmBitDepth, mp3Bitrate } = this.outputSettings;
     const args = [
       '-hide_banner', '-nostats', '-loglevel', this.getLogLevel(),
-      '-fflags', 'nobuffer', '-probesize', '32', '-analyzeduration', '0',
+      ...this.busInputArgs(),
       '-f', this.engineDspEmitsFloat() ? 'f32le' : pcmFormatFromBitDepth(pcmBitDepth),
       '-ar', String(sampleRate), '-ac', String(channels), '-i', 'pipe:0',
     ];
@@ -664,6 +674,19 @@ export class FfmpegArgBuilder {
         async: this.source.kind !== 'pipe',
       }),
     ];
+  }
+
+  /**
+   * How an encoder opens our own PCM bus on its stdin.
+   *
+   * The format is stated outright, so there is nothing to probe. `nobuffer` goes with it only when
+   * the session carries a live producer, where the block it discards is latency shed. Behind a file
+   * or a stream that same block is the first 93 ms of the track (4096 frames, measured), on top of
+   * whatever the decoder in front already lost.
+   */
+  private busInputArgs(): string[] {
+    const quick = ['-probesize', '32', '-analyzeduration', '0'];
+    return this.source.kind === 'pipe' ? ['-fflags', 'nobuffer', ...quick] : quick;
   }
 
   /** A pipe source that already arrives in exactly the output format needs no conversion. */
