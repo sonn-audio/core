@@ -10,7 +10,7 @@ export type InputPreferences = {
 };
 
 export type PreferredPlaybackSettings = {
-  outputOverride: (Partial<AudioOutputSettings> & { profile?: OutputProfile }) | null;
+  outputOverride: (Partial<AudioOutputSettings> & { profile?: OutputProfile; sampleRates?: number[] }) | null;
   httpPrefs?: HttpPreferences | null;
   inputPrefs?: InputPreferences | null;
 };
@@ -49,7 +49,7 @@ export function computePreferredPlaybackSettings(args: ComputeArgs): PreferredPl
     (args.activeOutputType
       ? args.outputs.find((output) => output.type === args.activeOutputType)
       : null) ?? selectPlayOutputs(args.outputs)[0] ?? null;
-  let override: (Partial<AudioOutputSettings> & { profile?: OutputProfile }) | null = null;
+  let override: (Partial<AudioOutputSettings> & { profile?: OutputProfile; sampleRates?: number[] }) | null = null;
   if (primaryOutput && typeof primaryOutput.getPreferredOutput === 'function') {
     const pref = primaryOutput.getPreferredOutput();
     if (pref) {
@@ -65,6 +65,9 @@ export function computePreferredPlaybackSettings(args: ComputeArgs): PreferredPl
       }
       if (pref.profile) {
         override.profile = pref.profile;
+      }
+      if (pref.sampleRates?.length) {
+        override.sampleRates = [...pref.sampleRates];
       }
       if (typeof pref.prebufferBytes === 'number' && pref.prebufferBytes >= 0) {
         override.prebufferBytes = pref.prebufferBytes;

@@ -8,6 +8,7 @@ import type {
   OutputProfile,
 } from '@/ports/EngineTypes';
 import { resolvePlaybackSource } from '@/application/playback/sourceResolver';
+import { declaredSourceRate } from '@/application/playback/policies/sourceRatePolicy';
 import { resolveSourcePreDelayMs } from '@/application/playback/playbackPreDelay';
 import { decodeAudiopath } from '@/domain/zones/audiopath';
 import type { AudioOutputSettings } from '@/ports/types/audioFormat';
@@ -956,6 +957,8 @@ export class AudioManager {
       effectivePcmPreference,
       preferredProfile ? [preferredProfile] : undefined,
     );
+    // Before the settings are read: the rate they carry depends on what is about to play.
+    this.prefs.matchSourceRate(zoneId, declaredSourceRate(effectiveSource));
     const effectiveOutput = this.prefs.getEffectiveOutputSettings(zoneId);
     const outputSignature = this.buildOutputSignature(effectiveOutput);
     const outputOnly =

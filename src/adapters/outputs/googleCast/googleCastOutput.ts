@@ -15,6 +15,7 @@ import {
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
 import type { CastDevice, DiscoveredDevice, MediaStatusModel } from '@sonn-audio/node-googlecast';
 import { loadGoogleCastModule } from '@/adapters/outputs/googleCast/googlecastLoader';
+import { BASE_PLAYABLE_RATES } from '@/adapters/outputs/playableRates';
 
 const DEFAULT_MEDIA_RECEIVER_APP_ID = 'CC1AD845';
 /**
@@ -304,6 +305,7 @@ export class GoogleCastOutput implements ZoneOutput {
     return {
       profile: this.streamProfile(),
       sampleRate: 44100,
+      sampleRates: BASE_PLAYABLE_RATES,
       channels: 2,
       prebufferBytes: 1024 * 256,
     };

@@ -1,4 +1,5 @@
 import type { OutputProfile } from '@/ports/EngineTypes';
+import { pickSessionRate } from '@/application/playback/policies/sourceRatePolicy';
 import { audioOutputSettings, type AudioOutputSettings, type HttpProfile } from '@/ports/types/audioFormat';
 
 export type ZoneInputPreferences = { fileRealTime?: boolean; urlRealTime?: boolean };
@@ -29,6 +30,10 @@ export class ZoneAudioPreferences {
   private readonly alertPreDelayFloorMs = new Map<number, number>();
   private readonly transientGainDb = new Map<number, number>();
   private readonly httpPreferences = new Map<number, ZoneHttpPreferences>();
+  /** Rates the zone's output plays without conversion, when it has said. */
+  private readonly playableRates = new Map<number, number[]>();
+  /** The rate chosen for what the zone is playing now; absent means the output's own default. */
+  private readonly sourceMatchedRate = new Map<number, number>();
   private powerStateResolver: ZonePowerStateResolver | null = null;
   private equalizerResolver: ZoneEqualizerResolver | null = null;
 
@@ -36,8 +41,13 @@ export class ZoneAudioPreferences {
 
   public setPreferredOutputSettings(
     zoneId: number,
-    override: (Partial<AudioOutputSettings> & { profile?: OutputProfile }) | null,
+    override: (Partial<AudioOutputSettings> & { profile?: OutputProfile; sampleRates?: number[] }) | null,
   ): void {
+    if (override?.sampleRates?.length) {
+      this.playableRates.set(zoneId, [...override.sampleRates]);
+    } else {
+      this.playableRates.delete(zoneId);
+    }
     if (!override || Object.keys(override).length === 0) {
       this.outputOverrides.delete(zoneId);
       this.profileOverrides.delete(zoneId);
@@ -46,6 +56,23 @@ export class ZoneAudioPreferences {
     this.outputOverrides.set(zoneId, override);
     if (override.profile) {
       this.profileOverrides.set(zoneId, override.profile);
+    }
+  }
+
+  /**
+   * Settle the session rate for the source about to play.
+   *
+   * Called at every start, with the source's own rate or null when it states none. An output that
+   * listed the rates it plays gets the one closest to the source (see `pickSessionRate`); anything
+   * else, and any source nobody can describe, runs at the output's default as before.
+   */
+  public matchSourceRate(zoneId: number, sourceRate: number | null): void {
+    const playable = this.playableRates.get(zoneId);
+    const matched = playable && sourceRate ? pickSessionRate(sourceRate, playable) : null;
+    if (matched) {
+      this.sourceMatchedRate.set(zoneId, matched);
+    } else {
+      this.sourceMatchedRate.delete(zoneId);
     }
   }
 
@@ -122,12 +149,18 @@ export class ZoneAudioPreferences {
     const outputOverride = this.outputOverrides.get(zoneId);
     let result: AudioOutputSettings;
     if (outputOverride && Object.keys(outputOverride).length > 0) {
-      const { profile: _ignoredProfile, ...rest } = outputOverride as Partial<AudioOutputSettings> & {
-        profile?: unknown;
-      };
+      const {
+        profile: _ignoredProfile,
+        sampleRates: _ignoredRates,
+        ...rest
+      } = outputOverride as Partial<AudioOutputSettings> & { profile?: unknown; sampleRates?: unknown };
       result = { ...audioOutputSettings, ...(rest as Partial<AudioOutputSettings>) };
     } else {
       result = audioOutputSettings;
+    }
+    const matchedRate = this.sourceMatchedRate.get(zoneId);
+    if (matchedRate !== undefined && matchedRate !== result.sampleRate) {
+      result = { ...result, sampleRate: matchedRate };
     }
     const transientGain = this.transientGainDb.get(zoneId);
     if (transientGain !== undefined) {

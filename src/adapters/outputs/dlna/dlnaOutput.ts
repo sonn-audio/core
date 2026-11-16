@@ -12,6 +12,7 @@ import { decodeAudiopath } from '@/domain/zones/audiopath';
 import { isHttpUrl, resolveSessionCover } from '@/shared/coverArt';
 import { buildBaseUrl, normalizeStreamUrl, resolveAbsoluteUrl } from '@/shared/streamUrl';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
+import { BASE_PLAYABLE_RATES } from '@/adapters/outputs/playableRates';
 import {
   DlnaControlPoint,
   type DlnaTransportEvent,
@@ -485,7 +486,7 @@ export class DlnaOutput implements ZoneOutput {
   }
 
   public getPreferredOutput(): PreferredOutput {
-    return { profile: this.streamProfile(), sampleRate: 44100, channels: 2 };
+    return { profile: this.streamProfile(), sampleRate: 44100, sampleRates: BASE_PLAYABLE_RATES, channels: 2 };
   }
 
   public getHttpPreferences(): HttpPreferences {

@@ -33,6 +33,7 @@ import {
   resolveSonosEndpointsByHost,
 } from '@/adapters/outputs/sonos/sonosDiscovery';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
+import { BASE_PLAYABLE_RATES } from '@/adapters/outputs/playableRates';
 
 export interface SonosOutputConfig {
   host?: string;
@@ -522,7 +523,7 @@ export class SonosOutput implements ZoneOutput {
   }
 
   public getPreferredOutput(): PreferredOutput {
-    return { profile: this.streamProfile(), sampleRate: 44100, channels: 2 };
+    return { profile: this.streamProfile(), sampleRate: 44100, sampleRates: BASE_PLAYABLE_RATES, channels: 2 };
   }
 
   public getHttpPreferences(): HttpPreferences {

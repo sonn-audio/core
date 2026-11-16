@@ -4,6 +4,14 @@ import type { PcmBitDepth, HttpProfile } from '@/ports/types/audioFormat';
 export type PreferredOutput = {
   profile: 'pcm' | 'opus' | 'flac' | 'mp3' | 'aac';
   sampleRate?: number;
+  /**
+   * Every rate this output plays as it arrives, `sampleRate` among them.
+   *
+   * With it, a session runs at the rate of what is being played wherever the output can take that,
+   * and nothing is resampled on the way; `sampleRate` is then only the rate for a source that does
+   * not state its own. Leave it out for an output whose transport fixes the rate.
+   */
+  sampleRates?: number[];
   channels?: number;
   bitDepth?: PcmBitDepth;
   /** Optional requested prebuffer size (bytes) for the output pipeline. */

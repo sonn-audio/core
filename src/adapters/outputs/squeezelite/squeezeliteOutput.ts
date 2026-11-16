@@ -12,6 +12,7 @@ import type { OutputPorts } from '@/adapters/outputs/outputPorts';
 import type { SqueezeliteAlertJoin } from '@/application/outputs/squeezeliteGroupController';
 import type { SlimClient, SlimEvent } from '@sonn-audio/node-slimproto';
 import { EventType, PlayerState, TransitionType } from '@sonn-audio/node-slimproto';
+import { BASE_PLAYABLE_RATES } from '@/adapters/outputs/playableRates';
 
 export interface SqueezeliteOutputConfig {
   playerId?: string;
@@ -508,7 +509,13 @@ export class SqueezeliteOutput implements ZoneOutput {
     await player.volumeSet(clamped);
   }
 
-  public getPreferredOutput(): { profile: 'flac' | 'mp3'; sampleRate: number; channels: number; prebufferBytes: number } {
+  public getPreferredOutput(): {
+    profile: 'flac' | 'mp3';
+    sampleRate: number;
+    sampleRates: number[];
+    channels: number;
+    prebufferBytes: number;
+  } {
     // Squeezelite can report sporadic underruns when the HTTP stream stalls briefly (WiFi jitter, GC, CPU spikes).
     // A larger rolling prebuffer reduces audible dropouts at the cost of a bit more startup latency/memory.
     // Prefer FLAC to avoid lossy re-encode and improve group sync stability.
@@ -527,7 +534,13 @@ export class SqueezeliteOutput implements ZoneOutput {
     // real-time rate, which keeps its adaptive network-cache estimate small (~2 s startup).
     // A large prime burst (e.g. 256 KB) causes VLC to infer a very high incoming bitrate and
     // inflate its buffer to 60+ seconds, making every song start inaudible for over a minute.
-    return { profile: supportsFlac ? 'flac' : 'mp3', sampleRate: 44100, channels: 2, prebufferBytes: 0 };
+    return {
+      profile: supportsFlac ? 'flac' : 'mp3',
+      sampleRate: 44100,
+      sampleRates: BASE_PLAYABLE_RATES,
+      channels: 2,
+      prebufferBytes: 0,
+    };
   }
 
   public getHttpPreferences(): HttpPreferences {
