@@ -39,10 +39,10 @@ import {
 } from '@/adapters/content/providers/localLibraryStore';
 import type { PlaylistEntry } from '@/ports/ContentTypes';
 import { resolveTrackPosition } from '@/adapters/content/providers/trackPosition';
+import { pickFolderCover } from '@/adapters/content/providers/folderCover';
 
 const FILE_TYPE_FOLDER = 1;
 const FILE_TYPE_FILE = 2;
-const COVER_CANDIDATES = ['cover.jpg', 'cover.jpeg', 'cover.png', 'cover.webp'];
 const ARTIST_COVER_CANDIDATES = ['artist.jpg', 'artist.jpeg', 'artist.png', 'artist.webp'];
 const NAS_DIR_TIMEOUT_MS = 3000;
 /** Quiet period before queued path changes are indexed, so a file copy settles first. */
@@ -1605,10 +1605,9 @@ export class LocalLibraryProvider {
   ): Promise<string | undefined> {
     const dir = path.join(this.baseDir, path.dirname(relPath));
 
-    for (const candidate of COVER_CANDIDATES) {
-      if (await fileExists(path.join(dir, candidate))) {
-        return candidate;
-      }
+    const existing = pickFolderCover(await fsp.readdir(dir).catch(() => [] as string[]));
+    if (existing) {
+      return existing;
     }
 
     if (!picture?.data?.length) {
@@ -2472,15 +2471,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
     }, timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fsp.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
