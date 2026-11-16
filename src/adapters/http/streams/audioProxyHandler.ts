@@ -5,6 +5,7 @@ import { createLogger } from '@/shared/logging/logger';
 import { isLocalRequest } from '@/shared/utils/net';
 import { bestEffort } from '@/shared/bestEffort';
 import type { ZoneManagerFacade } from '@/application/zones/createZoneManager';
+import { IcyReframer } from '@/adapters/http/streams/icyReframer';
 import {
   decodeHeaders,
   encodeHeaders,
@@ -25,6 +26,14 @@ const MAX_UPSTREAM_FAILURES = 3;
 const RESUME_BACKOFF_MS = 250;
 /** Silence from upstream this long, while the client is keeping up, is a dead connection. */
 const UPSTREAM_STALL_MS = 20_000;
+/**
+ * Connections to a live station that may bring no audio in a row before the stream is given up.
+ * One that delivers audio starts the count again, so a station that keeps closing a working
+ * connection can do that all day.
+ */
+const MAX_LIVE_SILENT_RECONNECTS = 12;
+const LIVE_RECONNECT_STEP_MS = 500;
+const LIVE_RECONNECT_MAX_MS = 10_000;
 
 type PipeOutcome =
   | { kind: 'end'; written: number }
@@ -243,6 +252,14 @@ export class AudioProxyHandler {
     if (icyMetaInt) headers['icy-metaint'] = icyMetaInt;
 
     res.writeHead(upstream.status || 200, headers);
+    // A body without a length, on a request a radio zone made or carrying ICY: a live station.
+    // It has no end of its own, so a connection that closes is reopened underneath the response
+    // instead of being passed on as the end of the stream.
+    if (upstream.status === 200 && !contentLength && !contentRange && (icyMetaInt || zoneId)) {
+      const { Range: _range, ...liveHeaders } = upstreamHeaders;
+      await this.relayLiveStream(res, upstream, target, liveHeaders, zoneId);
+      return;
+    }
     const stream = Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
     if (zoneId && icyMetaInt) {
       const metaInt = Number(icyMetaInt);
@@ -635,6 +652,136 @@ export class AudioProxyHandler {
     });
   }
 
+  /**
+   * Serve a live station as one body that outlasts the connections it is read from.
+   *
+   * Stations close connections for reasons that have nothing to do with the broadcast ending: a
+   * relay restarts, a session limit runs out, a mobile uplink drops. Each of those used to end the
+   * response, and a response that ends is, to the decoder reading it, a track that finished — the
+   * zone went quiet and stayed quiet. Here the next connection is opened while the response stays
+   * as it is; the listener hears a gap the length of the reconnect.
+   *
+   * Only connections that bring no audio count towards giving up, and giving up destroys the
+   * response rather than ending it, so the client sees a failure it may retry.
+   */
+  private async relayLiveStream(
+    res: ServerResponse,
+    first: Response,
+    target: string,
+    headers: Record<string, string>,
+    zoneId: number | null,
+  ): Promise<void> {
+    const publish = zoneId ? this.icyMetadataPublisher(zoneId) : () => {};
+    const reframer = new IcyReframer(this.icyInterval(first), publish);
+    let response: Response | null = first;
+    let silent = 0;
+    for (;;) {
+      if (response?.body) {
+        reframer.startBody(this.icyInterval(response));
+        const body = Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
+        const piped = await this.pipeLiveBody(body, res, reframer);
+        if (piped.kind === 'client-gone') {
+          return;
+        }
+        silent = piped.written > 0 ? 0 : silent + 1;
+        this.log.info('live stream connection closed; reconnecting', {
+          target,
+          zoneId,
+          received: piped.written,
+          silent,
+          ...(piped.kind === 'upstream-error' ? describeReadError(piped.error) : {}),
+        });
+      } else {
+        silent += 1;
+      }
+      if (silent > MAX_LIVE_SILENT_RECONNECTS) {
+        this.log.warn('live stream stays silent; giving up', { target, zoneId, silent });
+        res.destroy();
+        return;
+      }
+      await delay(Math.min(LIVE_RECONNECT_MAX_MS, LIVE_RECONNECT_STEP_MS * 2 ** silent));
+      if (res.destroyed) {
+        return; // the listener left while we were waiting
+      }
+      response = await this.reopenLiveStream(target, headers);
+    }
+  }
+
+  private async reopenLiveStream(target: string, headers: Record<string, string>): Promise<Response | null> {
+    try {
+      const response = await fetch(target, { headers, redirect: 'follow' });
+      if (response.ok && response.body) {
+        return response;
+      }
+      this.log.debug('live stream reconnect refused', { target, status: response.status });
+      await this.discardBody(response, 'discarding refused reconnect', target);
+    } catch (error) {
+      this.log.debug('live stream reconnect failed', { target, ...describeReadError(error) });
+    }
+    return null;
+  }
+
+  private icyInterval(response: Response): number | null {
+    const interval = Number(response.headers.get('icy-metaint'));
+    return Number.isFinite(interval) && interval > 0 ? interval : null;
+  }
+
+  /**
+   * One upstream body of a live station into the response, through the reframer, leaving the
+   * response open. Same stall rule as `pipeChunk`: silence only counts while the client keeps up.
+   */
+  private pipeLiveBody(body: Readable, res: ServerResponse, reframer: IcyReframer): Promise<PipeOutcome> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let written = 0;
+      const done = (outcome: PipeOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(stall);
+        body.removeListener('data', onData);
+        body.removeListener('end', onEnd);
+        body.removeListener('error', onError);
+        res.removeListener('close', onClose);
+        res.removeListener('drain', onDrain);
+        resolve(outcome);
+      };
+      const onData = (data: Buffer): void => {
+        written += data.length;
+        stall.refresh();
+        const out = reframer.push(data);
+        if (out.length > 0 && !res.write(out)) {
+          body.pause();
+        }
+      };
+      const onDrain = (): void => {
+        stall.refresh();
+        body.resume();
+      };
+      const onStall = (): void => {
+        if (res.writableNeedDrain) {
+          stall.refresh();
+          return;
+        }
+        body.destroy(new Error(`no upstream data for ${UPSTREAM_STALL_MS} ms`));
+      };
+      const onEnd = (): void => done({ kind: 'end', written });
+      const onError = (error: unknown): void => {
+        body.destroy();
+        done({ kind: 'upstream-error', written, error });
+      };
+      const onClose = (): void => {
+        body.destroy();
+        done({ kind: 'client-gone', written });
+      };
+      const stall = setTimeout(onStall, UPSTREAM_STALL_MS);
+      body.on('end', onEnd);
+      body.on('error', onError);
+      res.on('close', onClose);
+      res.on('drain', onDrain);
+      body.on('data', onData);
+    });
+  }
+
   private async readTextResponse(upstream: Response): Promise<string | null> {
     const length = upstream.headers.get('content-length');
     const size = length ? Number(length) : null;
@@ -703,20 +850,7 @@ export class AudioProxyHandler {
     let bytesUntilMeta = metaInt;
     let metaRemaining = 0;
     let metaChunks: Buffer[] = [];
-    let lastSignature = '';
-
-    const handleMetadata = (payload: Buffer) => {
-      const update = this.parseIcyMetadata(payload);
-      if (!update) {
-        return;
-      }
-      const signature = `${update.title}|||${update.artist}`;
-      if (lastSignature === signature) {
-        return;
-      }
-      lastSignature = signature;
-      this.zoneManager.inputs.updateRadioMetadata(zoneId, update);
-    };
+    const handleMetadata = this.icyMetadataPublisher(zoneId);
 
     const onData = (chunk: Buffer) => {
       let offset = 0;
@@ -764,6 +898,23 @@ export class AudioProxyHandler {
     stream.on('end', cleanup);
     stream.on('close', cleanup);
     stream.on('error', cleanup);
+  }
+
+  /** Hands a zone the titles in a station's metadata blocks, once per change. */
+  private icyMetadataPublisher(zoneId: number): (payload: Buffer) => void {
+    let lastSignature = '';
+    return (payload: Buffer) => {
+      const update = this.parseIcyMetadata(payload);
+      if (!update) {
+        return;
+      }
+      const signature = `${update.title}|||${update.artist}`;
+      if (lastSignature === signature) {
+        return;
+      }
+      lastSignature = signature;
+      this.zoneManager.inputs.updateRadioMetadata(zoneId, update);
+    };
   }
 
   private parseIcyMetadata(payload: Buffer): { title: string; artist: string } | null {

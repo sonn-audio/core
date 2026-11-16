@@ -104,19 +104,34 @@ async function startProxy(): Promise<{ port: number; close: () => Promise<void> 
   };
 }
 
+/**
+ * @param stopAfter Bytes after which the listener hangs up. A live stream has no end to wait
+ *   for — the proxy reconnects to a station that closes — so a test of one has to leave.
+ */
 function fetchThroughProxy(
   port: number,
   target: string,
   headers: Record<string, string>,
+  stopAfter?: number,
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
   return new Promise((resolve, reject) => {
     const path = `/streams/proxy?u=${encodeURIComponent(target)}`;
     const req = http.request({ host: '127.0.0.1', port, path, headers }, (res) => {
       const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () =>
-        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
-      );
+      let received = 0;
+      const finish = () =>
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) });
+      res.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        received += chunk.length;
+        if (stopAfter !== undefined && received >= stopAfter) {
+          res.removeAllListeners('error');
+          res.on('error', () => undefined);
+          req.destroy();
+          finish();
+        }
+      });
+      res.on('end', finish);
       res.on('error', reject);
     });
     req.on('error', reject);
@@ -130,10 +145,12 @@ test('audio proxy: an icy radio stream is never served in stitched windows', asy
   const upstream = await startIcyUpstream(metaInt, 524);
   const proxy = await startProxy();
   try {
-    const res = await fetchThroughProxy(proxy.port, upstream.url, {
-      Range: 'bytes=0-',
-      'Icy-MetaData': '1',
-    });
+    const res = await fetchThroughProxy(
+      proxy.port,
+      upstream.url,
+      { Range: 'bytes=0-', 'Icy-MetaData': '1' },
+      524 * (metaInt + 1),
+    );
 
     // The client must learn where the metadata blocks are, or it decodes them as audio.
     assert.equal(res.headers['icy-metaint'], String(metaInt));

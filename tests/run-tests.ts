@@ -93,6 +93,7 @@ import './airplayHardwareAddress.test';
 import './airplayInputPcm.test';
 import './audioStreamHandlerIcy.test';
 import './audioProxyIcyStream.test';
+import './audioProxyLiveReconnect.test';
 import './audioProxyResume.test';
 import './audioProxyPlaylist.test';
 import './queueAuthority.test';
