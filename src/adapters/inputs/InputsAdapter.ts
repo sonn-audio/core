@@ -130,6 +130,10 @@ export class InputsAdapter implements InputsPort {
     this.deps.airplay.stopActiveSession(...args);
   }
 
+  public resumeAirplaySession(...args: Parameters<InputsPort['resumeAirplaySession']>): boolean {
+    return this.deps.airplay.resumeSession(...args);
+  }
+
   public stopSpotifySession(...args: Parameters<InputsPort['stopSpotifySession']>): void {
     this.deps.spotify.stopActiveSession(...args);
   }

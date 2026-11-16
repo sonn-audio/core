@@ -143,6 +143,11 @@ export class AirplayInputService {
     instance?.stopActiveSession(reason);
   }
 
+  /** Reattach a zone's running AirPlay session to the zone; false when it has none. */
+  public resumeSession(zoneId: number): boolean {
+    return this.instances.get(zoneId)?.resumeSession() ?? false;
+  }
+
   private removeInstance(zoneId: number): void {
     const existing = this.instances.get(zoneId);
     if (!existing) {

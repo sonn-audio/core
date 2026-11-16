@@ -912,22 +912,7 @@ export class AirplayInstance {
       }
       this.sessionActive = true;
       this.isPlaying = true;
-      const playbackSource: PlaybackSource = {
-        kind: 'pipe',
-        path: `airplay-${this.zoneId}`,
-        format: 's16le',
-        sampleRate: this.pcmSampleRate,
-        channels: this.pcmChannels,
-        stream: this.pcmStream,
-      };
-      // Always go through the controller so the zone manager can mark the active input
-      // and keep Spotify outputs quiet while AirPlay owns the zone.
-      this.controller.startPlayback(
-        this.zoneId,
-        this.label,
-        playbackSource,
-        this.buildPlaybackMetadata(),
-      );
+      this.attachToZone(this.pcmStream);
       this.pcmBytesTotal = 0;
       this.lastTimingPushMs = Date.now();
       this.currentElapsedSec = 0;
@@ -938,6 +923,43 @@ export class AirplayInstance {
     if (!this.isPlaying) {
       this.handlePlaybackResume();
     }
+  }
+
+  private attachToZone(stream: PassThrough): void {
+    const playbackSource: PlaybackSource = {
+      kind: 'pipe',
+      path: `airplay-${this.zoneId}`,
+      format: 's16le',
+      sampleRate: this.pcmSampleRate,
+      channels: this.pcmChannels,
+      stream,
+    };
+    // Always go through the controller so the zone manager can mark the active input
+    // and keep Spotify outputs quiet while AirPlay owns the zone.
+    this.controller.startPlayback(this.zoneId, this.label, playbackSource, this.buildPlaybackMetadata());
+  }
+
+  /**
+   * Give the zone this session's audio again after something else played on it.
+   *
+   * An announcement takes the zone's audio path without ending the session: the sender never
+   * learns of it and keeps streaming. What it sent in the meantime is dropped — played after the
+   * announcement it would sit as a delay in front of everything that follows — and the zone is
+   * started on a fresh pipe carrying what arrives from here on.
+   *
+   * @returns false when there is no session to return to, i.e. the sender left in the meantime.
+   */
+  public resumeSession(): boolean {
+    if (!this.sessionActive) {
+      return false;
+    }
+    this.endPcmStream();
+    this.pcmStream = new PassThrough({ highWaterMark: 512 * 1024 });
+    this.isPlaying = true;
+    this.log.info('airplay session handed back to the zone', { zoneId: this.zoneId });
+    this.attachToZone(this.pcmStream);
+    this.publishMetadata();
+    return true;
   }
 
   private handlePlaybackResume(): void {

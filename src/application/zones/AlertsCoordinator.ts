@@ -51,6 +51,11 @@ type AlertsCoordinatorDeps = {
   audioHelpers: ZoneAudioHelpers;
   zoneAudioPrefs: ZoneAudioPreferences;
   configPort: ConfigPort;
+  /**
+   * Reattaches a live sender's running session to the zone. Returns false when the sender has
+   * gone, in which case there is nothing to resume.
+   */
+  resumeLiveInput?: (zoneId: number) => boolean;
 };
 
 type NativeAlertOutput = ZoneOutput & {
@@ -70,6 +75,7 @@ export class AlertsCoordinator {
   private readonly audioHelpers: ZoneAudioHelpers;
   private readonly zoneAudioPrefs: ZoneAudioPreferences;
   private readonly configPort: ConfigPort;
+  private readonly resumeLiveInput: (zoneId: number) => boolean;
   // Per-zone serialization. Concurrent start/stop calls used to corrupt the
   // restore snapshot — caller B could capture state mid-flight from caller A
   // and on stopAlert restore to A's alert metadata instead of the original
@@ -85,6 +91,7 @@ export class AlertsCoordinator {
     this.audioHelpers = deps.audioHelpers;
     this.zoneAudioPrefs = deps.zoneAudioPrefs;
     this.configPort = deps.configPort;
+    this.resumeLiveInput = deps.resumeLiveInput ?? (() => false);
   }
 
   public startAlert(
@@ -612,7 +619,14 @@ export class AlertsCoordinator {
     });
 
     if (activeAlert.snapshot.mode === 'play') {
-      const resumed = await this.resumeAfterAlert(ctx, activeAlert.snapshot);
+      // A sender streaming into the zone is not a queue entry to start again. Its session ran on
+      // through the announcement, so the zone is handed that same session back. Restarting it as a
+      // queue item changed the zone's input, which dropped the sender, and then found nothing to
+      // play under an address only the input itself can serve.
+      const resumed =
+        activeAlert.snapshot.inputMode === 'airplay'
+          ? this.resumeLiveInput(zoneId)
+          : await this.resumeAfterAlert(ctx, activeAlert.snapshot);
       if (!resumed) {
         // Could not actually resume playback (nothing to play or a failed start).
         // Leaving the zone in the optimistic 'play' restored above would keep a

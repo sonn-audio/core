@@ -206,6 +206,10 @@ class FakeInputsPort implements InputsPort {
     this.markSessionCalls.push({ zoneId, metadata });
   }
 
+  public resumeAirplaySession(): boolean {
+    return false;
+  }
+
   public stopAirplaySession(zoneId: number, reason?: string): void {
     this.stopAirplayCalls.push({ zoneId, reason });
   }

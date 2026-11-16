@@ -345,6 +345,7 @@ export class ZoneManager {
       audioHelpers,
       zoneAudioPrefs: this.zoneAudioPrefs,
       configPort: this.configPort,
+      resumeLiveInput: (zoneId) => this.inputsPort.resumeAirplaySession(zoneId),
     });
     this.heartbeat = new ZoneHeartbeatService({
       listZones: () => this.zoneRepo.list(),

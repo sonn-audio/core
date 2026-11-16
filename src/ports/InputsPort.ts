@@ -175,6 +175,11 @@ export interface InputsPort {
   prefetchPlaybackSourceForUri(zoneId: number, uri: string, accountId?: string): Promise<void>;
   getPlaybackSource(zoneId: number): PlaybackSource | null;
   stopAirplaySession(zoneId: number, reason?: string): void;
+  /**
+   * Reattach the zone's running AirPlay session after something else used the zone.
+   * False when the sender is no longer there.
+   */
+  resumeAirplaySession(zoneId: number): boolean;
   stopSpotifySession(zoneId: number, reason?: string): void;
   switchAway(zoneId: number): Promise<void>;
   remoteControl(zoneId: number, command: AirplayRemoteCommand): void;

@@ -902,3 +902,95 @@ test('the announcement volume waits for a squeezelite player to start the alert 
   assert.deepEqual(playerVolumes, [80]);
   assert.equal(ctx.state.volume, 80);
 });
+
+// A phone streaming into the zone is not a queue entry. Restoring it as one switched the zone's
+// input away from AirPlay — which drops the sender — and then asked the queue to play an address
+// only the AirPlay input can serve, so a doorbell ended the session for good.
+async function ringBellOnAirplayZone(senderStillThere: boolean) {
+  const zone: ZoneConfig = {
+    id: 3,
+    name: 'Study',
+    sourceMac: '00:00:00:00:00:03',
+    volumes: {
+      default: 20, alarm: 20, fire: 20, bell: 55, buzzer: 20, tts: 20, volstep: 1, fading: 0, maxVolume: 100,
+    },
+  };
+  const zoneRepo = new ZoneRepository();
+  const calls: string[] = [];
+  const airplayItem = { audiopath: 'airplay://000000000003/1', title: 'Song', artist: '', album: '', audiotype: 4 };
+  const ctx = {
+    id: zone.id,
+    name: zone.name,
+    sourceMac: zone.sourceMac,
+    config: zone,
+    state: { ...buildInitialState(zone), mode: 'play', audiopath: airplayItem.audiopath, audiotype: 4 },
+    queue: { items: [airplayItem], shuffle: false, repeat: 0, currentIndex: 0, authority: 'local' },
+    queueController: { setItems: () => {}, currentIndex: () => 0, current: () => airplayItem },
+    inputAdapter: {},
+    spotifyAdapter: {},
+    metadata: {},
+    outputs: [],
+    player: { setVolume: () => {}, playUri: () => ({}) as any, stop: () => {} },
+    outputTimingActive: false,
+    lastOutputTimingAt: 0,
+    lastZoneBroadcastAt: 0,
+    lastPositionUpdateAt: 0,
+    lastPositionValue: 0,
+    lastPlaybackErrorAt: 0,
+    activeOutputTypes: new Set<string>(),
+    activeOutput: 'googleCast',
+    activeInput: 'airplay',
+    lastMetadataDispatchAt: 0,
+    inputMode: 'airplay',
+  } as unknown as ZoneContext;
+  zoneRepo.set(zone.id, ctx);
+
+  const coordinator = new AlertsCoordinator({
+    zones: zoneRepo,
+    configPort: alertConfigPort,
+    playbackCoordinator: {
+      setInputMode: (_ctx: ZoneContext, mode: ZoneContext['inputMode']) => {
+        _ctx.inputMode = mode;
+      },
+      alignOutputFormat: () => {},
+      applyOutputEndGuard: () => {},
+      waitForFirstAudioMs: async () => null,
+      startQueuePlayback: async () => {
+        calls.push('queue');
+        return null;
+      },
+    } as any,
+    applyPatch: (_zoneId, patch) => {
+      ctx.state = { ...ctx.state, ...(patch as Record<string, unknown>) };
+    },
+    log: { warn: () => {}, debug: () => {} } as any,
+    audioHelpers: { resolveAlertEventType: () => 0, isRadioAudiopath: () => false } as any,
+    zoneAudioPrefs: { setTransientGainDb: () => {}, setAlertPreDelayFloorMs: () => {} } as any,
+    resumeLiveInput: (zoneId) => {
+      calls.push(`live:${zoneId}`);
+      return senderStillThere;
+    },
+  });
+
+  await coordinator.startAlert(
+    zone.id,
+    'bell',
+    { title: 'bell', url: 'alerts://bell.mp3', relativePath: 'bell.mp3', duration: 4 },
+    55,
+  );
+  await coordinator.stopAlert(zone.id);
+  return { calls, ctx };
+}
+
+test('alert restore hands an AirPlay zone its running session back, not a queue restart', async () => {
+  const { calls, ctx } = await ringBellOnAirplayZone(true);
+  assert.deepEqual(calls, ['live:3']);
+  assert.equal(ctx.inputMode, 'airplay');
+  assert.equal(ctx.state.mode, 'play');
+});
+
+test('alert restore settles an AirPlay zone to stop when the sender left meanwhile', async () => {
+  const { calls, ctx } = await ringBellOnAirplayZone(false);
+  assert.deepEqual(calls, ['live:3'], 'the queue is never asked to play an AirPlay address');
+  assert.equal(ctx.state.mode, 'stop');
+});
