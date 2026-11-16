@@ -1,6 +1,7 @@
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { StreamingServiceConfig, TidalQuality, TidalSession } from '@/domain/config/types';
 import { createLogger } from '@/shared/logging/logger';
+import { RateLimiter, type Sleep } from '@/adapters/content/utils/rateLimit';
 import {
   bundledTidalClient,
   refreshTidalTokens,
@@ -49,6 +50,8 @@ export interface TidalSessionStore {
 type Deps = {
   store: TidalSessionStore;
   fetchFn?: FetchFn;
+  /** How a rate-limit pause is sat out; tests pass one that does not take real time. */
+  sleep?: Sleep;
   now?: () => number;
   env?: Record<string, string | undefined>;
   /** The client the image was built with; read from the image when not given. */
@@ -70,11 +73,14 @@ export class TidalAuth implements TidalApiAccess {
   private readonly bundled: TidalClientCredentials | null;
   private readonly inflight = new Map<string, Promise<boolean>>();
   private readonly lastAttempt = new Map<string, { at: number; ok: boolean }>();
+  private readonly limiters = new Map<string, RateLimiter>();
+  private readonly sleep?: Sleep;
 
   constructor(deps: Deps) {
     this.store = deps.store;
     this.fetchFn = deps.fetchFn ?? ((input, init) => fetch(input, init));
     this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep;
     this.env = deps.env ?? process.env;
     this.bundled = deps.bundledClient === undefined ? bundledTidalClient() : deps.bundledClient;
   }
@@ -120,14 +126,30 @@ export class TidalAuth implements TidalApiAccess {
     const access = await this.getAccess(serviceId);
     if (!access) return null;
     if (!url.searchParams.has('countryCode')) url.searchParams.set('countryCode', access.countryCode);
-    const res = await this.fetchFn(url.toString(), withBearer(init, access.accessToken));
+    const limiter = this.limiterFor(serviceId);
+    const res = await limiter.fetch(() => this.fetchFn(url.toString(), withBearer(init, access.accessToken)));
     if (res.status !== 401 || !access.fromSession) return res;
     // The token can die before its expiry (a password change, a sign-out elsewhere): refresh once
     // and try again, and leave it at that.
     if (!(await this.refresh(serviceId))) return res;
     const again = await this.getAccess(serviceId);
     if (!again) return res;
-    return this.fetchFn(url.toString(), withBearer(init, again.accessToken));
+    return limiter.fetch(() => this.fetchFn(url.toString(), withBearer(init, again.accessToken)));
+  }
+
+  /** One limiter per account: the limit is the account's, so its requests wait together. */
+  private limiterFor(serviceId: string): RateLimiter {
+    let limiter = this.limiters.get(serviceId);
+    if (!limiter) {
+      limiter = new RateLimiter({
+        now: this.now,
+        sleep: this.sleep,
+        onWait: ({ waitMs, attempt }) =>
+          this.log.debug('tidal api rate limited; waiting', { serviceId, waitMs, attempt }),
+      });
+      this.limiters.set(serviceId, limiter);
+    }
+    return limiter;
   }
 
   public async noteQuality(serviceId: string, delivered: TidalQuality | undefined): Promise<void> {

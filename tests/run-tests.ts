@@ -56,6 +56,7 @@ import './nodeVersionGuard.test';
 import './localLibraryStore.rollup.test';
 import './trackPosition.test';
 import './folderCover.test';
+import './rateLimit.test';
 import './airplayAdvertisement.test';
 import './airplaySessionEnd.test';
 import './bareSpotifyId.test';

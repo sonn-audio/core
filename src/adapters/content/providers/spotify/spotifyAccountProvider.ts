@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { createLogger, type ComponentLogger } from '@/shared/logging/logger';
 import { safeReadText } from '@/shared/bestEffort';
 import { ProviderUnavailableError, unavailableReasonFor } from '@/adapters/content/providerUnavailable';
+import { RateLimiter } from '@/adapters/content/utils/rateLimit';
 import { resolveSpotifyClientId } from '@/adapters/content/providers/spotify/utils';
 import {
   fetchBrowseCategories as pfBrowseCategories,
@@ -171,6 +172,12 @@ export class SpotifyAccountProvider implements ContentProvider {
   protected readonly audiopathPrefix: string;
 
   private readonly log: ComponentLogger;
+  /** This account's standing with the Web API; every request on the account goes through it. */
+  private readonly rateLimiter = new RateLimiter({
+    onWait: ({ waitMs, attempt }) =>
+      this.log.debug('spotify api rate limited; waiting', { waitMs, attempt }),
+  });
+
   private readonly persistAccountState: PersistAccountCallback;
   private readonly clientId: string;
 
@@ -1538,10 +1545,11 @@ export class SpotifyAccountProvider implements ContentProvider {
   }
 
   private async rawRequest<T>(url: string, init: RequestInit): Promise<SpotifyApiResult<T>> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), SPOTIFY_HTTP_TIMEOUT_MS);
     try {
-      const res = await fetch(url, { ...init, signal: controller.signal });
+      // The timeout is per try: a wait for the rate limit in between is not the service being slow.
+      const res = await this.rateLimiter.fetch(() =>
+        fetch(url, { ...init, signal: AbortSignal.timeout(SPOTIFY_HTTP_TIMEOUT_MS) }),
+      );
       if (!res.ok) {
         const text = await safeReadText(res, '', {
           onError: 'debug',
@@ -1562,7 +1570,7 @@ export class SpotifyAccountProvider implements ContentProvider {
         body: data,
       };
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
         this.log.warn('spotify api timeout', { url, timeoutMs: SPOTIFY_HTTP_TIMEOUT_MS });
         return {
           ok: false,
@@ -1577,8 +1585,6 @@ export class SpotifyAccountProvider implements ContentProvider {
         status: 0,
         body: null,
       };
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

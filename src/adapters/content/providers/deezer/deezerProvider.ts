@@ -2,6 +2,7 @@ import type { ContentFolder, ContentFolderItem, ContentServiceAccount, PlaylistE
 import { createLogger } from '@/shared/logging/logger';
 import { DEFAULT_MIN_SEARCH_LIMIT } from '@/adapters/content/utils/searchLimits';
 import type { ContentProvider, ProviderSearchCategories, ProviderSearchResult } from '@/adapters/content/ContentProvider';
+import { RateLimiter } from '@/adapters/content/utils/rateLimit';
 
 const enum FileType {
   Folder = 1,
@@ -22,6 +23,16 @@ interface DeezerProviderOptions {
  * Lightweight Deezer catalog provider that mirrors the Apple Music facade shape.
  * Uses the public Deezer API for metadata (no playback).
  */
+/** Deezer allows 50 requests per 5 seconds; a second is enough for the window to move on. */
+const DEEZER_QUOTA_PAUSE_MS = 1000;
+const DEEZER_QUOTA_ATTEMPTS = 3;
+
+/** `{"error":{"type":"Exception","message":"Quota limit exceeded","code":4}}`, served as a 200. */
+function isDeezerQuotaError(body: unknown): boolean {
+  const error = (body as { error?: { code?: unknown } } | null)?.error;
+  return typeof error === 'object' && error !== null && Number(error.code) === 4;
+}
+
 export class DeezerProvider implements ContentProvider {
   public readonly providerId: string;
   private readonly audiopathPrefix: string;
@@ -29,6 +40,8 @@ export class DeezerProvider implements ContentProvider {
   private readonly label: string;
   private readonly arl?: string;
   private readonly requestTimeoutMs = 10_000;
+  /** The public API counts per address, so one limiter serves every request this provider makes. */
+  private readonly rateLimiter = new RateLimiter();
 
   constructor(options: DeezerProviderOptions) {
     this.providerId = options.providerId;
@@ -428,17 +441,31 @@ export class DeezerProvider implements ContentProvider {
 
   private async fetchJson<T>(url: string): Promise<T | null> {
     try {
-      const res = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-        },
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
-      if (!res.ok) {
-        return null;
+      for (let attempt = 1; ; attempt += 1) {
+        const res = await this.rateLimiter.fetch(() =>
+          fetch(url, {
+            headers: {
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(this.requestTimeoutMs),
+          }),
+        );
+        if (!res.ok) {
+          return null;
+        }
+        const data = (await res.json()) as T;
+        // Deezer reports its quota in the body of a 200. Taken for data it is an object with no
+        // `data` in it, and the folder it was fetched for came out empty.
+        if (!isDeezerQuotaError(data)) {
+          return data;
+        }
+        this.rateLimiter.block(DEEZER_QUOTA_PAUSE_MS);
+        if (attempt >= DEEZER_QUOTA_ATTEMPTS) {
+          this.log.warn('deezer quota exceeded; giving up', { url, attempt });
+          return null;
+        }
+        this.log.debug('deezer quota exceeded; waiting', { url, attempt });
       }
-      const data = (await res.json()) as T;
-      return data;
     } catch (err) {
       this.log.warn('deezer request failed', { url, message: err instanceof Error ? err.message : String(err) });
       return null;
