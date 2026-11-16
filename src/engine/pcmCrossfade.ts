@@ -101,7 +101,7 @@ export interface PcmBlendOptions {
  * would spin forever (which previously caused the blend to hang for minutes
  * and orphan the whole audio session). When one source has been silent longer
  * than STALL_MS *after producing at least one chunk* we treat its samples as
- * silence so the linear ramp keeps running and the blend completes within
+ * silence so the ramp keeps running and the blend completes within
  * `totalFrames`.
  *
  * Sources that have never produced data get a separate STARTUP_TIMEOUT_MS
@@ -212,6 +212,13 @@ export async function runPcmBlend(
       let newOff = 0;
       for (let f = 0; f < framesThisTick; f++) {
         const t = Math.min(1, framesProcessed / totalFrames);
+        // Equal power, not equal gain. Two different tracks do not add up sample for sample the
+        // way one signal fading into itself would: their powers add. A straight ramp holds the sum
+        // of the gains at one, which leaves the power — the loudness — 3 dB down at the midpoint,
+        // and that is the dip a linear crossfade is known by. Quarter-sine gains hold the sum of
+        // the squares at one instead.
+        const oldGain = Math.cos((t * Math.PI) / 2);
+        const newGain = Math.sin((t * Math.PI) / 2);
         const dstOff = f * frameBytes;
         for (let ch = 0; ch < channels; ch++) {
           const co = ch * bytesPerSample;
@@ -219,7 +226,7 @@ export async function runPcmBlend(
           const b = newEffectivelyDone ? 0 : readSample(newRem, newOff + co);
           writeSample(
             blended,
-            Math.max(sampleMin, Math.min(sampleMax, Math.round(a * (1 - t) + b * t))),
+            Math.max(sampleMin, Math.min(sampleMax, Math.round(a * oldGain + b * newGain))),
             dstOff + co,
           );
         }

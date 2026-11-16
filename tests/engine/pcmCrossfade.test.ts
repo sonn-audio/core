@@ -88,3 +88,37 @@ test('blendPcmStreams produces totalFrames frames and detaches both sources', as
   oldStream.end();
   newStream.end();
 });
+
+// A straight ramp keeps the two gains adding up to one, which for two unrelated tracks puts the
+// loudness 3 dB down halfway through. The gains follow a quarter sine, so their squares add up to
+// one all the way across.
+test('blendPcmStreams holds the power steady across the blend', async () => {
+  const oldStream = new PassThrough();
+  const newStream = new PassThrough();
+  const oldSrc = streamChunkSource(oldStream);
+  const newSrc = streamChunkSource(newStream);
+  const frames = 1000;
+  // Mono, 16 bit: the old track a constant 10000, the new one silent, so each blended sample is
+  // the old track's gain at that point, times 10000.
+  const loud = Buffer.alloc(frames * 2);
+  for (let i = 0; i < frames; i += 1) loud.writeInt16LE(10000, i * 2);
+  oldStream.write(loud);
+  newStream.write(Buffer.alloc(frames * 2));
+
+  const blended: Buffer[] = [];
+  await blendPcmStreams(oldSrc, newSrc, {
+    channels: 1,
+    totalFrames: frames,
+    onBlendedFrame: (b) => blended.push(b),
+    log: silentLog,
+    logContext: { zoneId: 1 },
+  });
+  const out = Buffer.concat(blended);
+  const gainAt = (frame: number): number => out.readInt16LE(frame * 2) / 10000;
+  assert.ok(Math.abs(gainAt(0) - 1) < 0.01, 'starts at full level');
+  // Half way: cos(45°) ≈ 0.707, where a straight ramp would be at 0.5.
+  assert.ok(Math.abs(gainAt(frames / 2) - Math.SQRT1_2) < 0.01, `mid gain ${gainAt(frames / 2)}`);
+  assert.ok(gainAt(frames - 1) < 0.01, 'ends silent');
+  oldStream.end();
+  newStream.end();
+});
