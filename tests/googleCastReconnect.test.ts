@@ -61,3 +61,80 @@ test('a cast output whose speaker was unreachable dials it again on the next pla
     (loader as Loader).loadGoogleCastModule = original;
   }
 });
+
+// Stopping the media left our receiver app running, and a running app is a device still being
+// cast to: a television stayed on its cast screen and the device showed as in use.
+async function stoppedCastOutput(frontAppId: string) {
+  const original = (loader as Loader).loadGoogleCastModule;
+  const calls: string[] = [];
+  const device = fakeDevice();
+  (device.media as Record<string, unknown>).stopCurrent = async () => {};
+  device.launchApp = async () => {
+    calls.push('launch');
+    return { appId: 'CC1AD845', transportId: 't', sessionId: 's1' };
+  };
+  device.receiver = {
+    getSessions: async () => [{ appId: frontAppId, sessionId: 's1', transportId: 't' }],
+    stop: async (sessionId: string) => {
+      calls.push(`stop:${sessionId}`);
+    },
+  };
+  (loader as Loader).loadGoogleCastModule = (async () => ({
+    connect: async () => device,
+  })) as unknown as typeof loader.loadGoogleCastModule;
+  const ports = {
+    config: { getSystemConfig: () => ({ audioserver: { ip: '10.0.0.2' } }) },
+  } as unknown as OutputPorts;
+  const output = new GoogleCastOutput(2, 'Probe 2', { host: '10.0.0.9' }, ports);
+  (output as unknown as { receiverReleaseDelayMs: number }).receiverReleaseDelayMs = 5;
+  const session = {
+    zoneId: 2,
+    playbackSource: { kind: 'pipe' },
+    stream: { url: '/streams/2/current.flac' },
+    metadata: { title: 'x' },
+  } as unknown as PlaybackSession;
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const restore = () => {
+    (loader as Loader).loadGoogleCastModule = original;
+  };
+  return { output, session, calls, wait, restore };
+}
+
+test('a stopped cast device gets its receiver app closed, and the next play launches it again', async () => {
+  const { output, session, calls, wait, restore } = await stoppedCastOutput('CC1AD845');
+  try {
+    await output.play(session);
+    await output.stop(session);
+    await wait();
+    assert.deepEqual(calls, ['stop:s1']);
+    await output.play(session);
+    assert.deepEqual(calls, ['stop:s1', 'launch'], 'the app is gone, so it is launched before loading');
+  } finally {
+    restore();
+  }
+});
+
+test('a play that follows a stop straight away keeps the running app', async () => {
+  const { output, session, calls, wait, restore } = await stoppedCastOutput('CC1AD845');
+  try {
+    await output.play(session);
+    await output.stop(session);
+    await output.play(session);
+    await wait();
+    assert.deepEqual(calls, []);
+  } finally {
+    restore();
+  }
+});
+
+test('an app somebody else started on the device is left alone', async () => {
+  const { output, session, calls, wait, restore } = await stoppedCastOutput('233637DE');
+  try {
+    await output.play(session);
+    await output.stop(session);
+    await wait();
+    assert.deepEqual(calls, []);
+  } finally {
+    restore();
+  }
+});

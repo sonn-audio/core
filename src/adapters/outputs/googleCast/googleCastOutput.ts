@@ -17,6 +17,14 @@ import type { CastDevice, DiscoveredDevice, MediaStatusModel } from '@sonn-audio
 import { loadGoogleCastModule } from '@/adapters/outputs/googleCast/googlecastLoader';
 
 const DEFAULT_MEDIA_RECEIVER_APP_ID = 'CC1AD845';
+/**
+ * How long a stopped device keeps our receiver app before it is closed.
+ *
+ * Long enough that stop-then-play — the next album, an announcement after the music — reuses the
+ * running app and skips the launch, with the chime some devices play for it. Short enough that a
+ * television or a display does not sit on a blank cast screen for the rest of the evening.
+ */
+const RECEIVER_RELEASE_DELAY_MS = 10_000;
 export interface GoogleCastOutputConfig {
   host: string;
   name?: string;
@@ -51,6 +59,11 @@ export class GoogleCastOutput implements ZoneOutput {
   private connected = false;
   private connectPromise?: Promise<void>;
   private receiverPromise?: Promise<void>;
+  private releaseTimer: NodeJS.Timeout | null = null;
+  /** A field so a test can shorten it. */
+  private readonly receiverReleaseDelayMs = RECEIVER_RELEASE_DELAY_MS;
+  /** True once we have closed our receiver app, until it has been launched again. */
+  private receiverReleased = false;
   private lastLoadAt = 0;
   private lastLoadSignature: string | null = null;
   private loadPromise?: Promise<void>;
@@ -94,6 +107,7 @@ export class GoogleCastOutput implements ZoneOutput {
       return;
     }
     this.markOutboundState('playing');
+    this.cancelReceiverRelease();
     await this.connect();
     await this.loadStream(session);
   }
@@ -116,6 +130,7 @@ export class GoogleCastOutput implements ZoneOutput {
 
   public async resume(session: PlaybackSession | null): Promise<void> {
     if (!session) return;
+    this.cancelReceiverRelease();
     if (this.castDevice) {
       // Best-effort resume; cast may reject during transitions.
       this.markOutboundState('playing');
@@ -134,6 +149,55 @@ export class GoogleCastOutput implements ZoneOutput {
   public async stop(_session: PlaybackSession | null): Promise<void> {
     this.markOutboundState('stopped');
     await this.stopStream();
+    this.scheduleReceiverRelease();
+  }
+
+  private cancelReceiverRelease(): void {
+    if (this.releaseTimer) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+  }
+
+  private scheduleReceiverRelease(): void {
+    this.cancelReceiverRelease();
+    if (!this.castDevice) return;
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      void this.releaseReceiver();
+    }, this.receiverReleaseDelayMs);
+    this.releaseTimer.unref?.();
+  }
+
+  /**
+   * Close our receiver app on a device we are done with.
+   *
+   * Stopping the media leaves the app running, and a running app is the device still being cast
+   * to: a television stays on its cast screen, a display keeps its clock hidden, and the device
+   * shows as in use to everyone else in the house. Only our own app is closed, and only while it
+   * is the one in front — if somebody has started something else, the device is theirs.
+   */
+  private async releaseReceiver(): Promise<void> {
+    const device = this.castDevice;
+    if (!device) return;
+    await bestEffort(
+      async () => {
+        const apps = await device.receiver.getSessions();
+        const front = apps[0];
+        if (!front || front.appId !== DEFAULT_MEDIA_RECEIVER_APP_ID) {
+          return;
+        }
+        await device.receiver.stop(front.sessionId);
+        // The device object keeps describing the app it last saw, so remember ourselves that it is
+        // gone: the next play has to launch it again.
+        this.receiverReleased = true;
+        // What was loaded went with the app; the same stream asked for again is a new load.
+        this.lastLoadSignature = null;
+        this.lastMediaSessionId = null;
+        this.log.debug('Google Cast receiver released', { zoneId: this.zoneId });
+      },
+      { fallback: undefined, onError: 'debug', log: this.log, label: 'cast receiver release failed', context: { zoneId: this.zoneId } },
+    );
   }
 
   public async setPosition(positionMs: number): Promise<void> {
@@ -149,6 +213,7 @@ export class GoogleCastOutput implements ZoneOutput {
   }
 
   public async dispose(): Promise<void> {
+    this.cancelReceiverRelease();
     await this.stopStream();
     this.disconnect();
   }
@@ -324,6 +389,8 @@ export class GoogleCastOutput implements ZoneOutput {
 
   private disconnect(): void {
     this.connected = false;
+    this.cancelReceiverRelease();
+    this.receiverReleased = false;
     if (this.castDevice) {
       // Best-effort close; cast clients may already be gone.
       void bestEffort(() => this.castDevice!.disconnect(), {
@@ -440,7 +507,7 @@ export class GoogleCastOutput implements ZoneOutput {
   private async ensureReceiver(): Promise<void> {
     if (!this.castDevice) return;
     const sessionAppId = this.castDevice.getSession?.()?.appId;
-    if (sessionAppId === DEFAULT_MEDIA_RECEIVER_APP_ID) return;
+    if (sessionAppId === DEFAULT_MEDIA_RECEIVER_APP_ID && !this.receiverReleased) return;
 
     // IMPORTANT: receiver.getStatus() does not update CastDevice.session (it doesn't emit),
     // so "cached active appId" is not sufficient; we must (re)launch to get a transportId.
@@ -458,6 +525,7 @@ export class GoogleCastOutput implements ZoneOutput {
       });
       this.receiverPromise = tracked;
       await tracked;
+      this.receiverReleased = false;
       const durationMs = Math.max(0, Date.now() - startedAt);
       this.log.debug('Google Cast receiver ready', { zoneId: this.zoneId, durationMs });
     } catch (err: unknown) {
