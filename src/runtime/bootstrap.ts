@@ -105,6 +105,7 @@ import { ServerHeartbeat } from '@/adapters/loxone/ws/serverHeartbeat';
 import { LoxoneConfigService } from '@/adapters/loxone/services/loxoneConfigService';
 import { stopWithTimeout } from '@/runtime/stopWithTimeout';
 import { startWithTimeout } from '@/runtime/startWithTimeout';
+import { createQueueFiles } from '@/adapters/storage/queueFiles';
 
 /**
  * How long a best-effort subsystem may take to start before startup carries on without it.
@@ -433,6 +434,7 @@ export function createRuntime(): Runtime {
     audioManager,
     zoneAudioPrefs,
     mixedGroup: mixedGroupController,
+    queueFiles: createQueueFiles(),
   });
   zoneManagerRef = zoneManager;
   loxoneNotifier.setZoneStateLookup((zoneId) => zoneManager.getState(zoneId));

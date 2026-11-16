@@ -101,6 +101,7 @@ import './audioProxyResume.test';
 import './audioProxyPlaylist.test';
 import './queueAuthority.test';
 import './queueMutations.test';
+import './queuePersistence.test';
 import './queueEditIntake.test';
 import './ytmusicNative.mock.test';
 import './spotifyAccountProvider.playlists.test';

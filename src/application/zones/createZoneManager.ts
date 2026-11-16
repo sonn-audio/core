@@ -8,6 +8,7 @@ import type { AudioManager } from '@/application/playback/audioManager';
 import type { ZoneAudioPreferences } from '@/application/playback/ZoneAudioPreferences';
 import type { RecentsManager } from '@/application/zones/recents/recentsManager';
 import type { MixedGroupCoordinator } from '@/application/groups/mixedGroupController';
+import type { QueueFiles } from '@/application/zones/queue/queuePersistence';
 
 export type ZoneManagerFacade = Pick<
   ZoneManager,
@@ -68,6 +69,8 @@ export type ZoneManagerDeps = {
   audioManager: AudioManager;
   zoneAudioPrefs: ZoneAudioPreferences;
   mixedGroup?: MixedGroupCoordinator;
+  /** Where zone queues are kept between runs. Leave out and they are not kept. */
+  queueFiles?: QueueFiles;
 };
 
 export function createZoneManager(deps: ZoneManagerDeps): ZoneManagerFacade {
@@ -81,5 +84,6 @@ export function createZoneManager(deps: ZoneManagerDeps): ZoneManagerFacade {
     deps.audioManager,
     deps.zoneAudioPrefs,
     deps.mixedGroup ?? null,
+    deps.queueFiles ?? null,
   );
 }

@@ -76,6 +76,8 @@ import {
   type ZoneAudioHelpers,
 } from '@/application/zones/internal/zoneAudioHelpers';
 import { getMusicAssistantUserId } from '@/application/zones/internal/musicAssistantProvider';
+import { QueuePersistence, type QueueFiles } from '@/application/zones/queue/queuePersistence';
+import { buildQueueItemPlaybackPatch } from '@/application/zones/playback/patchBuilder';
 
 export type {
   AlertSnapshot,
@@ -153,6 +155,14 @@ export type ZoneQueueOps = Pick<
   | 'undo'
 >;
 
+/** Without somewhere to keep them, queues last as long as the process: nothing read, nothing kept. */
+const NO_QUEUE_FILES: QueueFiles = {
+  readItems: async () => null,
+  readState: async () => null,
+  writeItems: async () => undefined,
+  writeState: async () => undefined,
+};
+
 export class ZoneManager {
   private readonly log = createLogger('Zones', 'Manager');
   /** Told first whenever content is started on a zone; see `setContentStartHook`. */
@@ -182,6 +192,7 @@ export class ZoneManager {
   private readonly inputConfigurator: InputSourceConfigurator;
   private initialized = false;
   private notifier: NotifierPort;
+  private readonly queuePersistence: QueuePersistence;
   // Last full input config seen via replaceAll. Partial re-syncs (replaceZones,
   // e.g. when a dynamic browser/sendspin zone registers) don't carry the global
   // input config; without this fallback they would pass null and disable global
@@ -214,8 +225,18 @@ export class ZoneManager {
     audioManager: AudioManager,
     zoneAudioPrefs: ZoneAudioPreferences,
     mixedGroup: MixedGroupCoordinator | null = null,
+    queueFiles: QueueFiles | null = null,
   ) {
     this.notifier = notifier;
+    this.queuePersistence = new QueuePersistence(
+      queueFiles ?? NO_QUEUE_FILES,
+      (zoneId) => this.zoneRepo.get(zoneId),
+      (zoneId, error) =>
+        this.log.warn('queue persistence failed', {
+          zoneId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    );
     this.inputsPort = inputsPort;
     this.outputsPort = outputsPort;
     this.contentPort = contentPort;
@@ -262,8 +283,10 @@ export class ZoneManager {
     const audioHelpers = this.audioHelpers;
     const notifierProxy: NotifierPort = {
       notifyZoneStateChanged: (state) => this.notifier.notifyZoneStateChanged(state),
-      notifyQueueUpdated: (zoneId, queueSize) =>
-        this.notifier.notifyQueueUpdated(zoneId, queueSize),
+      notifyQueueUpdated: (zoneId, queueSize) => {
+        this.queuePersistence.noteItems(zoneId);
+        this.notifier.notifyQueueUpdated(zoneId, queueSize);
+      },
       notifyRoomFavoritesChanged: (zoneId, count) =>
         this.notifier.notifyRoomFavoritesChanged(zoneId, count),
       notifyRecentlyPlayedChanged: (zoneId, timestamp) =>
@@ -290,6 +313,7 @@ export class ZoneManager {
       syncGroupMembersPatch: (leaderId, patch, force) =>
         this.groupingCoordinator.syncGroupMembersPatch(leaderId, patch, force),
       onStatePatch: (zoneId, patch, nextState) => {
+        this.queuePersistence.noteState(zoneId);
         mixedGroup?.handleStatePatch(zoneId, patch, nextState);
         this.artworkColors.onStatePatch(zoneId, patch);
         const ctx = this.zoneRepo.get(zoneId);
@@ -551,6 +575,8 @@ export class ZoneManager {
   }
 
   public async shutdown(): Promise<void> {
+    // First, while every zone still shows where it is: stopping the players below rewinds them.
+    await this.queuePersistence.close(this.zoneRepo.list().map((ctx) => ctx.id));
     this.heartbeat.stop();
     await this.stateControllers.stopAll();
     this.powerManager.clearAll();
@@ -1510,6 +1536,44 @@ export class ZoneManager {
     };
     this.zoneRepo.set(config.id, context);
     this.stateStore.setInitial(config.id, context.state);
+    void this.restoreQueue(context);
+  }
+
+  /**
+   * Give a zone back the queue it had before the server stopped or the zone was reconfigured.
+   *
+   * The zone comes back stopped, showing the track it was on at the position it had reached, so
+   * Play carries on from there — that is what Play does with a stopped zone that has a queue. A
+   * zone somebody has already started something on by the time the file is read keeps what it has.
+   */
+  private async restoreQueue(ctx: ZoneContext): Promise<void> {
+    const stored = await this.queuePersistence.load(ctx.id);
+    if (!stored || this.zoneRepo.get(ctx.id) !== ctx || ctx.queue.items.length > 0 || ctx.state.mode === 'play') {
+      return;
+    }
+    ctx.queueController.setItems(stored.items, stored.currentIndex);
+    ctx.queue.shuffle = stored.shuffle;
+    ctx.queue.repeat = stored.repeat;
+    ctx.metadata.queueShuffled = stored.shuffled;
+    const current = ctx.queueController.current();
+    if (!current) {
+      return;
+    }
+    const isRadio = this.audioHelpers.isRadioAudiopath(current.audiopath, current.audiotype);
+    this.applyPatch(ctx.id, {
+      ...buildQueueItemPlaybackPatch(ctx, current, ctx.queueController.currentIndex(), this.audioHelpers),
+      time: isRadio ? 0 : stored.positionSec,
+      plshuffle: stored.shuffle ? 1 : 0,
+      plrepeat: stored.repeat,
+      queueAuthority: ctx.queue.authority,
+    });
+    this.notifier.notifyQueueUpdated(ctx.id, ctx.queue.items.length);
+    this.log.info('queue restored', {
+      zoneId: ctx.id,
+      items: stored.items.length,
+      index: stored.currentIndex,
+      positionSec: stored.positionSec,
+    });
   }
 
   /**
