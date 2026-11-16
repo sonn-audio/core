@@ -28,6 +28,27 @@ type SoundCloudTrackRequest = {
 type OutputErrorHandler = (zoneId: number, reason?: string) => void;
 
 /**
+ * The transcodings of a track that can be played, best choice first.
+ *
+ * Progressive mp3 leads because it seeks freely, then HLS mp3. AAC comes last, as the way in for
+ * tracks that are no longer offered as mp3 at all: SoundCloud has been moving its catalogue to AAC
+ * over HLS, and a track with only those used to be reported as DRM protected when it was not.
+ * Anything whose protocol says `encrypted` really is DRM and stays out.
+ */
+export function orderPlayableTranscodings<T extends { preset?: string; format?: { protocol?: string } }>(
+  transcodings: readonly T[],
+): T[] {
+  const open = transcodings.filter((t) => !(t.format?.protocol ?? '').includes('encrypted'));
+  const mp3 = open.filter((t) => (t.preset ?? '').startsWith('mp3'));
+  const aac = open.filter((t) => (t.preset ?? '').startsWith('aac'));
+  return [
+    ...mp3.filter((t) => t.format?.protocol === 'progressive'),
+    ...mp3.filter((t) => t.format?.protocol !== 'progressive'),
+    ...aac,
+  ];
+}
+
+/**
  * Resolves playable CDN URLs for SoundCloud tracks. SoundCloud hands us a signed
  * URL (progressive MP3 or HLS) that ffmpeg can pull directly, so unlike
  * Deezer/Tidal there is no local proxy — the resolved URL becomes a `kind:'url'`
@@ -154,11 +175,7 @@ export class SoundCloudStreamService {
     // progressive URL can't be resolved. Ordering the candidates ourselves keeps
     // the two attempts genuinely distinct regardless of the API's list order.
     // *-encrypted-hls transcodings are FairPlay DRM and deliberately skipped.
-    const mp3 = transcodings.filter((t) => (t.preset ?? '').startsWith('mp3'));
-    const ordered = [
-      ...mp3.filter((t) => t.format?.protocol === 'progressive'),
-      ...mp3.filter((t) => t.format?.protocol !== 'progressive'),
-    ];
+    const ordered = orderPlayableTranscodings(transcodings);
     // `attempted` records that a plain-mp3 stream was advertised but every
     // signed URL failed — the practical signature of a DRM-only track.
     let attempted = false;
