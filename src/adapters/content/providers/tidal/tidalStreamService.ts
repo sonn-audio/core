@@ -43,10 +43,50 @@ export function tidalQualityOf(service: Pick<StreamingServiceConfig, 'tidalQuali
  * MPDs (hi-res), which ffmpeg needs at a URL it can fetch more than once.
  */
 export type TidalManifest =
-  | { kind: 'direct'; url: string }
-  | { kind: 'dash'; manifest: string; mimeType: string }
+  | { kind: 'direct'; url: string; nativeFormat?: TidalNativeFormat }
+  | { kind: 'dash'; manifest: string; mimeType: string; nativeFormat?: TidalNativeFormat }
   | { kind: 'drm' }
   | { kind: 'unsupported' };
+
+export type TidalNativeFormat = {
+  sampleRate: number;
+  channels: number;
+  bitDepth?: 16 | 24;
+  lossless: boolean;
+  codecName?: string;
+};
+
+/**
+ * What a TIDAL stream is, read off the answer that came with it.
+ *
+ * TIDAL serves 44.1, 48, 88.2, 96 and 192 kHz, and nothing downstream could tell which: the stream
+ * went out as a bare url, so the engine converted every one of them to the output's default rate.
+ * The playback answer states the rate and depth; a DASH manifest states the rate too, on its
+ * `Representation`, and is the fallback. With neither there is nothing to declare, and saying
+ * nothing is right — a declared format is trusted.
+ */
+export function tidalNativeFormat(
+  playback: { sampleRate?: unknown; bitDepth?: unknown; audioQuality?: unknown },
+  dashManifest?: string,
+): TidalNativeFormat | undefined {
+  const fromManifest = Number(/audioSamplingRate="(\d+)"/.exec(dashManifest ?? '')?.[1]);
+  const stated = Number(playback.sampleRate);
+  const sampleRate = Number.isInteger(stated) && stated >= 8000 ? stated : fromManifest;
+  if (!Number.isInteger(sampleRate) || sampleRate < 8000) {
+    return undefined;
+  }
+  const quality = typeof playback.audioQuality === 'string' ? playback.audioQuality : '';
+  const lossless = quality === 'LOSSLESS' || quality === 'HI_RES_LOSSLESS' || quality === 'HI_RES';
+  const depth = Number(playback.bitDepth);
+  return {
+    sampleRate,
+    channels: 2,
+    lossless,
+    // A lossy stream has no depth of its own to preserve.
+    ...(lossless && (depth === 16 || depth === 24) ? { bitDepth: depth } : {}),
+    ...(lossless ? { codecName: 'flac' } : {}),
+  };
+}
 
 export function resolveTidalManifest(playback: {
   manifest?: unknown;
@@ -175,7 +215,13 @@ export class TidalStreamService {
         this.reportPlaybackError(zoneId, 'tidal playback info unavailable', suppressErrors);
         return { playbackSource: null };
       case 'direct':
-        return { playbackSource: { kind: 'url', url: resolved.url } };
+        return {
+          playbackSource: {
+            kind: 'url',
+            url: resolved.url,
+            ...(resolved.nativeFormat ? { nativeFormat: resolved.nativeFormat } : {}),
+          },
+        };
       case 'drm':
         this.log.warn('tidal stream is DRM protected', { zoneId, trackId: request.trackId, quality });
         this.reportPlaybackError(zoneId, 'tidal stream is DRM protected', suppressErrors);
@@ -202,6 +248,7 @@ export class TidalStreamService {
         kind: 'url',
         url,
         inputFormat: 'dash',
+        ...(resolved.nativeFormat ? { nativeFormat: resolved.nativeFormat } : {}),
       },
     };
   }
@@ -224,6 +271,11 @@ export class TidalStreamService {
     if (outcome.kind !== 'ok' || !manifest) return { kind: 'failed' };
     if (manifest.kind === 'direct' || manifest.kind === 'dash') {
       await this.noteQuality(request, quality, outcome.playback.audioQuality);
+      const nativeFormat = tidalNativeFormat(
+        outcome.playback,
+        manifest.kind === 'dash' ? manifest.manifest : undefined,
+      );
+      return nativeFormat ? { ...manifest, nativeFormat } : manifest;
     }
     return manifest;
   }

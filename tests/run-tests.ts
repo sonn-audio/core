@@ -60,6 +60,7 @@ import './rateLimit.test';
 import './soundcloudTranscodings.test';
 import './groupVolumeBalance.test';
 import './sourceRatePolicy.test';
+import './tidalNativeFormat.test';
 import './airplayAdvertisement.test';
 import './airplaySessionEnd.test';
 import './bareSpotifyId.test';
