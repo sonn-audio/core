@@ -50,11 +50,6 @@ const TRANSPORT_CHECK_TIMEOUT_MS = 5_000;
 // Consecutive "not playing" answers before we believe them over the cached state; one alone can
 // be a track change or a rebuffer caught at the wrong moment.
 const TRANSPORT_STALE_THRESHOLD = 2;
-// While the speaker is on our stream, ask it this often which source it is on (UPnP GetMediaInfo).
-// A soundbar that goes to TV audio inside a group makes Sonos move the group to the other speaker,
-// and the websocket client can lose track of both groups in that shuffle, so no event ever says
-// the soundbar went to the TV (#430).
-const SOURCE_CHECK_INTERVAL_MS = 5_000;
 
 export class SonosStateController implements ZoneStateController {
   private readonly log = createLogger('Zones', 'StateController:Sonos');
@@ -72,8 +67,6 @@ export class SonosStateController implements ZoneStateController {
   private transportCheckTimer: NodeJS.Timeout | null = null;
   private transportCheckInFlight = false;
   private transportStaleCount = 0;
-  private sourceCheckTimer: NodeJS.Timeout | null = null;
-  private sourceCheckInFlight = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
   private connectionGeneration = 0;
@@ -339,13 +332,6 @@ export class SonosStateController implements ZoneStateController {
       void this.checkTransportState();
     }, TRANSPORT_CHECK_INTERVAL_MS);
     this.transportCheckTimer.unref?.();
-    if (this.sourceCheckTimer) {
-      clearInterval(this.sourceCheckTimer);
-    }
-    this.sourceCheckTimer = setInterval(() => {
-      void this.checkSpeakerSource();
-    }, SOURCE_CHECK_INTERVAL_MS);
-    this.sourceCheckTimer.unref?.();
   }
 
   private stopTicker(): void {
@@ -356,10 +342,6 @@ export class SonosStateController implements ZoneStateController {
     if (this.transportCheckTimer) {
       clearInterval(this.transportCheckTimer);
       this.transportCheckTimer = null;
-    }
-    if (this.sourceCheckTimer) {
-      clearInterval(this.sourceCheckTimer);
-      this.sourceCheckTimer = null;
     }
   }
 
@@ -417,49 +399,7 @@ export class SonosStateController implements ZoneStateController {
     void this.connect();
   }
 
-  /**
-   * Second opinion on a takeover, straight from the speaker (#430). While we believe the speaker
-   * is on our stream we ask it which source it is on; TV audio or a line-in means it switched
-   * itself over, whatever the websocket says. The websocket view is then stale, so it is rebuilt.
-   */
-  private async checkSpeakerSource(): Promise<void> {
-    if (!this.ownStreamSeen || !this.host || this.stopRequested || this.sourceCheckInFlight) {
-      return;
-    }
-    const generation = this.connectionGeneration;
-    this.sourceCheckInFlight = true;
-    let uri: string | null;
-    try {
-      uri = await this.soapQuery(this.host, 'GetMediaInfo', 'CurrentURI');
-    } finally {
-      this.sourceCheckInFlight = false;
-    }
-    if (generation !== this.connectionGeneration || this.stopRequested || !this.ownStreamSeen) {
-      return;
-    }
-    if (!uri || !isSpeakerInputUri(uri)) {
-      return;
-    }
-    const sourceName = /^x-sonos-htastream:/i.test(uri) ? 'TV Audio' : 'Line-In';
-    this.noteSpeakerSource(false, uri, 'stop', sourceName, AudioType.LineIn);
-    const takeover = this.pendingTakeover;
-    this.pendingTakeover = null;
-    this.log.info('sonos speaker is on its own input but no event said so; reconnecting', {
-      zoneId: this.zone.id,
-      host: this.host,
-      mediaUrl: uri,
-    });
-    if (takeover && this.onExternalTakeover) {
-      this.onExternalTakeover(this.zone.id, takeover);
-    }
-    void this.connect();
-  }
-
-  private fetchTransportState(host: string): Promise<string | null> {
-    return this.soapQuery(host, 'GetTransportInfo', 'CurrentTransportState');
-  }
-
-  private async soapQuery(host: string, action: string, field: string): Promise<string | null> {
+  private async fetchTransportState(host: string): Promise<string | null> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TRANSPORT_CHECK_TIMEOUT_MS);
     timeout.unref?.();
@@ -468,23 +408,22 @@ export class SonosStateController implements ZoneStateController {
         method: 'POST',
         headers: {
           'Content-Type': 'text/xml; charset="utf-8"',
-          SOAPAction: `"urn:schemas-upnp-org:service:AVTransport:1#${action}"`,
+          SOAPAction: '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"',
         },
-        body: avTransportBody(action),
+        body: GET_TRANSPORT_INFO_BODY,
         signal: controller.signal,
       });
       if (!response.ok) {
         return null;
       }
-      const match = new RegExp(`<${field}>([^<]*)</${field}>`, 'i').exec(await response.text());
-      return match?.[1] ? decodeXmlEntities(match[1].trim()) || null : null;
+      const match = /<CurrentTransportState>([^<]*)<\/CurrentTransportState>/i.exec(await response.text());
+      return match?.[1]?.trim() || null;
     } catch {
       return null;
     } finally {
       clearTimeout(timeout);
     }
   }
-
 
   private emitTimeTick(): void {
     const group = this.client?.player?.group;
@@ -817,30 +756,14 @@ export class SonosStateController implements ZoneStateController {
   }
 }
 
-function avTransportBody(action: string): string {
-  return `<?xml version="1.0" encoding="utf-8"?>
+const GET_TRANSPORT_INFO_BODY = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
-    <u:${action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+    <u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
       <InstanceID>0</InstanceID>
-    </u:${action}>
+    </u:GetTransportInfo>
   </s:Body>
 </s:Envelope>`;
-}
-
-function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
-/** A source only the speaker itself switches to: TV audio (soundbar) or its line-in. */
-function isSpeakerInputUri(uri: string): boolean {
-  return /^x-sonos-htastream:|^x-rincon-stream:/i.test(uri);
-}
 
 /** UPnP transport state to zone mode; null for anything that is not a settled answer. */
 function mapTransportInfoState(state: string | null): ZoneState['mode'] | null {

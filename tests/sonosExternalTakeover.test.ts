@@ -181,44 +181,6 @@ test('a takeover reaches only a zone that has something of its own to end (#430)
   assert.deepEqual(internal.yielded, []);
 });
 
-test('TV audio the speaker names over UPnP is a takeover when no event said so (#430)', async () => {
-  // In a group, a soundbar going to the TV makes Sonos move the group to the other speaker, and the
-  // websocket client lost track of both groups: no event ever showed the TV, and the next Spotify
-  // track took the speakers back. The speaker itself still says which source it is on.
-  const { controller, takeovers, report } = createController();
-  report(speaker('PLAYBACK_STATE_PLAYING', OWN_TRACK_1));
-  let reconnects = 0;
-  controller.connect = async () => {
-    reconnects += 1;
-  };
-  const answers = ['x-rincon:RINCON_000E58A0B1C201400', OWN_TRACK_2, TV, TV];
-  controller.soapQuery = async (_host: string, action: string) => {
-    assert.equal(action, 'GetMediaInfo');
-    return answers.shift() ?? null;
-  };
-
-  await controller.checkSpeakerSource();
-  await controller.checkSpeakerSource();
-  assert.equal(takeovers.length, 0, 'following a coordinator or playing ours is not a takeover');
-
-  await controller.checkSpeakerSource();
-  assert.equal(takeovers.length, 1);
-  assert.equal(takeovers[0]?.mediaUrl, TV);
-  assert.equal(takeovers[0]?.sourceName, 'TV Audio');
-  assert.equal(reconnects, 1, 'the stale websocket view is rebuilt');
-
-  await controller.checkSpeakerSource();
-  assert.equal(takeovers.length, 1, 'reported once');
-});
-
-test('the speaker is not asked for its source before our stream played on it (#430)', async () => {
-  const { controller } = createController();
-  controller.soapQuery = async () => {
-    throw new Error('must not be asked');
-  };
-  await controller.checkSpeakerSource();
-});
-
 test('a command Sonos refuses because the group moved is sent again after a reconnect (#430)', async () => {
   const { controller } = createController();
   const sent: string[] = [];
