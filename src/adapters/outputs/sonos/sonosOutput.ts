@@ -50,9 +50,8 @@ export interface SonosOutputConfig {
  *
  * How good it should sound. Which speaker is answered by picking one from the
  * list, so the address behind it is an escape hatch rather than a setting, and
- * it folds away with the rest of the plumbing. That is where Music Assistant
- * keeps it too: their entire Sonos configuration is one advanced field for a
- * manual address, because discovery answers the question everywhere else.
+ * it folds away with the rest of the plumbing, because discovery answers the
+ * question everywhere else.
  *
  * Two fields that used to live here are gone. `controlUrl` was the escape hatch
  * for a speaker whose endpoints we could not resolve, which is no longer a state
@@ -295,9 +294,8 @@ export class SonosOutput implements ZoneOutput {
     // Sonos cannot pause a source it did not queue itself. Our stream is a length-less HTTP
     // resource with no range support, and pausing one makes the speaker abort the track rather
     // than hold it: it reports STOPPED, drops the connection, and afterwards refuses to resume.
-    // Music Assistant hit the same wall and settled on the same answer — stop the speaker and
-    // let the server side own the pause (music-assistant/support#3758, our issue #345). The
-    // resume path re-issues playStreamUrl with the position we kept, which does work.
+    // So the speaker is stopped and the server side owns the pause (#345). The resume path
+    // re-issues playStreamUrl with the position we kept, which does work.
     await this.stop(session);
   }
 

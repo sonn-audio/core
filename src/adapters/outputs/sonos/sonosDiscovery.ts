@@ -280,9 +280,8 @@ async function fetchTopology(host: string, timeoutMs: number): Promise<string | 
  * A zone that names its Sonos by IP still had its endpoints resolved over SSDP, so a
  * speaker that answers every HTTP request we make came back as "no Sonos endpoints
  * discovered" wherever multicast replies do not reach us — a bridged Docker network,
- * a VLAN without an IGMP querier (#374). Music Assistant draws the line in the same
- * place: a configured address is talked to directly, and discovery exists only to
- * find the players nobody named.
+ * a VLAN without an IGMP querier (#374). A configured address is talked to directly,
+ * and discovery exists only to find the players nobody named.
  */
 export async function resolveSonosEndpointsByHost(
   host: string,

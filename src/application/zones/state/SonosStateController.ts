@@ -684,8 +684,7 @@ export class SonosStateController implements ZoneStateController {
    * Our own stream is never resumed or reloaded, whatever the speaker reports for it: the
    * speaker can name its URL (and the title of whatever the radio played last), but that URL is
    * dead once the session behind it ended, so `reload` is strictly the external-source path
-   * (#418). Music Assistant reaches the same conclusion from the other side and never asks the
-   * speaker to resume its own queue content either (providers/sonos/player.py).
+   * (#418).
    */
   private resolvePlayStrategy(
     group: AnySonosGroup,
