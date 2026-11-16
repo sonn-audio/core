@@ -86,8 +86,6 @@ export class SonosStateController implements ZoneStateController {
   // True once the speaker has been seen on our own stream, until it is seen playing something else.
   private ownStreamSeen = false;
   private pendingTakeover: ExternalTakeover | null = null;
-  // What the speaker last reported as its source identity; see logSourceIdentity.
-  private lastSourceIdentity = '';
 
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
@@ -556,7 +554,6 @@ export class SonosStateController implements ZoneStateController {
 
     const trackMediaUrl = cleanString(track?.mediaUrl);
     const ownStream = isOwnStream(trackMediaUrl, container, this.ownStreamBaseUrl());
-    this.logSourceIdentity(ownStream, trackMediaUrl, container);
     if (ownStream) {
       // Our own stream lives exactly as long as the session that feeds it, so it is never a
       // reload target: once that session ends the URL leads nowhere, and an older external URL
@@ -666,36 +663,6 @@ export class SonosStateController implements ZoneStateController {
    * stopped, and sometimes without a URL, while the TV plays through it. Only the speaker itself
    * switches to those, so seeing one after our stream is a takeover whatever state it reports.
    */
-  /**
-   * What the speaker says it is playing, each time that changes: the container identity and URL
-   * that decide whether it is our own stream. On lars909's system (#430) our stream was never
-   * recognised, which is invisible without this; with it one log shows what Sonos hands back.
-   */
-  private logSourceIdentity(
-    ownStream: boolean,
-    mediaUrl: string,
-    container: { id?: unknown; name?: unknown; type?: unknown; service?: unknown } | null | undefined,
-  ): void {
-    const details = {
-      ownStream,
-      mediaUrl: mediaUrl || null,
-      containerId: container?.id ?? null,
-      containerName: cleanString(container?.name) || null,
-      containerType: cleanString(container?.type) || null,
-      containerService: container?.service ?? null,
-    };
-    const identity = JSON.stringify(details);
-    if (identity === this.lastSourceIdentity) {
-      return;
-    }
-    this.lastSourceIdentity = identity;
-    this.log.debug('sonos source identity', {
-      zoneId: this.zone.id,
-      ownBaseUrl: this.ownStreamBaseUrl(),
-      ...details,
-    });
-  }
-
   private noteSpeakerSource(
     ownStream: boolean,
     mediaUrl: string,
