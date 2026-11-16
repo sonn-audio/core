@@ -205,3 +205,29 @@ test('a check left behind by the previous track re-arms nothing', async () => {
   await flush();
   assert.equal(cp.setUriCalls.length, 2, 'the stale check re-arms nothing');
 });
+
+// Pause is optional in AVTransport. A renderer that refused it kept playing while the zone
+// showed paused.
+test('a renderer that refuses pause is stopped instead', async () => {
+  const { output } = makeOutput([]);
+  const calls: string[] = [];
+  const transport = (output as unknown as { cp: Record<string, unknown> }).cp;
+  transport.pause = async () => {
+    calls.push('pause');
+    return false;
+  };
+  transport.stop = async () => {
+    calls.push('stop');
+    return true;
+  };
+  await output.pause({ playbackSource: { kind: 'pipe' } } as never);
+  assert.deepEqual(calls, ['pause', 'stop']);
+
+  calls.length = 0;
+  transport.pause = async () => {
+    calls.push('pause');
+    return true;
+  };
+  await output.pause({ playbackSource: { kind: 'pipe' } } as never);
+  assert.deepEqual(calls, ['pause'], 'a renderer that pauses is left paused');
+});

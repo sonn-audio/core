@@ -433,7 +433,15 @@ export class DlnaOutput implements ZoneOutput {
     // instead of being coalesced away (its stream.id is unchanged across pause→resume).
     this.currentStreamKey = null;
     this.armTransitionGuard();
-    await this.cp.pause();
+    if (await this.cp.pause()) {
+      return;
+    }
+    // Pause is optional in AVTransport and plenty of renderers leave it out, or refuse it for a
+    // stream they cannot seek in. A refusal used to be the end of it: the zone showed paused and
+    // the room went on playing. Stop is the one transport action every renderer has, and resuming
+    // sends the stream again whichever way the pause went.
+    this.log.debug('DLNA renderer refused pause; stopping instead', { zoneId: this.zoneId });
+    await this.cp.stop();
   }
 
   public async resume(session: PlaybackSession | null): Promise<void> {
