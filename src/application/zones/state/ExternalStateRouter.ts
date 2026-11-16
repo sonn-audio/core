@@ -6,7 +6,6 @@ import type { ZoneRepository } from '@/application/zones/ZoneRepository';
 import type { QueueItem } from '@/application/zones/internal/zoneTypes';
 import { resolveZoneStateControllerId } from '@/application/zones/state/authorityPolicies';
 import type { ExternalTakeover } from '@/application/zones/state/StateController';
-import { AudioType } from '@/domain/zones/enums';
 
 export type ExternalStateRouterDeps = {
   zones: ZoneRepository;
@@ -36,12 +35,6 @@ export type ExternalStateRouterDeps = {
  */
 export class ExternalStateRouter {
   private readonly deps: ExternalStateRouterDeps;
-  /**
-   * Zones whose speaker has reported something other than one of its own inputs while our
-   * session ran. Only after that does a switch to its own input count as a takeover: before
-   * it, the speaker can still be reporting the TV it was on when our play() came in.
-   */
-  private readonly offOwnInput = new Set<number>();
 
   constructor(deps: ExternalStateRouterDeps) {
     this.deps = deps;
@@ -58,23 +51,6 @@ export class ExternalStateRouter {
       return;
     }
     const hasActiveLocalSession = this.deps.audioManager.hasActiveLocalSession(zoneId);
-    if (!hasActiveLocalSession) {
-      this.offOwnInput.delete(zoneId);
-    } else if (patch.audiotype !== undefined) {
-      if (patch.audiotype !== AudioType.LineIn) {
-        this.offOwnInput.add(zoneId);
-      } else if (this.offOwnInput.has(zoneId)) {
-        // The speaker went to its own input (TV audio, a line-in) while our session was feeding
-        // it. Only the speaker itself switches to those, so this is a takeover even when the
-        // controller never recognised our stream on the speaker and so never reported one (#430).
-        this.offOwnInput.delete(zoneId);
-        this.onExternalTakeover(zoneId, { mediaUrl: '', sourceName: patch.sourceName ?? 'Line-In' });
-        if (!this.deps.audioManager.hasActiveLocalSession(zoneId)) {
-          this.deps.applyPatch(zoneId, patch);
-          return;
-        }
-      }
-    }
     if (hasActiveLocalSession) {
       const propagated: Partial<ZoneState> = { ...patch };
       delete propagated.time;

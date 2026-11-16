@@ -17,9 +17,7 @@ type RouterFakes = {
   setItems: Array<{ zoneId: number; items: unknown[]; index: number }>;
 };
 
-function buildRouter(
-  opts: { controller?: string; yieldToExternalSource?: (zoneId: number) => boolean } = {},
-): { router: ExternalStateRouter; fakes: RouterFakes } {
+function buildRouter(opts: { controller?: string } = {}): { router: ExternalStateRouter; fakes: RouterFakes } {
   const zones = new ZoneRepository();
   const fakes: RouterFakes = {
     zones,
@@ -57,7 +55,7 @@ function buildRouter(
     notifyQueueUpdated: (zoneId, queueSize) => {
       fakes.notifiedQueue.push({ zoneId, queueSize });
     },
-    yieldToExternalSource: opts.yieldToExternalSource ?? (() => false),
+    yieldToExternalSource: () => false,
     log: createLogger('Test', 'ExternalStateRouter'),
   });
   return { router, fakes };
@@ -238,52 +236,4 @@ test('ExternalStateRouter onQueueMirror notifies size 0 without applying state-p
   router.onQueueMirror(1, [], 0);
   assert.equal(fakes.applied.length, 0);
   assert.deepEqual(fakes.notifiedQueue, [{ zoneId: 1, queueSize: 0 }]);
-});
-
-test('a Sonos that goes to TV audio during our session gives the zone up, even unrecognised (#430)', () => {
-  // lars909's log: the controller reported TV Audio for the soundbar, but had never recognised
-  // our stream on it, so it reported no takeover and the next Spotify track took the TV back.
-  const yielded: number[] = [];
-  const { router, fakes } = buildRouter({
-    controller: 'sonos',
-    yieldToExternalSource: (zoneId) => {
-      yielded.push(zoneId);
-      fakes.activeLocal.delete(zoneId);
-      return true;
-    },
-  });
-  fakes.activeLocal.add(1);
-
-  router.onStatePatch(1, { mode: 'play', audiotype: 0, sourceName: 'Jessie' });
-  assert.deepEqual(yielded, []);
-
-  router.onStatePatch(1, { mode: 'play', audiotype: 3, sourceName: 'TV Audio', title: 'TV Audio' });
-  assert.deepEqual(yielded, [1], 'the zone gives the speaker up');
-  assert.deepEqual(fakes.applied.at(-1)?.patch, {
-    mode: 'play',
-    audiotype: 3,
-    sourceName: 'TV Audio',
-    title: 'TV Audio',
-  });
-});
-
-test('a speaker still on its TV input as our play starts is not a takeover (#430)', () => {
-  const yielded: number[] = [];
-  const { router, fakes } = buildRouter({
-    controller: 'sonos',
-    yieldToExternalSource: (zoneId) => {
-      yielded.push(zoneId);
-      return true;
-    },
-  });
-  fakes.activeLocal.add(1);
-  router.onStatePatch(1, { mode: 'play', audiotype: 3, sourceName: 'TV Audio' });
-  router.onStatePatch(1, { mode: 'stop', audiotype: 3, sourceName: 'TV Audio' });
-  assert.deepEqual(yielded, [], 'the TV it was on before our stream reached it');
-
-  fakes.activeLocal.delete(1);
-  router.onStatePatch(1, { mode: 'play', audiotype: 0 });
-  fakes.activeLocal.add(1);
-  router.onStatePatch(1, { mode: 'play', audiotype: 3, sourceName: 'TV Audio' });
-  assert.deepEqual(yielded, [], 'what the speaker played before this session does not count');
 });
