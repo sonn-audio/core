@@ -8,3 +8,11 @@
  * of that device, and a guess that is wrong plays nothing at all.
  */
 export const BASE_PLAYABLE_RATES: number[] = [44100, 48000];
+
+const STANDARD_RATES = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+
+/** The standard rates up to and including what a device says is its highest. */
+export function playableRatesUpTo(maxSampleRate: number): number[] {
+  const rates = STANDARD_RATES.filter((rate) => rate <= maxSampleRate);
+  return rates.length ? rates : [...BASE_PLAYABLE_RATES];
+}

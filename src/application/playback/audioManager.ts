@@ -8,7 +8,7 @@ import type {
   OutputProfile,
 } from '@/ports/EngineTypes';
 import { resolvePlaybackSource } from '@/application/playback/sourceResolver';
-import { declaredSourceRate } from '@/application/playback/policies/sourceRatePolicy';
+import { declaredSourceDepth, declaredSourceRate } from '@/application/playback/policies/sourceRatePolicy';
 import { resolveSourcePreDelayMs } from '@/application/playback/playbackPreDelay';
 import { decodeAudiopath } from '@/domain/zones/audiopath';
 import type { AudioOutputSettings } from '@/ports/types/audioFormat';
@@ -1006,6 +1006,7 @@ export class AudioManager {
     const rateKey = metadata?.audiopath ?? label;
     const declaredRate = declaredSourceRate(effectiveSource);
     this.prefs.matchSourceRate(zoneId, declaredRate ?? this.learnedSourceRates.get(rateKey) ?? null);
+    this.prefs.matchSourceDepth(zoneId, declaredSourceDepth(effectiveSource));
     if (declaredRate === null && (effectiveSource?.kind === 'url' || effectiveSource?.kind === 'file')) {
       this.learnSourceRateSoon(zoneId, rateKey);
     }

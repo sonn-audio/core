@@ -14,6 +14,11 @@ export type PreferredOutput = {
   sampleRates?: number[];
   channels?: number;
   bitDepth?: PcmBitDepth;
+  /**
+   * Every sample depth this output plays as it arrives. With it, a lossless source is carried at
+   * its own depth instead of being cut down to `bitDepth`; leave it out and nothing changes.
+   */
+  bitDepths?: PcmBitDepth[];
   /** Optional requested prebuffer size (bytes) for the output pipeline. */
   prebufferBytes?: number;
 };

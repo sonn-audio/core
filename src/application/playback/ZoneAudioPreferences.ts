@@ -1,6 +1,11 @@
 import type { OutputProfile } from '@/ports/EngineTypes';
-import { pickSessionRate } from '@/application/playback/policies/sourceRatePolicy';
-import { audioOutputSettings, type AudioOutputSettings, type HttpProfile } from '@/ports/types/audioFormat';
+import { pickSessionDepth, pickSessionRate } from '@/application/playback/policies/sourceRatePolicy';
+import {
+  audioOutputSettings,
+  type AudioOutputSettings,
+  type HttpProfile,
+  type PcmBitDepth,
+} from '@/ports/types/audioFormat';
 
 export type ZoneInputPreferences = { fileRealTime?: boolean; urlRealTime?: boolean };
 
@@ -34,6 +39,9 @@ export class ZoneAudioPreferences {
   private readonly playableRates = new Map<number, number[]>();
   /** The rate chosen for what the zone is playing now; absent means the output's own default. */
   private readonly sourceMatchedRate = new Map<number, number>();
+  /** The same pair for sample depth. */
+  private readonly playableDepths = new Map<number, PcmBitDepth[]>();
+  private readonly sourceMatchedDepth = new Map<number, PcmBitDepth>();
   private powerStateResolver: ZonePowerStateResolver | null = null;
   private equalizerResolver: ZoneEqualizerResolver | null = null;
 
@@ -41,12 +49,19 @@ export class ZoneAudioPreferences {
 
   public setPreferredOutputSettings(
     zoneId: number,
-    override: (Partial<AudioOutputSettings> & { profile?: OutputProfile; sampleRates?: number[] }) | null,
+    override:
+      | (Partial<AudioOutputSettings> & { profile?: OutputProfile; sampleRates?: number[]; bitDepths?: PcmBitDepth[] })
+      | null,
   ): void {
     if (override?.sampleRates?.length) {
       this.playableRates.set(zoneId, [...override.sampleRates]);
     } else {
       this.playableRates.delete(zoneId);
+    }
+    if (override?.bitDepths?.length) {
+      this.playableDepths.set(zoneId, [...override.bitDepths]);
+    } else {
+      this.playableDepths.delete(zoneId);
     }
     if (!override || Object.keys(override).length === 0) {
       this.outputOverrides.delete(zoneId);
@@ -73,6 +88,17 @@ export class ZoneAudioPreferences {
       this.sourceMatchedRate.set(zoneId, matched);
     } else {
       this.sourceMatchedRate.delete(zoneId);
+    }
+  }
+
+  /** As `matchSourceRate`, for the sample depth of a lossless source; null for anything else. */
+  public matchSourceDepth(zoneId: number, sourceDepth: number | null): void {
+    const playable = this.playableDepths.get(zoneId);
+    const matched = playable && sourceDepth ? pickSessionDepth(sourceDepth, playable) : null;
+    if (matched) {
+      this.sourceMatchedDepth.set(zoneId, matched);
+    } else {
+      this.sourceMatchedDepth.delete(zoneId);
     }
   }
 
@@ -152,8 +178,13 @@ export class ZoneAudioPreferences {
       const {
         profile: _ignoredProfile,
         sampleRates: _ignoredRates,
+        bitDepths: _ignoredDepths,
         ...rest
-      } = outputOverride as Partial<AudioOutputSettings> & { profile?: unknown; sampleRates?: unknown };
+      } = outputOverride as Partial<AudioOutputSettings> & {
+        profile?: unknown;
+        sampleRates?: unknown;
+        bitDepths?: unknown;
+      };
       result = { ...audioOutputSettings, ...(rest as Partial<AudioOutputSettings>) };
     } else {
       result = audioOutputSettings;
@@ -161,6 +192,10 @@ export class ZoneAudioPreferences {
     const matchedRate = this.sourceMatchedRate.get(zoneId);
     if (matchedRate !== undefined && matchedRate !== result.sampleRate) {
       result = { ...result, sampleRate: matchedRate };
+    }
+    const matchedDepth = this.sourceMatchedDepth.get(zoneId);
+    if (matchedDepth !== undefined && matchedDepth !== result.pcmBitDepth) {
+      result = { ...result, pcmBitDepth: matchedDepth };
     }
     const transientGain = this.transientGainDb.get(zoneId);
     if (transientGain !== undefined) {

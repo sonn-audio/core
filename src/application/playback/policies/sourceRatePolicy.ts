@@ -1,4 +1,5 @@
 import type { PlaybackSource } from '@/ports/EngineTypes';
+import type { PcmBitDepth } from '@/ports/types/audioFormat';
 
 /**
  * The rate to run a session at, given what the source is and what the output plays as it comes.
@@ -38,4 +39,30 @@ export function declaredSourceRate(source: PlaybackSource | null): number | null
   }
   const rate = source.kind === 'pipe' ? source.sampleRate : source.nativeFormat?.sampleRate;
   return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+/**
+ * The sample depth to carry a lossless source at, given the depths the output plays.
+ *
+ * A 24-bit master sent to an output that was only ever asked for 16 bits is cut down on the way,
+ * with dither, whether or not the device behind it takes 24. Where it does, the source's own depth
+ * is used and nothing is cut. A deeper source than the output plays is carried at the deepest the
+ * output has.
+ */
+export function pickSessionDepth(sourceDepth: number, playable: readonly PcmBitDepth[]): PcmBitDepth | null {
+  const depths = [...new Set(playable)].sort((a, b) => a - b);
+  if (!depths.length || !Number.isFinite(sourceDepth) || sourceDepth <= 0) {
+    return null;
+  }
+  const fitting = depths.filter((depth) => depth >= sourceDepth);
+  return (fitting.length ? fitting[0] : depths.at(-1)) ?? null;
+}
+
+/** The depth a lossless source states for itself; null for lossy sources, which have none to keep. */
+export function declaredSourceDepth(source: PlaybackSource | null): number | null {
+  if (!source || source.kind === 'pipe') {
+    return null;
+  }
+  const native = source.nativeFormat;
+  return native?.lossless && typeof native.bitDepth === 'number' ? native.bitDepth : null;
 }

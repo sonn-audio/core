@@ -2,17 +2,12 @@ import { createLogger } from '@/shared/logging/logger';
 import { resolveSessionCover } from '@/shared/coverArt';
 import { buildBaseUrl, resolveAbsoluteUrl, resolveStreamUrl, ensureQueryParam } from '@/shared/streamUrl';
 import type { PlaybackSession } from '@/ports/types/playback';
-import type {
-  HttpPreferences,
-  MemberPauseControl,
-  OutputConfigDefinition,
-  ZoneOutput,
-} from '@/ports/OutputsTypes';
+import type { HttpPreferences, MemberPauseControl, OutputConfigDefinition, ZoneOutput, PreferredOutput } from '@/ports/OutputsTypes';
 import type { OutputPorts } from '@/adapters/outputs/outputPorts';
 import type { SqueezeliteAlertJoin } from '@/application/outputs/squeezeliteGroupController';
 import type { SlimClient, SlimEvent } from '@sonn-audio/node-slimproto';
 import { EventType, PlayerState, TransitionType } from '@sonn-audio/node-slimproto';
-import { BASE_PLAYABLE_RATES } from '@/adapters/outputs/playableRates';
+import { BASE_PLAYABLE_RATES, playableRatesUpTo } from '@/adapters/outputs/playableRates';
 
 export interface SqueezeliteOutputConfig {
   playerId?: string;
@@ -78,6 +73,20 @@ type PlaybackStartWatch = {
   armed: boolean;
   settle: (started: boolean) => void;
 };
+
+/**
+ * The highest rate a player states it can play, or null when it states none.
+ *
+ * Squeezelite puts `MaxSampleRate` in the capabilities it sends on connecting. The hardware
+ * players of old send no such thing, and for those the client library answers with a guess — which
+ * is no ground for sending a Squeezebox a rate it may not be built for. So this reads the reported
+ * capability itself, and a player that reported nothing stays on the base rates.
+ */
+function reportedMaxSampleRate(player: SlimClient | null): number | null {
+  const reported = (player as unknown as { capabilities?: Record<string, unknown> } | null)?.capabilities
+    ?.MaxSampleRate;
+  return typeof reported === 'number' && Number.isFinite(reported) && reported >= 44100 ? reported : null;
+}
 
 export class SqueezeliteOutput implements ZoneOutput {
   public readonly type = 'squeezelite';
@@ -509,13 +518,7 @@ export class SqueezeliteOutput implements ZoneOutput {
     await player.volumeSet(clamped);
   }
 
-  public getPreferredOutput(): {
-    profile: 'flac' | 'mp3';
-    sampleRate: number;
-    sampleRates: number[];
-    channels: number;
-    prebufferBytes: number;
-  } {
+  public getPreferredOutput(): PreferredOutput {
     // Squeezelite can report sporadic underruns when the HTTP stream stalls briefly (WiFi jitter, GC, CPU spikes).
     // A larger rolling prebuffer reduces audible dropouts at the cost of a bit more startup latency/memory.
     // Prefer FLAC to avoid lossy re-encode and improve group sync stability.
@@ -534,10 +537,17 @@ export class SqueezeliteOutput implements ZoneOutput {
     // real-time rate, which keeps its adaptive network-cache estimate small (~2 s startup).
     // A large prime burst (e.g. 256 KB) causes VLC to infer a very high incoming bitrate and
     // inflate its buffer to 60+ seconds, making every song start inaudible for over a minute.
+    // What the player says of itself decides how much of a high-resolution source reaches it. A
+    // sync group shares one stream between players whose limits differ, so it stays on the rates
+    // and the depth every player has.
+    const group = this.ports.groupTracker.getGroupByZone(this.zoneId);
+    const grouped = Boolean(group && group.members.length >= 2);
+    const hiRes = supportsFlac && !grouped ? reportedMaxSampleRate(player) : null;
     return {
       profile: supportsFlac ? 'flac' : 'mp3',
       sampleRate: 44100,
-      sampleRates: BASE_PLAYABLE_RATES,
+      sampleRates: hiRes ? playableRatesUpTo(hiRes) : BASE_PLAYABLE_RATES,
+      ...(hiRes ? { bitDepths: [16, 24] } : {}),
       channels: 2,
       prebufferBytes: 0,
     };
