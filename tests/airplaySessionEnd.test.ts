@@ -54,3 +54,42 @@ test('an AirPlay session that ends hands the zone back through the zone, not jus
     ['controller.stop:2'],
   );
 });
+
+// A sender tells the receiver the level it remembers for it as it connects. That is the slider on
+// someone's phone, not a choice made for this room, and following it overwrote the room's volume
+// at the start of every session.
+test('the volume a sender reports on connecting leaves the zone level alone', () => {
+  const volumes: number[] = [];
+  const controller: AirplayInstanceController = {
+    startPlayback: noop,
+    updateMetadata: noop,
+    updateCover: () => undefined,
+    updateVolume: (_zoneId, volume) => volumes.push(volume),
+    updateTiming: noop,
+    pausePlayback: noop,
+    resumePlayback: noop,
+    stopPlayback: noop,
+  };
+  const playerRegistry = { getPlayer: () => null } as unknown as PlayerRegistryPort;
+  const mdns = {
+    publish: () => ({ stop: noop }),
+    browse: () => ({ stop: noop }),
+    shutdown: noop,
+  } as unknown as MdnsPort;
+  const zone = new AirplayInstance(2, 'Sypialnia', '88AEDD681068', { enabled: true, port: 6299 }, controller, playerRegistry, mdns);
+  const raop = (event: { type: string; value?: number }): void =>
+    (zone as unknown as { handleRaopEvent: (event: unknown) => void }).handleRaopEvent(event);
+
+  raop({ type: 'volume', value: 0.8 });
+  assert.deepEqual(volumes, [], 'the stored level is not applied');
+  raop({ type: 'volume', value: 0.8 });
+  assert.deepEqual(volumes, [], 'nor is a repeat of it');
+  raop({ type: 'volume', value: 0.5 });
+  assert.deepEqual(volumes, [50], 'a change after that is the listener');
+
+  // The next session starts with its own report.
+  (zone as unknown as { sessionActive: boolean }).sessionActive = true;
+  raop({ type: 'stop' });
+  raop({ type: 'volume', value: 0.9 });
+  assert.deepEqual(volumes, [50]);
+});

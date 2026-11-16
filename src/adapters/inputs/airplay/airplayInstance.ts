@@ -70,6 +70,16 @@ export class AirplayInstance {
   private lastPublishedMetadata?: string;
   private currentVolume = 0;
   private sessionActive = false;
+  /**
+   * True until the sender's first volume of a session has been seen.
+   *
+   * A sender reports the level it remembers for this receiver the moment it connects. Nobody chose
+   * that level for this room: it is whatever the slider on the phone was left at, and following it
+   * replaced the room's own volume at the start of every session — a quiet room turned loud by
+   * someone picking it from a list. That first report is noted, so a repeat of it is recognised,
+   * and not applied. What comes after it is a hand on the slider.
+   */
+  private connectVolumePending = true;
   private currentElapsedSec = 0;
   private currentDurationSec = 0;
   private receiver: AirPlayReceiver | null = null;
@@ -132,6 +142,7 @@ export class AirplayInstance {
     this.stopping = true;
     await this.stopServer();
     this.sessionActive = false;
+    this.connectVolumePending = true;
     this.isPlaying = false;
     this.currentElapsedSec = 0;
     this.currentDurationSec = 0;
@@ -423,6 +434,7 @@ export class AirplayInstance {
     }
     this.log.info('forcing airplay session stop', { zoneId: this.zoneId, reason });
     this.sessionActive = false;
+    this.connectVolumePending = true;
     this.isPlaying = false;
     this.stopHttpStream();
     this.endPcmStream();
@@ -711,6 +723,16 @@ export class AirplayInstance {
     const interpreted =
       raw <= 1 && raw >= 0 ? Math.round(raw * 100) : raw <= 0 && raw >= -144 ? mapDbToPercent(raw) : Math.round(raw);
     const volume = Math.max(0, Math.min(100, interpreted));
+    if (this.connectVolumePending) {
+      this.connectVolumePending = false;
+      this.currentVolume = volume;
+      this.log.info('airplay sender reported its stored volume; keeping the zone level', {
+        zoneId: this.zoneId,
+        raw,
+        volume,
+      });
+      return;
+    }
     if (volume === this.currentVolume) {
       return;
     }
@@ -969,6 +991,7 @@ export class AirplayInstance {
       return;
     }
     this.sessionActive = false;
+    this.connectVolumePending = true;
     this.isPlaying = false;
     this.stopHttpStream();
     this.endPcmStream();
