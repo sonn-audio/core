@@ -29,6 +29,21 @@ export const FFMPEG_LOW_LATENCY_ARGS: readonly string[] = [
  * the full 32 KB probe. The probe limits alone give the same fast start and decode every sample.
  */
 export const FFMPEG_FAST_OPEN_ARGS: readonly string[] = ['-probesize', '32k', '-analyzeduration', '0'];
+/**
+ * Whether a source has to be dithered on its way to the output even at its own sample rate.
+ *
+ * A lossy codec decodes to floating point: there is no original depth to preserve, which is why
+ * such a source was let through with no conversion stage at all. But something still has to turn
+ * those floats into integers, and with no stage of ours in the chain ffmpeg does it by plain
+ * rounding. At 16 bits that is audible in principle and plain in a measurement: a 1 kHz tone at
+ * -84 dBFS from a 256 kb/s AAC came out with odd harmonics at -102 to -116 dBFS, where the same
+ * decode through the dithered conversion has them at -140. At 24 bits the rounding error is below
+ * anything a converter resolves, and nothing is added.
+ */
+function lossyNeedsDither(native: SourceNativeFormat, pcmBitDepth: number): boolean {
+  return native.bitDepth === null && pcmBitDepth === 16;
+}
+
 export const FFMPEG_BUFFERED_ARGS: readonly string[] = [
   '-probesize', '256k', '-analyzeduration', '1M',
 ];
@@ -120,8 +135,9 @@ export class FfmpegArgBuilder {
    *
    * This is the project's definition of bit-perfect — "we don't come near it" —
    * and it deliberately says nothing about whether the *source* is lossless. A
-   * 44.1 kHz AAC stream served at 44.1 kHz is bit-perfect by this definition: we
-   * pass Apple's decode through untouched. That the encoder threw information away
+   * 44.1 kHz AAC stream served at 44.1 kHz into a 24-bit output is bit-perfect by
+   * this definition: we pass Apple's decode through untouched. Into a 16-bit output
+   * it is not, because there the decode has to be dithered (see `lossyNeedsDither`). That the encoder threw information away
    * upstream is their choice, not our alteration.
    *
    * Each condition is load-bearing:
@@ -146,6 +162,9 @@ export class FfmpegArgBuilder {
     }
     // A declared depth must match; an undeclared one (lossy source) cannot be lost.
     if (native.bitDepth !== null && native.bitDepth !== pcmBitDepth) {
+      return false;
+    }
+    if (lossyNeedsDither(native, pcmBitDepth)) {
       return false;
     }
     if (this.sourcePreDelayMs && this.sourcePreDelayMs > 0) {
@@ -697,7 +716,11 @@ export class FfmpegArgBuilder {
     if (native.sampleRate !== sampleRate || native.channels !== channels) {
       return false;
     }
-    // As in `isBitPerfect`: a declared depth must match, an undeclared one cannot be lost.
+    // As in `isBitPerfect`: a declared depth must match, an undeclared one cannot be lost — but a
+    // lossy decode bound for 16 bits still has to be dithered on the way.
+    if (lossyNeedsDither(native, pcmBitDepth)) {
+      return false;
+    }
     return native.bitDepth === null || native.bitDepth === pcmBitDepth;
   }
 

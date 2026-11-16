@@ -47,7 +47,7 @@ test('a lossless source at a different depth is requantised, so not passthrough'
   assert.equal(hasResample(builder.buildOutputArgs(null)), true);
 });
 
-test('a lossy source at the sink rate passes through untouched', () => {
+test('a lossy source at the sink rate is not resampled, and is dithered only where it must be', () => {
   // Bit-perfect here means "we do not touch it". Apple Music is AAC 44.1k: served
   // at 44.1k we hand the provider's decode to the player exactly as delivered.
   // Resampling to 48k would alter every sample and inflate the stream ~2.7x.
@@ -62,14 +62,25 @@ test('a lossy source at the sink rate passes through untouched', () => {
   const native = { sampleRate: 44100, channels: 2, bitDepth: null, lossless: false };
   const atNative = { ...BASE_OUTPUT, sampleRate: 44100, pcmBitDepth: 16 as const };
 
+  // At 16 bits "untouched" was never on offer. The decode is floating point and something has to
+  // make integers of it; with no stage of ours in the chain ffmpeg rounds, and the rounding error
+  // follows the signal. Measured on a 1 kHz tone at -84 dBFS from a 256 kb/s AAC: odd harmonics
+  // at -102 to -116 dBFS, against -140 through the dithered conversion. So that conversion runs —
+  // at the source's own rate, which is a change of format and not a resample.
   const matched = new FfmpegArgBuilder(aacSource, 'flac', atNative, false, undefined, native);
-  assert.equal(matched.isBitPerfect(null), true, 'we alter nothing, so this is passthrough');
-  assert.equal(hasResample(matched.buildOutputArgs(null)), false);
+  assert.equal(matched.isBitPerfect(null), false);
+  const args16 = matched.buildOutputArgs(null);
+  const filter16 = args16[args16.indexOf('-af') + 1] ?? '';
+  assert.match(filter16, /osr=44100/, 'the rate stays the source\'s own');
+  assert.match(filter16, /osf=s16/);
+  assert.match(filter16, /dither_method=/);
 
-  // Depth is not a gate for lossy sources — carrying AAC in 24-bit loses nothing.
+  // In 24 bits the rounding error is below anything a converter resolves: carrying AAC there
+  // loses nothing and needs nothing added, so that stays a passthrough.
   const at24 = { ...BASE_OUTPUT, sampleRate: 44100, pcmBitDepth: 24 as const };
   const wider = new FfmpegArgBuilder(aacSource, 'flac', at24, false, undefined, native);
   assert.equal(wider.isBitPerfect(null), true);
+  assert.equal(hasResample(wider.buildOutputArgs(null)), false);
 
   // A rate mismatch does alter the samples, so it must still resample.
   const mismatched = new FfmpegArgBuilder(aacSource, 'flac', BASE_OUTPUT, false, undefined, native);
