@@ -125,3 +125,28 @@ test('mutations emit audio_queue_event', () => {
   qc.undo(1);
   assert.equal(events(), 3);
 });
+
+// Shuffle reorders the queue itself, so the shuffled list is the play order. Advancing used to
+// pick a random row on top of that: what played next was not the row the client showed as
+// next, a track could come round again before the others had played, and with repeat off the
+// queue never reached its end.
+test('a shuffled queue plays in the order it is shown, each track once, and then ends', () => {
+  const { qc, ctx } = makeController(8, 0);
+  qc.setShuffle(1, true);
+  const shown = uids(ctx);
+  const played = [ctx.queueController.current()?.unique_id];
+  for (let guard = 0; guard < 50; guard += 1) {
+    const next = ctx.queueController.nextIndex();
+    if (next < 0) break;
+    played.push(ctx.queueController.setCurrentIndex(next)?.unique_id);
+  }
+  assert.deepEqual(played, shown);
+});
+
+test('a shuffled queue on repeat-all wraps to its first row', () => {
+  const { qc, ctx } = makeController(4, 0);
+  qc.setShuffle(1, true);
+  ctx.queue.repeat = 1;
+  ctx.queueController.setCurrentIndex(3);
+  assert.equal(ctx.queueController.nextIndex(), 0);
+});

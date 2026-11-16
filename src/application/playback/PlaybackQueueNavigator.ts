@@ -44,16 +44,15 @@ export class PlaybackQueueNavigator {
     const size = this.queue.items.length;
     if (size === 0) return -1;
     const repeat = this.queue.repeat ?? 0;
-    const shuffle = this.queue.shuffle ?? false;
     const currentIndex = this.queue.currentIndex;
 
     if (repeat === 3) {
       return currentIndex;
     }
-    if (shuffle && size > 1) {
-      const candidates = this.queue.items.map((_, idx) => idx).filter((idx) => idx !== currentIndex);
-      return candidates[Math.floor(Math.random() * candidates.length)] ?? -1;
-    }
+    // Shuffle is not a reason to pick at random here. Switching it on reorders the items
+    // themselves, so the list already is the shuffled order — the one the client shows, the one
+    // the next track is prefetched from and the one a manual skip walks. Walking it in order is
+    // what makes every track play once and the queue end when it has.
     const incremented = currentIndex + 1;
     if (incremented < size) {
       return incremented;
