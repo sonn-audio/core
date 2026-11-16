@@ -185,3 +185,20 @@ test('crossfade blends correctly at 16, 24 and 32 bit', async () => {
     );
   }
 });
+
+// A zone whose amplifier has to wake up starts its track behind a stretch of silence. That delay
+// used to bring the whole processing chain with it, so the track was requantised with dither for
+// no other reason: measured, half its samples came out up to 2 LSB off.
+test('a wake-up delay puts silence in front of a matching source and changes nothing else', () => {
+  const builder = new FfmpegArgBuilder(SOURCE, 'flac', BASE_OUTPUT, false, 500, NATIVE_24_96);
+  const args = builder.buildOutputArgs(null);
+  assert.equal(args[args.indexOf('-af') + 1], 'adelay=delays=500:all=1', 'the delay and nothing with it');
+  assert.equal(builder.isBitPerfect(null), false, 'the stream is not the source as it stands');
+  assert.equal(builder.isBitPerfect(null, { allowDelay: true }), true, 'but its samples are');
+
+  // With anything that does alter the samples, the delay rides along in the full chain as before.
+  const at16 = { ...BASE_OUTPUT, pcmBitDepth: 16 as const };
+  const converted = new FfmpegArgBuilder(SOURCE, 'flac', at16, false, 500, NATIVE_24_96).buildOutputArgs(null);
+  assert.equal(hasResample(converted), true);
+  assert.match(converted[converted.indexOf('-af') + 1] ?? '', /^aformat=sample_fmts=fltp,adelay=/);
+});

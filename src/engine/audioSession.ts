@@ -370,8 +370,10 @@ export class AudioSession {
     this.args = this.buildArgBuilder();
     const losslessSource = nativeFormat?.lossless === true ||
       (this.sourceFormat?.codec.startsWith('pcm_') === true || this.sourceFormat?.codec === 'flac');
-    this.bitPerfect = losslessSource && this.args.isBitPerfect(this.equalizerBands);
-    this.dspApplied = !this.args.isBitPerfect(this.equalizerBands);
+    // A wake-up delay puts silence in front of the samples and changes none of them.
+    const untouched = this.args.isBitPerfect(this.equalizerBands, { allowDelay: true });
+    this.bitPerfect = losslessSource && untouched;
+    this.dspApplied = !untouched;
     this.gapless = new GaplessAppender(this);
     this.pipeline = new TwoStagePipeline(
       this.log,
@@ -422,8 +424,10 @@ export class AudioSession {
     this.args = this.buildArgBuilder();
     const losslessSource = nativeFormat?.lossless === true ||
       (this.sourceFormat?.codec.startsWith('pcm_') === true || this.sourceFormat?.codec === 'flac');
-    this.bitPerfect = losslessSource && this.args.isBitPerfect(this.equalizerBands);
-    this.dspApplied = !this.args.isBitPerfect(this.equalizerBands);
+    // A wake-up delay puts silence in front of the samples and changes none of them.
+    const untouched = this.args.isBitPerfect(this.equalizerBands, { allowDelay: true });
+    this.bitPerfect = losslessSource && untouched;
+    this.dspApplied = !untouched;
   }
 
   /** The command line that decodes `source` onto this session's PCM bus. */

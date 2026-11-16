@@ -148,7 +148,14 @@ export class FfmpegArgBuilder {
    *  - PCM or FLAC profile: the lossy encoders re-encode by definition.
    *  - no pre-delay, gain or EQ: each forces ffmpeg into filtered processing.
    */
-  public isBitPerfect(equalizerBands: ReadonlyArray<number> | null): boolean {
+  public isBitPerfect(
+    equalizerBands: ReadonlyArray<number> | null,
+    /**
+     * `allowDelay` asks the narrower question: are the *samples* left alone? A wake-up delay puts
+     * silence in front of them and changes none, so with it set a delayed source still qualifies.
+     */
+    options: { allowDelay?: boolean } = {},
+  ): boolean {
     const native = this.sourceNativeFormat;
     if (!native) {
       return false;
@@ -167,7 +174,7 @@ export class FfmpegArgBuilder {
     if (lossyNeedsDither(native, pcmBitDepth)) {
       return false;
     }
-    if (this.sourcePreDelayMs && this.sourcePreDelayMs > 0) {
+    if (!options.allowDelay && this.sourcePreDelayMs && this.sourcePreDelayMs > 0) {
       return false;
     }
     if (Number.isFinite(fixedGainDb) && fixedGainDb !== 0) {
@@ -554,6 +561,18 @@ export class FfmpegArgBuilder {
     // already arrives in exactly the output format.
     if (!dsp.length && (fromBus || this.isBitPerfect(equalizerBands) || this.pipeMatchesOutput())) {
       return [];
+    }
+    // A delay on its own is not processing. It used to bring the whole chain with it — float, then
+    // back to integers with dither — so a zone whose amplifier had to wake up played its first
+    // track, every sample of it, through a requantisation it had no other reason for: half the
+    // samples off by up to 2 LSB, measured, and dither noise where the silence should be. `adelay`
+    // works on integer samples as they are; alone, it prepends zeros and touches nothing.
+    if (
+      dsp.length === 1 &&
+      dsp[0]?.kind === 'delay' &&
+      (fromBus || this.isBitPerfect(equalizerBands, { allowDelay: true }) || this.pipeMatchesOutput())
+    ) {
+      return dsp;
     }
 
     const stages: FilterStage[] = [];
