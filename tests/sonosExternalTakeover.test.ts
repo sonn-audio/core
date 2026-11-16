@@ -256,3 +256,22 @@ test('a command Sonos refuses because the group moved is sent again after a reco
   await controller.dispatchCommand('stop');
   assert.equal(attempts, 2, 'the first try and one retry');
 });
+
+test('our stream is known by the service id or object id Sonos hands back, as Music Assistant does (#430)', () => {
+  // lars909's soundbar echoed our container's name but not `id.serviceId`, so our stream was
+  // never recognised and TV audio never counted as a takeover.
+  for (const container of [
+    { name: 'Jessie', service: { name: 'sonn', id: 'sonn' } },
+    { name: 'Jessie', id: { objectId: 'sonn:5:5-abc' } },
+  ]) {
+    const { takeovers, report } = createController();
+    report(speaker('PLAYBACK_STATE_PLAYING', '', container));
+    report(speaker('PLAYBACK_STATE_PLAYING', TV, { type: 'linein.homeTheater.hdmi' }));
+    assert.equal(takeovers.length, 1, JSON.stringify(container));
+  }
+
+  const { takeovers, report } = createController();
+  report(speaker('PLAYBACK_STATE_PLAYING', '', { name: 'Jessie', id: { objectId: 'spotify:track:1' } }));
+  report(speaker('PLAYBACK_STATE_PLAYING', TV, { type: 'linein.homeTheater.hdmi' }));
+  assert.deepEqual(takeovers, [], 'a container of someone else is not ours');
+});

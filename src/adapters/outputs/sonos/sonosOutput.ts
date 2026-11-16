@@ -884,10 +884,14 @@ export class SonosOutput implements ZoneOutput {
         serviceId: SONOS_OWN_CONTAINER_SERVICE_ID,
         objectId: `${SONOS_OWN_CONTAINER_SERVICE_ID}:${this.zoneId}:${session.stream.id}`,
       },
+      // The service id is what the speaker reliably hands back: Music Assistant identifies its
+      // own streams by it (`service.id == "mass"`), and leaves `id.serviceId` out. The typings
+      // of node-sonos do not know the field, the speaker does.
       service: {
         _objectType: 'service',
         name: SONOS_CONTAINER_SERVICE_NAME,
-      },
+        id: SONOS_OWN_CONTAINER_SERVICE_ID,
+      } as SonosContainer['service'],
     };
   }
 

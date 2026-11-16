@@ -987,10 +987,21 @@ function mapPlaybackState(state: string | null | undefined): ZoneState['mode'] {
  */
 function isOwnStream(
   mediaUrl: string,
-  container: { id?: { serviceId?: string | null } | null } | null | undefined,
+  container:
+    | { id?: { serviceId?: string | null; objectId?: string | null } | null; service?: unknown }
+    | null
+    | undefined,
   ownBaseUrl: string,
 ): boolean {
-  if (cleanString(container?.id?.serviceId) === SONOS_OWN_CONTAINER_SERVICE_ID) {
+  // Any of the three marks we put on the container. Which ones come back depends on the speaker:
+  // on lars909's soundbar (#430) the name did and `id.serviceId` evidently did not. Music
+  // Assistant goes by the service id and the object id prefix, so those are checked as well.
+  const serviceId = (container?.service as { id?: unknown } | null | undefined)?.id;
+  if (
+    cleanString(container?.id?.serviceId) === SONOS_OWN_CONTAINER_SERVICE_ID ||
+    cleanString(serviceId) === SONOS_OWN_CONTAINER_SERVICE_ID ||
+    cleanString(container?.id?.objectId).startsWith(`${SONOS_OWN_CONTAINER_SERVICE_ID}:`)
+  ) {
     return true;
   }
   return isOwnStreamUrl(mediaUrl, ownBaseUrl);
