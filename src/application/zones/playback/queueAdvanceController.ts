@@ -11,6 +11,7 @@ import type { ZoneRepository } from '@/application/zones/ZoneRepository';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
 import type { RadioParadiseBlockService } from '@/application/zones/radioparadise/radioParadiseBlockService';
 import type { CrossfadeController } from '@/application/zones/playback/crossfadeController';
+import type { GaplessController } from '@/application/zones/playback/gaplessController';
 import { handleEndOfTrack as handleEndOfTrackTransition } from '@/application/zones/playback/queueTransitions';
 
 export interface QueueAdvanceControllerDeps {
@@ -22,6 +23,7 @@ export interface QueueAdvanceControllerDeps {
   recentsManager: RecentsManager;
   radioParadise: RadioParadiseBlockService;
   crossfade: CrossfadeController;
+  gapless: GaplessController;
   log: ComponentLogger;
   applyPatch: (zoneId: number, patch: Partial<ZoneState>, force?: boolean) => void;
   isLocalQueueAuthority: (authority: QueueAuthority | undefined | null) => boolean;
@@ -67,6 +69,11 @@ export class QueueAdvanceController {
       this.deps.log.debug('end_of_track suppressed; crossfade already advanced queue', {
         zoneId: ctx.id,
       });
+      return;
+    }
+    // The next track may already be playing on the same stream, joined on by the engine; then
+    // there is nothing to start, only the queue and the clock to move over.
+    if (await this.deps.gapless.takeOver(ctx)) {
       return;
     }
 

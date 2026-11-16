@@ -938,13 +938,17 @@ export class AudioManager {
     return options;
   }
 
-  private startWithResolvedSource(
+  /**
+   * A resolved source as the engine is to open it: how it is paced, and what is known of its length.
+   *
+   * One place, because a track that follows another without a gap has to be opened exactly as it
+   * would have been as a start of its own.
+   */
+  private normalizeSource(
     zoneId: number,
-    label: string,
     playbackSource: PlaybackSource | null,
     metadata?: PlaybackMetadata,
-    requiresPcm?: boolean,
-  ): PlaybackSession | null {
+  ): PlaybackSource | null {
     let effectiveSource =
       playbackSource?.kind === 'url' && metadata?.isRadio
         ? { ...playbackSource, restartOnFailure: true }
@@ -981,6 +985,17 @@ export class AudioManager {
     ) {
       effectiveSource = { ...effectiveSource, knownDurationSec: Math.round(metadata.duration) };
     }
+    return effectiveSource;
+  }
+
+  private startWithResolvedSource(
+    zoneId: number,
+    label: string,
+    playbackSource: PlaybackSource | null,
+    metadata?: PlaybackMetadata,
+    requiresPcm?: boolean,
+  ): PlaybackSession | null {
+    const effectiveSource = this.normalizeSource(zoneId, playbackSource, metadata);
     this.log.info('startWithResolvedSource', {
       zoneId,
       label,
@@ -1415,6 +1430,87 @@ export class AudioManager {
       return ['mp3'];
     }
     return requiresPcm ? (['pcm'] as Array<'pcm'>) : (['mp3'] as Array<'mp3'>);
+  }
+
+  /**
+   * Line the next track up behind the one playing, to follow it without a gap.
+   *
+   * Only when the session would have had the same format for it. The session's rate and depth were
+   * chosen for the track that is playing; a next track that would have been given others plays
+   * through this session converted, and the point of matching the source would be lost — so that
+   * transition is left to start a session of its own, as before.
+   *
+   * @returns what the engine reported once the next track took over, or null when it will not.
+   */
+  public async armGapless(
+    zoneId: number,
+    nextSource: PlaybackSource,
+    metadata: PlaybackMetadata,
+  ): Promise<{ frames: number; sampleRate: number; source: PlaybackSource; engineSession: number | null } | null> {
+    const session = this.sessions.get(zoneId);
+    const kind = session?.playbackSource?.kind;
+    if (!session || session.state !== 'playing' || (kind !== 'file' && kind !== 'url')) {
+      return null;
+    }
+    const source = this.normalizeSource(zoneId, this.declareFileFormat(nextSource), metadata);
+    if (!source || (source.kind !== 'file' && source.kind !== 'url')) {
+      return null;
+    }
+    const rate = declaredSourceRate(source) ?? this.learnedSourceRates.get(metadata.audiopath ?? '') ?? null;
+    if (!this.prefs.keepsFormatFor(zoneId, rate, declaredSourceDepth(source))) {
+      this.log.debug('next track needs another session format; not joined', { zoneId, rate });
+      return null;
+    }
+    const splice = await this.playbackService.armNext(zoneSessionKey(zoneId), toEngineInputSpec(source));
+    return splice ? { ...splice, source, engineSession: this.engineSessionId(zoneId) } : null;
+  }
+
+  /** Whether the zone is still on the engine session a join was made in. */
+  public isOnEngineSession(zoneId: number, engineSession: number | null): boolean {
+    return this.engineSessionId(zoneId) === engineSession;
+  }
+
+  /** Which engine session a zone is on, so that a join made in one is not claimed for another. */
+  private engineSessionId(zoneId: number): number | null {
+    return this.playbackService.getSessionStats(zoneSessionKey(zoneId))[0]?.startedAt ?? null;
+  }
+
+  public disarmGapless(zoneId: number): void {
+    this.playbackService.disarmNext(zoneSessionKey(zoneId));
+  }
+
+  /**
+   * The session has gone over into the next track: make it say so.
+   *
+   * Called when the room has finished hearing the outgoing track — the engine joined the two some
+   * seconds earlier, as far ahead as the output buffers. Nothing is started and nothing is told to
+   * play; the stream every output holds simply turns out to continue.
+   */
+  public adoptGaplessNext(
+    zoneId: number,
+    source: PlaybackSource,
+    metadata: PlaybackMetadata,
+    engineSession: number | null,
+  ): PlaybackSession | null {
+    const session = this.sessions.get(zoneId);
+    // A seek or a restart since the join replaced the engine session, and the join went with it.
+    if (!session || session.state !== 'playing' || this.engineSessionId(zoneId) !== engineSession) {
+      return null;
+    }
+    const now = Date.now();
+    session.metadata = metadata;
+    session.source = metadata.audiopath ?? metadata.title ?? session.source;
+    session.duration = metadata.duration ?? 0;
+    session.playbackSource = source;
+    session.elapsed = 0;
+    session.startedAt = now;
+    // The outputs never reconnected, so whatever they report as elapsed still counts from the
+    // first track of the run. This is the anchor that says where the current one began.
+    session.crossfadedAt = now;
+    session.updatedAt = now;
+    this.watchSourceDuration(zoneId);
+    this.log.info('next track joined without a gap', { zoneId, title: metadata.title });
+    return session;
   }
 
   public async inlineCrossfadePlayback(

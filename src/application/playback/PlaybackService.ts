@@ -73,6 +73,16 @@ export class PlaybackService {
     return this.engine.inlineCrossfade(...args);
   }
 
+  public armNext(
+    ...args: Parameters<NonNullable<EnginePort['armNext']>>
+  ): ReturnType<NonNullable<EnginePort['armNext']>> {
+    return this.engine.armNext?.(...args) ?? Promise.resolve(null);
+  }
+
+  public disarmNext(key: Parameters<NonNullable<EnginePort['disarmNext']>>[0]): void {
+    this.engine.disarmNext?.(key);
+  }
+
   public hasSession(
     ...args: Parameters<EnginePort['hasSession']>
   ): ReturnType<EnginePort['hasSession']> {

@@ -24,6 +24,7 @@ import { TwoStagePipeline } from '@/engine/twoStagePipeline';
 import { FirstChunkBarrier } from '@/engine/firstChunkBarrier';
 import { SessionStarter } from '@/engine/sessionStarter';
 import { Crossfader } from '@/engine/crossfader';
+import { GaplessAppender, type GaplessSplice } from '@/engine/gaplessAppender';
 
 export type { OutputProfile };
 
@@ -54,6 +55,70 @@ const LATE_SUBSCRIBER_GRACE_MS = 5000;
 
 /** How long a session may produce audio with no subscriber before the log says so. */
 const UNHEARD_WARN_MS = 60_000;
+
+/**
+ * What a source is, as far as anyone has said: declared by whoever resolved it, read from the probe
+ * cache, or — for a pipe — the very numbers it is opened with.
+ */
+function nativeFormatOf(source: PlaybackSource): SourceNativeFormat | undefined {
+    if (source.kind === 'url') {
+      const declared = source.nativeFormat;
+      if (!declared) {
+        return undefined;
+      }
+      return {
+        sampleRate: declared.sampleRate,
+        channels: declared.channels,
+        bitDepth: declared.bitDepth ?? null,
+        lossless: declared.lossless,
+        codecName: declared.codecName,
+      };
+    }
+    if (source.kind === 'file') {
+      // A declaration beats the cache: the library records the format during its scan, so a track
+      // that has been scanned needs no probe at all. The cache remains the answer for a file
+      // nothing has declared — an alert, or a track a caller probed itself before starting.
+      const declared = source.nativeFormat;
+      if (declared) {
+        return {
+          sampleRate: declared.sampleRate,
+          channels: declared.channels,
+          bitDepth: declared.bitDepth ?? null,
+          lossless: declared.lossless,
+          codecName: declared.codecName,
+        };
+      }
+      return getCachedSourceFormat(source.path) ?? undefined;
+    }
+    if (source.kind === 'pipe') {
+      /*
+       * A pipe's spec *is* its probe: these are the very numbers this builder hands ffmpeg as
+       * `-f s24le -ar 44100 -ac 2`, so nothing here is being taken on trust that the decode does
+       * not already depend on.
+       *
+       * Without this a pipe had no native format, and `isBitPerfect` says no to a source it
+       * cannot see — so a 44.1 kHz/24-bit feed matched by a 44.1 kHz/24-bit output still got the
+       * terminal soxr stage, converting samples into the format they were already in. Spotify via
+       * Soloist is that feed. `pipeMatchesOutput` stays below as the fallback for a pipe that
+       * declares nothing; it only ever recognised a fixed 16-bit shape.
+       *
+       * `lossless` is a claim about these samples and not their origin: raw PCM arrives as-is, so
+       * the declared depth is the real one and there is no encoder between us and it.
+       */
+      const { sampleRate, channels, format } = source;
+      if (!sampleRate || !channels || !format) {
+        return undefined;
+      }
+      return {
+        sampleRate,
+        channels,
+        bitDepth: pcmBitDepthFromFormat(format),
+        lossless: true,
+        codecName: 'pcm',
+      };
+    }
+    return undefined;
+}
 
 function sourceFormatFor(
   source: PlaybackSource,
@@ -136,8 +201,8 @@ export class AudioSession {
   private sourceFormat: EngineSessionStats['sourceFormat'];
   /** Length of the source as ffmpeg reported it, or null while nobody has said (see `observeSourceDuration`). */
   private sourceDurationSec: number | null = null;
-  private readonly bitPerfect: boolean;
-  private readonly dspApplied: boolean;
+  private bitPerfect: boolean;
+  private dspApplied: boolean;
   private debugTapStream?: fs.WriteStream;
   /** @internal */ public readonly pipeSource = new PipeSourceAdapter();
   /** @internal */ public directPipeMode = false;
@@ -181,12 +246,13 @@ export class AudioSession {
    */
   public args: FfmpegArgBuilder;
   private readonly isAlertSource: boolean;
-  private readonly nativeFormat: SourceNativeFormat | undefined;
+  private nativeFormat: SourceNativeFormat | undefined;
   // For codec streams (FLAC, etc.), store the initial header so new subscribers
   // joining mid-stream can initialize their decoders correctly.
   /** @internal */ public codecHeader: Buffer | null = null;
   private readonly starter: SessionStarter;
   private readonly crossfader: Crossfader;
+  /** @internal */ public readonly gapless: GaplessAppender;
 
   constructor(
     /**
@@ -195,7 +261,7 @@ export class AudioSession {
      * value here — the session carries no zone semantics.
      */
     public readonly zoneId: SessionKey,
-    /** @internal */ public readonly source: PlaybackSource,
+    /** @internal */ public source: PlaybackSource,
     /** @internal */ public readonly profile: OutputProfile,
     private readonly onTerminated: () => void,
     /** @internal */ public readonly outputSettings: AudioOutputSettings,
@@ -210,6 +276,12 @@ export class AudioSession {
     public readonly crossfadeEnabled: boolean = true,
     /** Receives aligned PCM frames for protocol-neutral realtime analysis. */
     private readonly onPcmFrame?: (zoneId: SessionKey, pcm: Buffer, timestampUs: number) => void,
+    /**
+     * Whether this session should be able to carry on into a next track (see `GaplessAppender`).
+     * That needs the decoder to be a process of its own, so a file or URL source that would have
+     * run as one ffmpeg runs as decoder and encoder instead.
+     */
+    public readonly gaplessCapable: boolean = false,
   ) {
     const candidate = outputSettings.prebufferBytes;
     const hardMax = 1024 * 1024 * 4;
@@ -291,65 +363,7 @@ export class AudioSession {
     // means "resample as before" — never a stall.
     // URL sources carry a provider-declared format (no probing — see sourceProbe);
     // local files use the cache that the caller populated before engine.start.
-    const nativeFormat = ((): SourceNativeFormat | undefined => {
-      if (this.source.kind === 'url') {
-        const declared = this.source.nativeFormat;
-        if (!declared) {
-          return undefined;
-        }
-        return {
-          sampleRate: declared.sampleRate,
-          channels: declared.channels,
-          bitDepth: declared.bitDepth ?? null,
-          lossless: declared.lossless,
-          codecName: declared.codecName,
-        };
-      }
-      if (this.source.kind === 'file') {
-        // A declaration beats the cache: the library records the format during its scan, so a track
-        // that has been scanned needs no probe at all. The cache remains the answer for a file
-        // nothing has declared — an alert, or a track a caller probed itself before starting.
-        const declared = this.source.nativeFormat;
-        if (declared) {
-          return {
-            sampleRate: declared.sampleRate,
-            channels: declared.channels,
-            bitDepth: declared.bitDepth ?? null,
-            lossless: declared.lossless,
-            codecName: declared.codecName,
-          };
-        }
-        return getCachedSourceFormat(this.source.path) ?? undefined;
-      }
-      if (this.source.kind === 'pipe') {
-        /*
-         * A pipe's spec *is* its probe: these are the very numbers this builder hands ffmpeg as
-         * `-f s24le -ar 44100 -ac 2`, so nothing here is being taken on trust that the decode does
-         * not already depend on.
-         *
-         * Without this a pipe had no native format, and `isBitPerfect` says no to a source it
-         * cannot see — so a 44.1 kHz/24-bit feed matched by a 44.1 kHz/24-bit output still got the
-         * terminal soxr stage, converting samples into the format they were already in. Spotify via
-         * Soloist is that feed. `pipeMatchesOutput` stays below as the fallback for a pipe that
-         * declares nothing; it only ever recognised a fixed 16-bit shape.
-         *
-         * `lossless` is a claim about these samples and not their origin: raw PCM arrives as-is, so
-         * the declared depth is the real one and there is no encoder between us and it.
-         */
-        const { sampleRate, channels, format } = this.source;
-        if (!sampleRate || !channels || !format) {
-          return undefined;
-        }
-        return {
-          sampleRate,
-          channels,
-          bitDepth: pcmBitDepthFromFormat(format),
-          lossless: true,
-          codecName: 'pcm',
-        };
-      }
-      return undefined;
-    })();
+    const nativeFormat = nativeFormatOf(this.source);
     this.sourceFormat = sourceFormatFor(this.source, nativeFormat);
     this.isAlertSource = isAlertSource;
     this.nativeFormat = nativeFormat;
@@ -358,6 +372,7 @@ export class AudioSession {
       (this.sourceFormat?.codec.startsWith('pcm_') === true || this.sourceFormat?.codec === 'flac');
     this.bitPerfect = losslessSource && this.args.isBitPerfect(this.equalizerBands);
     this.dspApplied = !this.args.isBitPerfect(this.equalizerBands);
+    this.gapless = new GaplessAppender(this);
     this.pipeline = new TwoStagePipeline(
       this.log,
       { zoneId: this.zoneId, profile: this.profile },
@@ -389,6 +404,51 @@ export class AudioSession {
       this.sourcePreDelayMs,
       this.nativeFormat,
     );
+  }
+
+  /**
+   * This session now plays another source: the one a gapless continuation just switched it to.
+   *
+   * Everything said about "the source" from here on has to be about the new one — what it is, how
+   * long it is, whether it passes through untouched — and a respawn (an equalizer change) has to
+   * reopen the track that is playing, not the one the session started with.
+   */
+  /** @internal */ public adoptSource(source: PlaybackSource): void {
+    this.source = source;
+    const nativeFormat = nativeFormatOf(source);
+    this.nativeFormat = nativeFormat;
+    this.sourceFormat = sourceFormatFor(source, nativeFormat);
+    this.sourceDurationSec = null;
+    this.args = this.buildArgBuilder();
+    const losslessSource = nativeFormat?.lossless === true ||
+      (this.sourceFormat?.codec.startsWith('pcm_') === true || this.sourceFormat?.codec === 'flac');
+    this.bitPerfect = losslessSource && this.args.isBitPerfect(this.equalizerBands);
+    this.dspApplied = !this.args.isBitPerfect(this.equalizerBands);
+  }
+
+  /** The command line that decodes `source` onto this session's PCM bus. */
+  /** @internal */ public buildBusDecoderArgs(source: PlaybackSource): string[] {
+    return new FfmpegArgBuilder(
+      source,
+      this.profile,
+      this.outputSettings,
+      false,
+      undefined,
+      nativeFormatOf(source),
+    ).buildPcmDecoderArgs();
+  }
+
+  /**
+   * Line up `source` to follow the current one without a gap. Resolves once it has taken over, with
+   * how much of the outgoing track there was, or with null when it could not be done — in which case
+   * nothing has changed and the track ends as it always did.
+   */
+  public armNext(source: PlaybackSource): Promise<GaplessSplice | null> {
+    return this.gapless.arm(source);
+  }
+
+  public disarmNext(): void {
+    this.gapless.disarm();
   }
 
   /** @internal */ public alignPcmChunk(chunk: Buffer): Buffer | null {
@@ -526,6 +586,10 @@ export class AudioSession {
         // ffmpeg decodes and resamples, we own the gain, the equalizer and the requantisation. A PCM
         // profile needs no second process at all; a codec profile gets an encoder that only encodes.
         this.starter.startEngineDsp();
+      } else if (this.gaplessCapable) {
+        // Same audio as the single process below, in two: the decoder has to be its own process for
+        // a next track to be attached behind it.
+        this.starter.startTwoStage();
       } else {
         this.starter.startSingleStage();
       }
@@ -764,6 +828,7 @@ export class AudioSession {
     }
     this.ending = true;
     this.discardSubscribersOnStop = discardSubscribers;
+    this.gapless.disarm();
     // In two-stage mode also kill the decoder; the encoder (this.process) is killed below.
     this.pipeline.terminateDecoder();
     if (this.process) {
@@ -1122,6 +1187,8 @@ export class AudioSession {
 
   /** @internal */ public cleanup(options: { suppressTermination?: boolean } = {}): void {
     const suppressTermination = options.suppressTermination === true;
+    // Whatever was lined up to follow belonged to the pipeline being taken down.
+    this.gapless.disarm();
     if (this.awaitingLateSubscriber) {
       clearTimeout(this.awaitingLateSubscriber);
       this.awaitingLateSubscriber = null;

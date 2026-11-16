@@ -384,7 +384,9 @@ export class FfmpegArgBuilder {
     if (this.source.kind === 'file') {
       const loopArgs = this.source.loop ? ['-stream_loop', '-1'] : [];
       const latencyArgs = this.isAlertSource ? FFMPEG_BUFFERED_ARGS : FFMPEG_FAST_OPEN_ARGS;
-      const realTimeArgs = this.source.realTime !== false ? ['-re'] : [];
+      // Paced exactly as the single process paces it (see `buildInputArgs`): the same source must
+      // not run at a different speed for being decoded in a process of its own.
+      const realTimeArgs = this.source.realTime !== false ? ['-re'] : this.unpacedFileRateArgs();
       return [...log, ...latencyArgs, ...loopArgs, ...realTimeArgs,
         ...buildSeekArgs(this.source.startAtSec), '-i', this.source.path, ...pcmOut];
     }
@@ -397,7 +399,8 @@ export class FfmpegArgBuilder {
       const needsTls = Boolean(this.source.tlsVerifyHost && /^https:/i.test(this.source.url));
       const tlsArgs = needsTls ? ['-tls_verify', '0', '-verifyhost', this.source.tlsVerifyHost!] : [];
       const inputFormatArgs = this.source.inputFormat ? ['-f', this.source.inputFormat] : [];
-      const realTimeArgs = this.source.realTime !== false ? ['-re'] : [];
+      const realTimeArgs =
+        this.source.realTime !== false || this.profile === 'flac' ? ['-re'] : [];
       return [
         ...log,
         ...(lowLatency ? FFMPEG_FAST_OPEN_ARGS : FFMPEG_BUFFERED_ARGS),

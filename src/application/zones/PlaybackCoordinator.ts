@@ -32,6 +32,7 @@ import { attachPlayerListeners } from '@/application/zones/playback/playerListen
 import { handleZoneCommand } from '@/application/zones/playback/commandHandlers';
 import { QueueStepDispatcher } from '@/application/zones/playback/QueueStepDispatcher';
 import { CrossfadeController } from '@/application/zones/playback/crossfadeController';
+import { GaplessController } from '@/application/zones/playback/gaplessController';
 import { PlayRequestService } from '@/application/zones/playback/playRequestService';
 import { QueueAdvanceController } from '@/application/zones/playback/queueAdvanceController';
 import {
@@ -150,6 +151,7 @@ export class PlaybackCoordinator {
   private readonly queueStepDispatcher: QueueStepDispatcher;
   private readonly zonesMissingOutput = new Set<number>();
   private readonly crossfade: CrossfadeController;
+  private readonly gapless: GaplessController;
   private readonly playRequest: PlayRequestService;
   private readonly queueAdvance: QueueAdvanceController;
   private readonly musicAssistantInputHandlers: MusicAssistantInputHandlers = {
@@ -236,6 +238,17 @@ export class PlaybackCoordinator {
       dispatchOutputs: this.dispatchOutputs.bind(this),
       startQueuePlayback: (...args) => this.startQueuePlayback(...args),
     });
+    this.gapless = new GaplessController({
+      zoneRepo: this.zoneRepo,
+      audioManager: this.audioManager,
+      audioHelpers: this.audioHelpers,
+      contentPort: this.contentPort,
+      configPort: this.configPort,
+      recentsManager: this.recentsManager,
+      log: this.log,
+      applyPatch: this.applyPatch,
+      isLocalQueueAuthority: this.isLocalQueueAuthority.bind(this),
+    });
     this.playRequest = new PlayRequestService({
       zoneRepo: this.zoneRepo,
       queueController: this.queueController,
@@ -265,6 +278,7 @@ export class PlaybackCoordinator {
       recentsManager: this.recentsManager,
       radioParadise: this.radioParadise,
       crossfade: this.crossfade,
+      gapless: this.gapless,
       log: this.log,
       applyPatch: this.applyPatch,
       isLocalQueueAuthority: this.isLocalQueueAuthority.bind(this),
@@ -465,6 +479,7 @@ export class PlaybackCoordinator {
     options?: { skipExternalStop?: boolean; startAtSec?: number },
   ): Promise<PlaybackSession | null> {
     this.crossfade.clear(ctx.id);
+    this.gapless.clear(ctx.id);
     const hasRadioParadise =
       this.radioParadise.isRadioParadiseAudiopath(audiopath) ||
       this.radioParadise.isRadioParadiseAudiopath(metadata?.audiopath ?? '') ||
@@ -1052,6 +1067,7 @@ export class PlaybackCoordinator {
 
   public onCrossfadePosition(zoneId: number, time: number, duration: number): void {
     this.crossfade.onPosition(zoneId, time, duration);
+    this.gapless.onPosition(zoneId, time, duration);
   }
 
 

@@ -236,6 +236,8 @@ export function createRuntime(): Runtime {
   const audioStreamEngine = new AudioStreamEngine(
     () => (configPort.getSystemConfig()?.audioserver?.crossfadeSec ?? 0) > 0,
     (zoneId, pcm, timestampUs) => audioAnalysis.push(Number(zoneId), pcm, timestampUs),
+    // On unless switched off; with it, a track's session is built so the next can follow it.
+    () => configPort.getSystemConfig()?.audioserver?.gapless !== false,
   );
   // Outputs whose session profile is PCM push frames into the analysis service themselves (see the
   // engine callback above). For every other output the audio only exists encoded, so the feed

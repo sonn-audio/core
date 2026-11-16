@@ -3,6 +3,7 @@ import { AudioSession } from '@/engine/audioSession';
 import type { EngineHandoffOptions, EngineLocalSession, EnginePort } from '@/ports/EnginePort';
 import type {
   EngineOutputSpec,
+  EngineInputSpec,
   EngineStartOptions,
   PlaybackSource,
   OutputProfile,
@@ -99,6 +100,14 @@ export class EngineAdapter implements EnginePort {
 
   public inlineCrossfade(...args: Parameters<EnginePort['inlineCrossfade']>): ReturnType<EnginePort['inlineCrossfade']> {
     return this.engine.inlineCrossfade(...args);
+  }
+
+  public armNext(key: SessionKey, input: EngineInputSpec): ReturnType<NonNullable<EnginePort['armNext']>> {
+    return this.engine.armNext(key, toPlaybackSource(input));
+  }
+
+  public disarmNext(key: SessionKey): void {
+    this.engine.disarmNext(key);
   }
 
   public hasSession(...args: Parameters<EnginePort['hasSession']>): boolean {

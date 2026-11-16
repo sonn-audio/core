@@ -167,3 +167,42 @@ test('audio manager runs a source at the rate it turned out to have, the next ti
   );
   assert.equal(engine.lastStartOptions?.outputs[0]?.sampleRate, 44100);
 });
+
+test('audio manager lines a next track up only when it fits the running session', async () => {
+  const armed: PlaybackSource[] = [];
+  class JoiningEngine extends EngineSpy {
+    public override getSessionStats(): EngineSessionStats[] {
+      return [{ startedAt: 7 } as EngineSessionStats];
+    }
+
+    public async armNext(_key: SessionKey, input: PlaybackSource): Promise<{ frames: number; sampleRate: number }> {
+      armed.push(input);
+      return { frames: 441000, sampleRate: 44100 };
+    }
+  }
+  const prefs = new ZoneAudioPreferences();
+  const manager = new AudioManager(new PlaybackService(new JoiningEngine()), outputNotifier, prefs);
+  prefs.setPreferredOutputSettings(1, { sampleRate: 44100, sampleRates: [44100, 48000] });
+  const flac = (path: string, sampleRate: number): PlaybackSource => ({
+    kind: 'file',
+    path,
+    nativeFormat: { sampleRate, channels: 2, bitDepth: 16, lossless: true },
+  });
+  const meta = (n: number) => ({ title: `T${n}`, artist: '', album: '', audiopath: `library:${n}`, duration: 200 });
+  manager.startExternalPlayback(1, 'library', flac('/m/1.flac', 44100), meta(1), false);
+
+  const joined = await manager.armGapless(1, flac('/m/2.flac', 44100), meta(2));
+  assert.equal(joined?.engineSession, 7);
+  assert.equal((armed[0] as { path: string }).path, '/m/2.flac');
+  assert.equal((armed[0] as { realTime?: boolean }).realTime, undefined, 'opened as a start of its own would be');
+  assert.equal((armed[0] as { knownDurationSec?: number }).knownDurationSec, 200);
+
+  // A 48 kHz track would have been given a 48 kHz session; it is left to start one.
+  assert.equal(await manager.armGapless(1, flac('/m/3.flac', 48000), meta(3)), null);
+  assert.equal(armed.length, 1);
+
+  const adopted = manager.adoptGaplessNext(1, joined!.source, meta(2), 7);
+  assert.equal(adopted?.metadata?.title, 'T2');
+  assert.equal(adopted?.elapsed, 0);
+  assert.equal(manager.adoptGaplessNext(1, joined!.source, meta(2), 8), null, 'not from another engine session');
+});

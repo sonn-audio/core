@@ -417,3 +417,20 @@ test('the two-stage decoder leaves a source that already matches the bus alone',
   // Another track handed in for a crossfade is not this builder's source; its format is not known here.
   assert.ok(matching.buildPcmDecoderArgsForSource({ kind: 'file', path: '/music/b.flac' }).includes('-af'));
 });
+
+// A decoder in a process of its own has to run at the speed the single process would have: an
+// unpaced FLAC session otherwise races to the end of the track, and a next track cannot be joined
+// onto a decoder that finished minutes ago.
+test('the two-stage decoder paces a source the way the single process does', () => {
+  const file = makeBuilder({ kind: 'file', path: '/music/a.flac', realTime: false }, 'flac');
+  const fileArgs = file.buildPcmDecoderArgs();
+  assert.equal(fileArgs[fileArgs.indexOf('-readrate') + 1], '1.1');
+  assert.ok(!fileArgs.includes('-re'));
+
+  const url = makeBuilder({ kind: 'url', url: 'https://cdn.example/a.flac', realTime: false }, 'flac');
+  assert.ok(url.buildPcmDecoderArgs().includes('-re'), 'a stream to a FLAC output is read in real time');
+
+  // A codec with a bitrate is paced from the output side, as before.
+  const mp3 = makeBuilder({ kind: 'url', url: 'https://cdn.example/a.flac', realTime: false }, 'mp3');
+  assert.ok(!mp3.buildPcmDecoderArgs().includes('-re'));
+});

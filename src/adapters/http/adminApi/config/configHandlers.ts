@@ -396,6 +396,7 @@ async function handleSystemUpdate(
           setupComplete?: boolean;
           managedPlayers?: boolean;
           crossfadeSec?: number;
+          gapless?: boolean;
         };
         miniserver?: { ip?: string; port?: number; protocol?: 'http' | 'https' };
       }
@@ -421,6 +422,7 @@ async function handleSystemUpdate(
   const rawSetupComplete = hasAudioserver ? body.audioserver!.setupComplete : undefined;
   const rawManagedPlayers = hasAudioserver ? body.audioserver!.managedPlayers : undefined;
   const rawCrossfadeSec = hasAudioserver ? body.audioserver!.crossfadeSec : undefined;
+  const rawGapless = hasAudioserver ? body.audioserver!.gapless : undefined;
   const rawMiniserverIp = hasMiniserver ? body.miniserver!.ip : undefined;
   const rawMiniserverPort = hasMiniserver ? body.miniserver!.port : undefined;
   const rawMiniserverProtocol = hasMiniserver ? body.miniserver!.protocol : undefined;
@@ -432,6 +434,7 @@ async function handleSystemUpdate(
     typeof rawSetupComplete !== 'boolean' &&
     typeof rawManagedPlayers !== 'boolean' &&
     typeof rawCrossfadeSec !== 'number' &&
+    typeof rawGapless !== 'boolean' &&
     typeof rawMiniserverIp !== 'string' &&
     typeof rawMiniserverPort !== 'number' &&
     typeof rawMiniserverProtocol !== 'string'
@@ -524,6 +527,9 @@ async function handleSystemUpdate(
     }
     if (normalizedCrossfadeSec !== null) {
       cfg.system.audioserver.crossfadeSec = normalizedCrossfadeSec;
+    }
+    if (typeof rawGapless === 'boolean') {
+      cfg.system.audioserver.gapless = rawGapless;
     }
     if (typeof rawLoxoneEnabled === 'boolean') {
       cfg.system.audioserver.loxoneEnabled = rawLoxoneEnabled;

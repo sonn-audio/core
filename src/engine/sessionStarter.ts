@@ -388,7 +388,11 @@ export class SessionStarter {
 
     const decoderArgs = s.args.buildPcmDecoderArgs();
     s.log.debug('spawning ffmpeg (decoder)', { zoneId: s.zoneId, args: decoderArgs, profile: s.profile });
-    s.pipeline.startDecoder(decoderArgs, () => s.crossfadeActive);
+    s.pipeline.startDecoder(
+      decoderArgs,
+      () => s.crossfadeActive,
+      (code) => s.gapless.takeOverFrom(s.pipeline.decoder ?? null, code),
+    );
 
     const encoderArgs = s.args.buildPcmEncoderArgs(s.equalizerBands);
     s.log.debug('spawning ffmpeg (encoder)', { zoneId: s.zoneId, args: encoderArgs, profile: s.profile });

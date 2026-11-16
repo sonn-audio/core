@@ -1,6 +1,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { PassThrough } from 'node:stream';
+import { PassThrough, type Readable } from 'node:stream';
 import { ffmpegBinary } from '@/engine/ffmpegProcess';
+
+/** Run `fn` once everything `stream` will ever produce has been handed on. */
+export function afterDrained(stream: Readable, fn: () => void): void {
+  if (stream.readableEnded || stream.destroyed) {
+    fn();
+    return;
+  }
+  stream.once('end', fn);
+}
 
 export interface TwoStagePipelineLogger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -44,20 +53,59 @@ export class TwoStagePipeline {
    * pcmPipe → encoderInput. `isCrossfadeActive` is consulted on decoder exit so
    * encoderInput is not closed mid-crossfade (crossfade will reattach a new decoder).
    */
-  public startDecoder(args: string[], isCrossfadeActive: () => boolean): void {
+  public startDecoder(
+    args: string[],
+    isCrossfadeActive: () => boolean,
+    /**
+     * Asked when the decoder is gone and no crossfade is running: true when something else is going
+     * to keep feeding the encoder — a next track attached behind this one — so it must stay open.
+     */
+    keepsEncoderOpen: (code: number | null) => boolean = () => false,
+  ): void {
     this.encoderInput = new PassThrough();
     this.pcmPipe = new PassThrough();
 
     const proc = this.spawnDecoder(args, {
-      onEnded: () => {
-        if (!isCrossfadeActive()) {
-          this.encoderInput?.end();
+      onEnded: (reason, code) => {
+        if (isCrossfadeActive() || keepsEncoderOpen(code)) {
+          return;
         }
+        if (reason === 'error') {
+          // Never started, so there is nothing of it left to wait for.
+          this.encoderInput?.end();
+          return;
+        }
+        // The process exiting is not its output having arrived: the kernel may still hold the last
+        // of what it wrote. Closing the encoder on the exit itself cut that off — the final fraction
+        // of a second of a track — so the close waits until the pipe has been read dry and the
+        // bridge behind it has passed everything on.
+        afterDrained(proc.stdout, () => {
+          const bridge = this.pcmPipe;
+          if (!bridge || (this.decoder !== undefined && this.decoder !== proc) || isCrossfadeActive()) {
+            return;
+          }
+          bridge.once('end', () => this.encoderInput?.end());
+          bridge.end();
+        });
       },
     });
 
+    this.countDecoded(proc);
     proc.stdout.pipe(this.pcmPipe, { end: false });
     this.pcmPipe.pipe(this.encoderInput, { end: false });
+  }
+
+  /** PCM bytes the current decoder has produced so far: how much of its track there has been. */
+  public decodedBytes = 0;
+
+  /** Start counting a decoder's output as the current track's. */
+  public countDecoded(proc: ChildProcessWithoutNullStreams): void {
+    this.decodedBytes = 0;
+    proc.stdout.on('data', (chunk: Buffer) => {
+      if (this.decoder === proc) {
+        this.decodedBytes += chunk.length;
+      }
+    });
   }
 
   /**
@@ -69,7 +117,7 @@ export class TwoStagePipeline {
    */
   public spawnDecoder(
     args: string[],
-    handlers: { onEnded: (reason: 'exit' | 'error') => void },
+    handlers: { onEnded: (reason: 'exit' | 'error', code: number | null) => void },
   ): ChildProcessWithoutNullStreams {
     const proc = spawn(ffmpegBinary(), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -84,11 +132,11 @@ export class TwoStagePipeline {
     });
     proc.on('exit', (code, signal) => {
       this.log.debug('decoder exited', { ...this.logContext, code, signal });
-      handlers.onEnded('exit');
+      handlers.onEnded('exit', code);
     });
     proc.on('error', (err: NodeJS.ErrnoException) => {
       this.log.warn('decoder error', { ...this.logContext, message: err.message });
-      handlers.onEnded('error');
+      handlers.onEnded('error', null);
     });
     return proc;
   }

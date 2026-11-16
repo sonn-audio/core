@@ -120,3 +120,19 @@ test('playable rates stop at what the device says is its highest', () => {
   assert.deepEqual(playableRatesUpTo(48000), [44100, 48000]);
   assert.deepEqual(playableRatesUpTo(384000).at(-1), 384000);
 });
+
+// A track may follow another on the same stream only when it would have been given that stream's
+// format anyway; otherwise it would play converted, which matching the source exists to avoid.
+test('a next track keeps the session format only when it would have been given the same one', () => {
+  const prefs = zoneWithOutput({ profile: 'flac', sampleRate: 44100, sampleRates: [44100, 48000, 96000], bitDepths: [16, 24], channels: 2 });
+  prefs.matchSourceRate(1, 96000);
+  prefs.matchSourceDepth(1, 24);
+  assert.equal(prefs.keepsFormatFor(1, 96000, 24), true, 'the next track of the same album');
+  assert.equal(prefs.keepsFormatFor(1, 44100, 16), false);
+  assert.equal(prefs.keepsFormatFor(1, 96000, 16), false);
+  assert.equal(prefs.keepsFormatFor(1, null, null), false, 'a source that states nothing would get the default');
+
+  const fixed = zoneWithOutput({ profile: 'pcm', sampleRate: 44100, channels: 2 });
+  fixed.matchSourceRate(1, 96000);
+  assert.equal(fixed.keepsFormatFor(1, 48000, 24), true, 'one fixed format: everything is converted to it either way');
+});

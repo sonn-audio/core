@@ -1,6 +1,7 @@
 import type { PassThrough } from 'node:stream';
 import type {
   EngineHandoffSpec,
+  EngineInputSpec,
   EngineStartOptions,
   OutputProfile,
   PlaybackSource,
@@ -140,6 +141,16 @@ export interface EnginePort {
       | { kind: 'pipe'; stream: NodeJS.ReadableStream; sampleRate: number; channels: number },
     durationSec: number,
   ): Promise<boolean>;
+  /**
+   * Line `input` up to follow the session's current track without a gap.
+   *
+   * Resolves when the next track has taken over — with how many frames the outgoing one turned out
+   * to have — or with null when it could not be done, in which case nothing changed and the current
+   * track ends as it would have. Optional: an engine without it simply never joins tracks.
+   */
+  armNext?(key: SessionKey, input: EngineInputSpec): Promise<{ frames: number; sampleRate: number } | null>;
+  /** Drop a track lined up with `armNext`. */
+  disarmNext?(key: SessionKey): void;
   hasSession(key: SessionKey): boolean;
   getSessionStats(key: SessionKey): EngineSessionStats[];
   setSessionTerminationHandler(handler: EngineSessionTerminationHandler): void;

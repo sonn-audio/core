@@ -7,6 +7,7 @@ import {
 } from '@/engine/audioFormat';
 import type { EnginePort, EngineSessionStats } from '@/ports/EnginePort';
 import type { SessionKey } from '@/ports/types/SessionKey';
+import type { GaplessSplice } from '@/engine/gaplessAppender';
 
 export class AudioStreamEngine {
   private readonly log = createLogger('Audio', 'Engine');
@@ -30,7 +31,42 @@ export class AudioStreamEngine {
   constructor(
     private readonly isCrossfadeEnabled: () => boolean = () => true,
     private readonly onPcmFrame?: (zoneId: SessionKey, pcm: Buffer, timestampUs: number) => void,
+    /** Whether tracks may be joined onto one another; see `GaplessAppender`. */
+    private readonly isGaplessEnabled: () => boolean = () => false,
   ) {}
+
+  /**
+   * Whether a session for `source` should be built so that a next track can follow it.
+   *
+   * Only for a track, which is to say a file or stream somebody knows the length of. A radio
+   * station has no next, and an alert is a one-off: both keep the single process they always ran.
+   */
+  private gaplessCapable(source: PlaybackSource): boolean {
+    if (!this.isGaplessEnabled() || (source.kind !== 'file' && source.kind !== 'url')) {
+      return false;
+    }
+    if (source.kind === 'file' && (source.loop || source.path.includes('/alerts/'))) {
+      return false;
+    }
+    return typeof source.knownDurationSec === 'number' && source.knownDurationSec > 0;
+  }
+
+  /**
+   * Line `source` up behind what a session is playing, to follow it without a gap. Resolves when it
+   * has taken over, or with null when it could not — the current track then ends as tracks do.
+   */
+  public async armNext(zoneId: SessionKey, source: PlaybackSource): Promise<GaplessSplice | null> {
+    const profileMap = this.sessions.get(zoneId);
+    // One stream per zone only: with several profiles each is a session decoding the source for
+    // itself, and they would have to change over as one.
+    if (!profileMap || profileMap.size !== 1) return null;
+    const session = [...profileMap.values()][0];
+    return session ? session.armNext(source) : null;
+  }
+
+  public disarmNext(zoneId: SessionKey): void {
+    this.sessions.get(zoneId)?.forEach((session) => session.disarmNext());
+  }
 
   private onSessionTerminated?: (
     zoneId: SessionKey,
@@ -73,7 +109,7 @@ export class AudioStreamEngine {
           this.sessions.delete(zoneId);
           this.onSessionTerminated?.(zoneId, stats, stopReason);
         }
-      }, effectiveOutput, equalizerBands, crossfadeEnabled, this.onPcmFrame);
+      }, effectiveOutput, equalizerBands, crossfadeEnabled, this.onPcmFrame, this.gaplessCapable(source));
       profileMap.set(profile, session);
       session.start();
       this.log.info('audio session started', { zoneId, source: source.kind, profile, crossfadeEnabled });
@@ -111,7 +147,7 @@ export class AudioStreamEngine {
           this.sessions.delete(zoneId);
           this.onSessionTerminated?.(zoneId, stats, stopReason);
         }
-      }, effectiveOutput, equalizerBands, crossfadeEnabled, this.onPcmFrame);
+      }, effectiveOutput, equalizerBands, crossfadeEnabled, this.onPcmFrame, this.gaplessCapable(source));
       profileMap.set(profile, session);
       session.start();
       this.log.info('audio session started (handoff)', { zoneId, source: source.kind, profile, crossfadeEnabled });

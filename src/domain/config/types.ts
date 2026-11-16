@@ -154,6 +154,11 @@ export interface AudioserverConfig {
   slimprotoJsonPort?: number;
   /** Global crossfade duration in seconds between songs (0 or absent = disabled). */
   crossfadeSec?: number;
+  /**
+   * Let consecutive tracks run into each other without a gap. On unless set to false; crossfade,
+   * when on, takes its place.
+   */
+  gapless?: boolean;
 }
 
 export interface AudioserverExtensionConfig {

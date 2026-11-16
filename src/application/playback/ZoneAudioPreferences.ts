@@ -171,7 +171,39 @@ export class ZoneAudioPreferences {
     return this.httpPreferences.get(zoneId);
   }
 
+  /**
+   * Whether a source of this rate and depth would be given the format the zone is running at now.
+   * Null stands for a source that states none, which gets the output's default.
+   */
+  public keepsFormatFor(zoneId: number, sourceRate: number | null, sourceDepth: number | null): boolean {
+    const base = this.baseOutputSettings(zoneId);
+    const current = this.getEffectiveOutputSettings(zoneId);
+    const rates = this.playableRates.get(zoneId);
+    const depths = this.playableDepths.get(zoneId);
+    const rate = (rates && sourceRate ? pickSessionRate(sourceRate, rates) : null) ?? base.sampleRate;
+    const depth = (depths && sourceDepth ? pickSessionDepth(sourceDepth, depths) : null) ?? base.pcmBitDepth;
+    return rate === current.sampleRate && depth === current.pcmBitDepth;
+  }
+
   public getEffectiveOutputSettings(zoneId: number): AudioOutputSettings {
+    let result = this.baseOutputSettings(zoneId);
+    const matchedRate = this.sourceMatchedRate.get(zoneId);
+    if (matchedRate !== undefined && matchedRate !== result.sampleRate) {
+      result = { ...result, sampleRate: matchedRate };
+    }
+    const matchedDepth = this.sourceMatchedDepth.get(zoneId);
+    if (matchedDepth !== undefined && matchedDepth !== result.pcmBitDepth) {
+      result = { ...result, pcmBitDepth: matchedDepth };
+    }
+    const transientGain = this.transientGainDb.get(zoneId);
+    if (transientGain !== undefined) {
+      result = { ...result, fixedGainDb: (result.fixedGainDb ?? 0) + transientGain };
+    }
+    return result;
+  }
+
+  /** The output's own settings, before anything is matched to the source or added for an alert. */
+  private baseOutputSettings(zoneId: number): AudioOutputSettings {
     const outputOverride = this.outputOverrides.get(zoneId);
     let result: AudioOutputSettings;
     if (outputOverride && Object.keys(outputOverride).length > 0) {
@@ -188,18 +220,6 @@ export class ZoneAudioPreferences {
       result = { ...audioOutputSettings, ...(rest as Partial<AudioOutputSettings>) };
     } else {
       result = audioOutputSettings;
-    }
-    const matchedRate = this.sourceMatchedRate.get(zoneId);
-    if (matchedRate !== undefined && matchedRate !== result.sampleRate) {
-      result = { ...result, sampleRate: matchedRate };
-    }
-    const matchedDepth = this.sourceMatchedDepth.get(zoneId);
-    if (matchedDepth !== undefined && matchedDepth !== result.pcmBitDepth) {
-      result = { ...result, pcmBitDepth: matchedDepth };
-    }
-    const transientGain = this.transientGainDb.get(zoneId);
-    if (transientGain !== undefined) {
-      result = { ...result, fixedGainDb: (result.fixedGainDb ?? 0) + transientGain };
     }
     return result;
   }
