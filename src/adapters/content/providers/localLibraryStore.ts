@@ -17,6 +17,9 @@ export interface TrackInsert {
   duration?: number;
   /** The file's own audio format, when the scan could read it. See {@link TrackSourceFormat}. */
   format?: TrackSourceFormat | null;
+  /** Disc and track number; zero for one the scan looked for and did not find. */
+  discNo?: number;
+  trackNo?: number;
 }
 
 /**
@@ -56,7 +59,24 @@ export interface StoredTrack {
   bit_depth?: number | null;
   channels?: number | null;
   lossless?: number | null;
+  /** Null on rows written before the scan read positions; zero when it looked and found none. */
+  disc_no?: number | null;
+  track_no?: number | null;
 }
+
+/**
+ * An album in the order it was made: disc, then track.
+ *
+ * The folder sits between the two. Discs that are told apart only by living in separate folders
+ * carry no disc number at all, and without it their tracks would interleave — 1, 1, 2, 2 — where
+ * sorting by path used to keep them whole. A track with no number goes after the numbered ones,
+ * in path order, which is all the order it has.
+ */
+const ALBUM_TRACK_ORDER = `
+  COALESCE(NULLIF(disc_no, 0), 1),
+  LOWER(rtrim(rel_path, replace(rel_path, '/', ''))),
+  COALESCE(NULLIF(track_no, 0), 1000000),
+  LOWER(rel_path)`;
 
 export interface PagedResult<T> {
   total: number;
@@ -262,6 +282,8 @@ export class LocalLibraryStore {
       bitDepth: track.format?.bitDepth ?? null,
       channels: track.format?.channels ?? null,
       lossless: track.format ? (track.format.lossless ? 1 : 0) : null,
+      discNo: track.discNo ?? 0,
+      trackNo: track.trackNo ?? 0,
     };
     // A retag can move a track to a different album artist; the group it left
     // has to be recomputed too or it keeps a row with a stale track count.
@@ -272,9 +294,9 @@ export class LocalLibraryStore {
       .get(track.storageId, track.relPath) as { group_artist: string } | undefined;
     const stmt = db.prepare(`
       INSERT INTO tracks (storage_id, rel_path, title, album, artist, album_artist, audiopath, cover, mtime, size, duration,
-        codec, sample_rate, bit_depth, channels, lossless)
+        codec, sample_rate, bit_depth, channels, lossless, disc_no, track_no)
       VALUES (@storageId, @relPath, @title, @album, @artist, @albumArtist, @audiopath, @cover, @mtime, @size, @duration,
-        @codec, @sampleRate, @bitDepth, @channels, @lossless)
+        @codec, @sampleRate, @bitDepth, @channels, @lossless, @discNo, @trackNo)
       ON CONFLICT(storage_id, rel_path) DO UPDATE SET
         title = excluded.title,
         album = excluded.album,
@@ -289,7 +311,9 @@ export class LocalLibraryStore {
         sample_rate = excluded.sample_rate,
         bit_depth = excluded.bit_depth,
         channels = excluded.channels,
-        lossless = excluded.lossless
+        lossless = excluded.lossless,
+        disc_no = excluded.disc_no,
+        track_no = excluded.track_no
     `);
     stmt.run(params);
     // Keep the rollup in step with the row just written, so a caller that inserts
@@ -567,7 +591,7 @@ export class LocalLibraryStore {
         `
         SELECT * FROM tracks
         WHERE storage_id = ? AND ${ALBUM_GROUP_EXPR} = ? AND album = ?
-        ORDER BY LOWER(rel_path)
+        ORDER BY ${ALBUM_TRACK_ORDER}
         LIMIT ? OFFSET ?
       `,
       )
@@ -592,7 +616,7 @@ export class LocalLibraryStore {
         `
         SELECT * FROM tracks
         WHERE storage_id = ? AND artist = ?
-        ORDER BY LOWER(album), LOWER(rel_path)
+        ORDER BY LOWER(album), ${ALBUM_TRACK_ORDER}
         LIMIT ? OFFSET ?
       `,
       )
@@ -1384,6 +1408,9 @@ export class LocalLibraryStore {
       ['bit_depth', 'INTEGER'],
       ['channels', 'INTEGER'],
       ['lossless', 'INTEGER'],
+      // Not a format, but the same story: only the file knows, so old rows wait for a re-read.
+      ['disc_no', 'INTEGER'],
+      ['track_no', 'INTEGER'],
     ];
     for (const [name, type] of additions) {
       if (!present.has(name)) {

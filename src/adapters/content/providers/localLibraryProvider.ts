@@ -38,6 +38,7 @@ import {
   type TrackSourceFormat,
 } from '@/adapters/content/providers/localLibraryStore';
 import type { PlaylistEntry } from '@/ports/ContentTypes';
+import { resolveTrackPosition } from '@/adapters/content/providers/trackPosition';
 
 const FILE_TYPE_FOLDER = 1;
 const FILE_TYPE_FILE = 2;
@@ -110,6 +111,9 @@ interface SafeTags {
   format?: TrackSourceFormat | null;
   /** Whether the parse found an audio stream; unset when the file could not be parsed at all. */
   hasAudioStream?: boolean;
+  /** Disc and track number as tagged; absent when the tags do not say. */
+  disc?: number | null;
+  track?: number | null;
 }
 
 /** `music-metadata`'s track type for an audio stream (its `TrackType.audio`, which it does not export). */
@@ -1445,10 +1449,15 @@ export class LocalLibraryProvider {
     // file is. Nothing can backfill it from the database — the answer is in the file — so a row with
     // no codec is re-read once. Without this, an upgraded library would keep resampling every track
     // it already had until each file happened to change.
+    //
+    // The same goes for a row from before track positions were read: its album would stay in file
+    // name order until then. A position that was looked for and not found is stored as zero, so
+    // this asks each such file once and not on every scan.
     const known = this.store.findByStoragePath(storageId, relPath);
     if (
       known &&
       known.codec &&
+      known.track_no != null &&
       known.size === fileStat.size &&
       known.mtime === Math.floor(fileStat.mtimeMs)
     ) {
@@ -1467,6 +1476,7 @@ export class LocalLibraryProvider {
     }
     const baseInfo = createTrackFromPath(relPath);
     const artist = metadata.artist || baseInfo.artist;
+    const position = resolveTrackPosition(metadata, relPath);
 
     const track: LocalTrack = {
       id: relPath,
@@ -1497,6 +1507,8 @@ export class LocalLibraryProvider {
       size: fileStat?.size,
       duration: track.duration,
       format: metadata.format,
+      discNo: position.disc,
+      trackNo: position.track,
     });
     return true;
   }
@@ -1578,6 +1590,8 @@ export class LocalLibraryProvider {
         duration: metadata.format.duration ? Math.round(metadata.format.duration) : undefined,
         format: toTrackSourceFormat(metadata.format),
         hasAudioStream: hasAudioStream(metadata.format),
+        disc: metadata.common.disk?.no ?? null,
+        track: metadata.common.track?.no ?? null,
       };
     } catch {
       return { title: '', album: '', artist: '', albumArtist: '', compilation: false };

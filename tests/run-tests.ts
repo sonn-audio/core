@@ -54,6 +54,7 @@ import './sonnClientApi.test';
 import './beoremoteKeys.test';
 import './nodeVersionGuard.test';
 import './localLibraryStore.rollup.test';
+import './trackPosition.test';
 import './airplayAdvertisement.test';
 import './airplaySessionEnd.test';
 import './bareSpotifyId.test';

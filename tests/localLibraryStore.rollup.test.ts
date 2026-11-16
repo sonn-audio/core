@@ -123,3 +123,45 @@ test('deleteTracksMissingFrom leaves other storages untouched', async () => {
     assert.equal(store.getStatsForStorage('nas1').tracks, 1);
   });
 });
+
+// An album used to be listed by file name, compared as text: `10 - x` sorted before `2 - y`,
+// files named after their titles came out alphabetically, and two discs in one folder interleaved.
+test('album tracks come in disc and track order, not file name order', async () => {
+  await withStore((store) => {
+    const rows: Array<[string, number, number]> = [
+      ['local/a/Zebra.mp3', 1, 1],
+      ['local/a/Apple.mp3', 1, 2],
+      ['local/a/10 - Tenth.mp3', 1, 10],
+      ['local/a/Bonus.mp3', 2, 1],
+      ['local/a/untagged.mp3', 0, 0],
+    ];
+    rows.forEach(([relPath, discNo, trackNo], index) =>
+      store.insertTrack(track({ relPath, audiopath: `ap-${index}`, discNo, trackNo })),
+    );
+    const listed = store.getTracksForAlbum('local', 'Artist', 'Album', 0, 10).items.map((row) => row.rel_path);
+    assert.deepEqual(listed, [
+      'local/a/Zebra.mp3',
+      'local/a/Apple.mp3',
+      'local/a/10 - Tenth.mp3',
+      'local/a/untagged.mp3',
+      'local/a/Bonus.mp3',
+    ]);
+  });
+});
+
+test('discs kept apart only by their folders stay whole', async () => {
+  await withStore((store) => {
+    // No disc number anywhere, and folder names that say nothing either.
+    const rows: Array<[string, number]> = [
+      ['local/a/first/1.mp3', 1],
+      ['local/a/first/2.mp3', 2],
+      ['local/a/second/1.mp3', 1],
+      ['local/a/second/2.mp3', 2],
+    ];
+    rows.forEach(([relPath, trackNo], index) =>
+      store.insertTrack(track({ relPath, audiopath: `ap-${index}`, discNo: 0, trackNo })),
+    );
+    const listed = store.getTracksForAlbum('local', 'Artist', 'Album', 0, 10).items.map((row) => row.rel_path);
+    assert.deepEqual(listed, rows.map(([relPath]) => relPath));
+  });
+});
