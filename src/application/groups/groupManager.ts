@@ -17,6 +17,7 @@ import type { AudioSyncEventPlayer } from '@/application/groups/types/audioSyncE
 import type { AudioSyncGroupPayload } from '@/application/groups/types/AudioSyncGroupPayload';
 import type { GroupRecord } from '@/application/groups/types/groupRecord';
 import type { FixedGroupDefinition } from '@/ports/types/groups';
+import { GroupVolumeBalance } from '@/application/groups/groupVolumeBalance';
 
 type GroupChangeEvent = 'new' | 'update' | 'remove';
 
@@ -30,6 +31,7 @@ function clampVolume(value: unknown): number {
 
 export class GroupManager {
   private readonly log = createLogger('Groups', 'Manager');
+  private readonly volumeBalance = new GroupVolumeBalance();
   private readonly lastSyncAt = new Map<number, number>();
   private notifier: NotifierPort;
   private zoneManager: ZoneManagerFacade | null = null;
@@ -234,20 +236,23 @@ export class GroupManager {
       return;
     }
 
-    const currentLeaderVolume = clampVolume(leaderState.volume);
-    const delta = target - currentLeaderVolume;
-
-    const memberIds = new Set<number>([group.leader, ...group.members]);
-    for (const memberId of memberIds) {
+    const volumes = new Map<number, number>();
+    for (const memberId of new Set<number>([group.leader, ...group.members])) {
       const state = this.zones.getState(memberId);
       if (!state) {
         this.log.debug('skip volume sync for unknown zone', { memberId });
         continue;
       }
-      const current = clampVolume(state.volume);
-      const next = clampVolume(current + delta);
-      this.setZoneVolume(memberId, next);
+      volumes.set(memberId, clampVolume(state.volume));
     }
+    const planned = this.volumeBalance.plan(group.leader, clampVolume(target), volumes);
+    planned.forEach((level, memberId) => this.setZoneVolume(memberId, level));
+    // Read back rather than trust the plan: a zone may cap the level at its own maximum.
+    const reached = new Map<number, number>();
+    for (const memberId of planned.keys()) {
+      reached.set(memberId, clampVolume(this.zones.getState(memberId)?.volume));
+    }
+    this.volumeBalance.applied(group.leader, reached);
 
     this.broadcastGroupState();
   }

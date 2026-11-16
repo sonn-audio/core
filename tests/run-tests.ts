@@ -58,6 +58,7 @@ import './trackPosition.test';
 import './folderCover.test';
 import './rateLimit.test';
 import './soundcloudTranscodings.test';
+import './groupVolumeBalance.test';
 import './airplayAdvertisement.test';
 import './airplaySessionEnd.test';
 import './bareSpotifyId.test';
