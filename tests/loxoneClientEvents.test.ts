@@ -271,6 +271,26 @@ test('client events: audio_event parses for a playing, a stopped and a line-in z
   );
 });
 
+test('client events: a failed search answers every scope with a ticket the client can read', () => {
+  // `GlobalSearchTicketResponseScheme` (audio-schemas.txt:1583): `type` and `unique` sit beside
+  // the result, never inside it.
+  const frames = emitted((n) =>
+    n.notifyGlobalSearchError('local:track#50|spotify@acc1:track#50,album#50|tunein:station#50', 'gs-1'),
+  );
+  assert.deepEqual(
+    frames.map((frame) => [frame.type, frame.unique]),
+    [
+      ['local', 'gs-1'],
+      ['spotify', 'gs-1'],
+      ['tunein', 'gs-1'],
+    ],
+  );
+  assert.deepEqual(frames[0]!.globalsearch_result, {});
+  assert.deepEqual(frames[1]!.globalsearch_result, { error: 1, result: { user: 'acc1' } });
+  assert.deepEqual(frames[2]!.globalsearch_result, {});
+  assert.equal(emitted((n) => n.notifyGlobalSearchError('', 'gs-2')).length, 0);
+});
+
 test('client events: every repeat mode we can hold is one the client knows', () => {
   // `plrepeat: z.nativeEnum(RepeatMode)` — 0, 1 or 3. A 2 is not "unknown repeat", it is an
   // audio_event the client throws away, and with it the zone's whole state update.

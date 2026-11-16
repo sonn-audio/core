@@ -33,7 +33,7 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
       const immediate = buildResponse(command, 'globalsearch', { unique });
 
       if (!source || !query) {
-        notifier.notifyGlobalSearchError(source || 'unknown', unique);
+        notifier.notifyGlobalSearchError(source, unique);
         return immediate;
       }
 
@@ -54,7 +54,7 @@ export function createGlobalSearchHandlers(contentManager: ContentManager, notif
             unique,
           );
         } catch (error) {
-          notifier.notifyGlobalSearchError(source || 'unknown', unique);
+          notifier.notifyGlobalSearchError(source, unique);
           reportRefusal(error, accountOfSource(source));
         }
       })();

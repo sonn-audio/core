@@ -510,15 +510,26 @@ export class LoxoneWsNotifier {
     this.emit(payload, 'globalsearch_result', { providerId, unique });
   }
 
-  public notifyGlobalSearchError(providerId: string, unique: string): void {
-    const payload = {
-      globalsearch_result: {
-        error: 1,
+  /**
+   * Tells the client a search came to nothing, one ticket per scope that was asked for
+   * (`local:track#50|spotify@<account>:track#50`). A ticket is only read with `type` and
+   * `unique` beside the result, and only a streaming service has a way to say "failed" —
+   * the library and the radio answer with nothing found.
+   */
+  public notifyGlobalSearchError(source: string, unique: string): void {
+    for (const scope of source.split('|')) {
+      const [providerId = '', user = ''] = (scope.split(':')[0] ?? '').split('@');
+      if (!providerId) {
+        continue;
+      }
+      const ownSchema = ['local', 'library', 'tunein', 'radio'].includes(providerId.toLowerCase());
+      const payload = {
+        globalsearch_result: ownSchema ? {} : { error: 1, result: { user: user || 'nouser' } },
         type: providerId,
         unique,
-      },
-    };
-    this.emit(payload, 'globalsearch_error', { providerId, unique });
+      };
+      this.emit(payload, 'globalsearch_error', { providerId, unique });
+    }
   }
 
   public notifyAudioSyncEvent(payload: AudioSyncGroupPayload[]): void {
