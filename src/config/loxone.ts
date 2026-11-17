@@ -40,7 +40,9 @@ export interface LoxoneHttpConfig {
 // 18.1.0.0 is the lowest that makes it offer the loudness switch; everything else it gates sits
 // at 17.0 or below.
 const FIRMWARE_VERSION_NUMBER = '18.1.0.0';
-const MDNS_VERSION = '16.00.09.16';
+const MDNS_VERSION = FIRMWARE_VERSION_NUMBER.split('.')
+  .map((part) => part.padStart(2, '0'))
+  .join('.');
 
 const DEFAULT_FIRMWARE_VERSION = `LWSS V ${FIRMWARE_VERSION_NUMBER}`;
 const DEFAULT_API_VERSION = '~API:1.6~';

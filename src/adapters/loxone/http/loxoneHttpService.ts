@@ -11,6 +11,8 @@ import { createLogger } from '@/shared/logging/logger';
 import type { LoxoneHttpConfig } from '@/config/loxone';
 import { LoxoneCommandProcessor } from '@/adapters/loxone/http/commandProcessor';
 import { LoxoneUdpDiscovery } from '@/adapters/loxone/http/loxoneUdpDiscovery';
+import { LoxoneMdnsAdvertiser } from '@/adapters/loxone/http/loxoneMdnsAdvertiser';
+import type { MdnsPort } from '@/ports/MdnsPort';
 import { createDualProtocolServer } from '@/adapters/loxone/http/protocolDispatcher';
 import { loadOrGenerateSelfSignedTls, type TlsContext } from '@/adapters/loxone/http/tlsContext';
 import type { LoxoneServerOptions } from '@/adapters/loxone/http/types';
@@ -44,6 +46,8 @@ export interface LoxoneHttpServiceOptions {
   /** The current groups, so the connect snapshot can announce them too. */
   groups: GroupSyncSnapshotPort;
   configPort: ConfigPort;
+  /** Announces the server to a network search; without it only a UDP probe finds it. */
+  mdns?: MdnsPort;
 }
 
 /**
@@ -54,12 +58,14 @@ export class LoxoneHttpService {
   private readonly processor: LoxoneCommandProcessor;
   private readonly servers: ServerRuntime[] = [];
   private readonly udpDiscovery = new LoxoneUdpDiscovery();
+  private readonly mdnsAdvertiser: LoxoneMdnsAdvertiser | null;
 
   constructor(
     private readonly config: LoxoneHttpConfig,
     private readonly options: LoxoneHttpServiceOptions,
   ) {
     this.processor = options.processor;
+    this.mdnsAdvertiser = options.mdns ? new LoxoneMdnsAdvertiser(options.mdns) : null;
   }
 
   public async start(): Promise<void> {
@@ -71,6 +77,7 @@ export class LoxoneHttpService {
     }
 
     this.udpDiscovery.start(this.config, this.options.configPort);
+    this.mdnsAdvertiser?.start(this.config, this.options.configPort);
 
     this.log.info('loxone servers ready', {
       ports: this.config.servers.map((s) => s.port).join(', '),
@@ -80,6 +87,7 @@ export class LoxoneHttpService {
 
   public async stop(): Promise<void> {
     this.udpDiscovery.stop();
+    this.mdnsAdvertiser?.stop();
     const runtimes = [...this.servers];
     this.servers.length = 0;
     // Drop live sessions BEFORE closing: the Loxone app holds a WebSocket open and
