@@ -219,6 +219,32 @@ test('a command Sonos refuses because the group moved is sent again after a reco
   assert.equal(attempts, 2, 'the first try and one retry');
 });
 
+test('a following speaker is stopped in the group it is in now, not the one it was in (#430)', async () => {
+  // The soundbar went to TV and Sonos made the speaker that followed it a group of its own,
+  // still on our stream. Our view still had the old group, so the stop reached the soundbar.
+  const { controller } = createController();
+  const stopped: string[] = [];
+  controller.client = {
+    player: { isCoordinator: false, group: { stop: async () => void stopped.push('soundbar group') } },
+  };
+  controller.connect = async () => {
+    controller.client = {
+      player: { isCoordinator: true, group: { stop: async () => void stopped.push('own group') } },
+    };
+  };
+  await controller.dispatchCommand('stop');
+  assert.deepEqual(stopped, ['own group']);
+
+  // A coordinator is stopped straight away.
+  let reconnects = 0;
+  controller.connect = async () => {
+    reconnects += 1;
+  };
+  await controller.dispatchCommand('stop');
+  assert.equal(reconnects, 0);
+  assert.deepEqual(stopped, ['own group', 'own group']);
+});
+
 test('our stream is known by the service id or object id Sonos hands back (#430)', () => {
   // lars909's soundbar echoed our container's name but not `id.serviceId`, so our stream was
   // never recognised and TV audio never counted as a takeover.

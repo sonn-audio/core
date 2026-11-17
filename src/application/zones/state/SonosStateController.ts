@@ -633,6 +633,13 @@ export class SonosStateController implements ZoneStateController {
     action: 'play' | 'pause' | 'stop' | 'next' | 'previous',
     retried = false,
   ): Promise<void> {
+    if (action === 'stop' && !retried && this.client?.player?.isCoordinator === false) {
+      // A speaker that follows another is stopped when its leader went to another source (#430).
+      // Sonos has then just made it a group of its own, still playing our stream, while the view
+      // here can take seconds to catch up, and the stop went to the old group: the soundbar on TV.
+      // Rebuild the view first, so the stop reaches the group the speaker is in now.
+      await this.connect();
+    }
     const group = this.client?.player?.group;
     if (!group) {
       // handleCommand() already declines in this case; this only catches a group disappearing
