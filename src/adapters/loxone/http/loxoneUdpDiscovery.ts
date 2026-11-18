@@ -101,61 +101,46 @@ export class LoxoneUdpDiscovery {
   }
 
   private buildPayload(config: LoxoneHttpConfig, configPort: ConfigPort, tv: string, di: string): string {
-    const identity = resolveDiscoveryIdentity(config, configPort);
+    const systemConfig = configPort.getSystemConfig();
+    const configuredName = systemConfig?.audioserver?.name?.trim();
+    const friendlyName =
+      configuredName && configuredName.toLowerCase() !== 'unconfigured'
+        ? configuredName
+        : config.mdns.name || 'sonn-core';
+    const hostname = this.sanitizeHostname(config.mdns.hostname || friendlyName);
+    const macId = systemConfig?.audioserver?.macId?.trim();
+
     const payload = {
       t: 'Audioserver',
       tv,
-      n: identity.name,
-      s: identity.mac,
+      n: friendlyName,
+      s: this.formatMacAddress(macId || config.macAddress),
       v: config.firmwareVersionNumber,
-      p: String(identity.port),
-      hn: identity.hostname,
+      p: String(this.resolveUdpPort(config)),
+      hn: hostname,
       di,
     };
 
     return JSON.stringify(payload);
   }
-}
 
-/** How this server names itself to a search, whichever way the search is made. */
-export interface DiscoveryIdentity {
-  /** The name shown in the search result: the one set in Loxone, else the default. */
-  name: string;
-  /** Host label, without `.local`. */
-  hostname: string;
-  /** The server's MAC, colon-separated. */
-  mac: string;
-  /** The port the app and Loxone Config talk to. */
-  port: number;
-}
-
-export function resolveDiscoveryIdentity(config: LoxoneHttpConfig, configPort: ConfigPort): DiscoveryIdentity {
-  const systemConfig = configPort.getSystemConfig();
-  const configuredName = systemConfig?.audioserver?.name?.trim();
-  const name =
-    configuredName && configuredName.toLowerCase() !== 'unconfigured'
-      ? configuredName
-      : config.mdns.name || 'sonn-core';
-  const macId = systemConfig?.audioserver?.macId?.trim();
-  const appServer = config.servers.find((server) => server.name === 'appHttp');
-  return {
-    name,
-    hostname: sanitizeHostname(config.mdns.hostname || name),
-    mac: formatMacAddress(macId || config.macAddress),
-    port: appServer?.port ?? config.mdns.port,
-  };
-}
-
-function sanitizeHostname(value: string): string {
-  const trimmed = value.trim();
-  const withoutLocal = trimmed.endsWith('.local') ? trimmed.slice(0, -6) : trimmed;
-  return withoutLocal.replace(/\s+/g, '-').replace(/\./g, '-') || 'audioserver';
-}
-
-function formatMacAddress(raw: string): string {
-  const normalized = raw.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
-  if (normalized.length !== 12) {
-    return raw;
+  private sanitizeHostname(value: string): string {
+    const trimmed = value.trim();
+    const withoutLocal = trimmed.endsWith('.local') ? trimmed.slice(0, -6) : trimmed;
+    return withoutLocal.replace(/\s+/g, '-').replace(/\./g, '-') || 'audioserver';
   }
-  return normalized.match(/.{2}/g)?.join(':') ?? raw;
+
+  private formatMacAddress(raw: string): string {
+    const normalized = raw.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+    if (normalized.length !== 12) {
+      return raw;
+    }
+    return normalized.match(/.{2}/g)?.join(':') ?? raw;
+  }
+
+  private resolveUdpPort(config: LoxoneHttpConfig): number {
+    const appServer = config.servers.find((server) => server.name === 'appHttp');
+    return appServer?.port ?? config.mdns.port;
+  }
+
 }

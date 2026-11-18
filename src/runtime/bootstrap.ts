@@ -644,7 +644,6 @@ export function createRuntime(): Runtime {
         zoneManager,
         groups: groupManager,
         configPort,
-        mdns: mdnsService,
       });
       loxoneService = service;
       try {
