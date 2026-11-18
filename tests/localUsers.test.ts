@@ -7,6 +7,7 @@ import {
   saveUser,
   hasAdminUser,
   hasUsers,
+  isAdminLoginRequired,
   listUsers,
   storedPassword,
   verifyUser,
@@ -62,6 +63,23 @@ test('local users: admin defaults to false', () => {
   ]);
   assert.equal(hasAdminUser(port), true);
   assert.equal(hasAdminUser(makePort([{ username: 'a', password: 'p' }]).port), false);
+});
+
+test('local users: a server connected to a Miniserver asks for a login without an admin account (#443)', () => {
+  const connected = (users: unknown, loxoneEnabled: boolean) => {
+    const { port, cfg } = makePort(users, true);
+    (cfg.system.audioserver as { loxoneEnabled?: boolean }).loxoneEnabled = loxoneEnabled;
+    return port;
+  };
+  // Its Loxone users log in with their Miniserver credentials.
+  assert.equal(isAdminLoginRequired(connected([], true)), true);
+  assert.equal(isAdminLoginRequired(connected(undefined, true)), true);
+  // With Loxone off, nobody could log in that way, so the box stays open until an admin exists.
+  assert.equal(isAdminLoginRequired(connected([], false)), false);
+  // A fresh box stays open just long enough to create the first admin.
+  assert.equal(isAdminLoginRequired(makePort([]).port), false);
+  // Once an admin exists, always.
+  assert.equal(isAdminLoginRequired(makePort([{ username: 'b', password: 'p', admin: true }]).port), true);
 });
 
 test('local users: verification accepts the right password and nothing else', () => {

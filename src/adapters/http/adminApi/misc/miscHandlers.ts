@@ -27,7 +27,7 @@ import { logManager } from '@/shared/logging/logger';
 import { logBuffer } from '@/shared/logging/logBuffer';
 import type { LogLevel } from '@/types/logLevel';
 import type { ConfigPort } from '@/ports/ConfigPort';
-import { hasAdminUser } from '@/application/auth/localUsers';
+import { hasAdminUser, isAdminLoginRequired } from '@/application/auth/localUsers';
 import { extractSessionId } from '@/adapters/http/adminApi/auth/adminSessionStore';
 import type { GroupManagerReadPort } from '@/application/groups/groupManager';
 import type { SnapcastCore } from '@/adapters/outputs/snapcast/snapcastCore';
@@ -404,10 +404,10 @@ export function buildMiscRoutes(deps: MiscHandlerDeps): Route[] {
  * an authenticated route would only ever return 401, which cannot distinguish "log in"
  * from "fresh install".
  *
- * That bootstrap needs three flags. Everything else — the serial, the Miniserver's IP
+ * That bootstrap needs four flags. Everything else — the serial, the Miniserver's IP
  * and serial, the installed package inventory — is only interesting once you are in,
  * and was readable by anyone on the network for as long as the whole payload was
- * public. So an unauthenticated caller gets the three flags and nothing more.
+ * public. So an unauthenticated caller gets the four flags and nothing more.
  */
 function handleInfo(
   req: IncomingMessage,
@@ -424,13 +424,16 @@ function handleInfo(
       setupComplete: cfg.system.audioserver.setupComplete === true,
       // Drives the admin UI: a create-admin welcome when false, login when true.
       hasAdminUser: hasAdminUser(deps.configPort),
+      // Whether the admin UI shows its login, also true on a server connected to a Miniserver
+      // that has no admin account here yet: its Loxone users log in (#443).
+      loginRequired: isAdminLoginRequired(deps.configPort),
     };
 
     if (!deps.isAuthenticated(req)) {
       // A caller that still brings a session which has run out is a UI that thinks it is signed
-      // in. The bootstrap answer looked fine to it, so it sat there online with no version, no
-      // uptime and nothing installed, until reloaded (#443). Its 401 sends it to the login.
-      if (bootstrap.hasAdminUser && extractSessionId(req)) {
+      // in. The bootstrap answer looked fine to it, so it sat there with no version, no uptime
+      // and nothing installed, until reloaded. Its 401 sends it to the login.
+      if (bootstrap.loginRequired && extractSessionId(req)) {
         deps.sendJson(res, 401, { error: 'auth-required' });
         return;
       }

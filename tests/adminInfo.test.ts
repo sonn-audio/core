@@ -6,13 +6,17 @@ import { isPublicAdminApiRoute } from '../src/adapters/http/adminApi/auth/adminS
 
 // /info answers without a session because the Admin UI has to know whether to show a
 // login form or a create-admin welcome before it can authenticate. That bootstrap needs
-// three flags; the rest of the payload used to be readable by anyone on the network.
+// four flags; the rest of the payload used to be readable by anyone on the network.
 
 const MAC = '000C290E5497';
 const MINISERVER_IP = '192.168.1.200';
 const MINISERVER_SERIAL = '504F9411157A';
 
-function fetchInfo(authenticated: boolean, req: Partial<IncomingMessage> = { headers: {} }): { status?: number; body?: any } {
+function fetchInfo(
+  authenticated: boolean,
+  req: Partial<IncomingMessage> = { headers: {} },
+  users: unknown[] = [{ username: 'admin', password: 'secret', admin: true }],
+): { status?: number; body?: any } {
   const sent: { status?: number; body?: any } = {};
   const deps = {
     isAuthenticated: () => authenticated,
@@ -31,7 +35,7 @@ function fetchInfo(authenticated: boolean, req: Partial<IncomingMessage> = { hea
           miniserver: { ip: MINISERVER_IP, serial: MINISERVER_SERIAL },
           // hasAdminUser reads system.users, and needs a usable account: both a
           // username and a password, with admin set.
-          users: [{ username: 'admin', password: 'secret', admin: true }],
+          users,
         },
         zones: [{ id: 1 }],
       }),
@@ -62,9 +66,18 @@ test('info answers without a session, so the UI can pick login or first-run', ()
   assert.equal(sent.body.hasAdminUser, true);
   assert.equal(sent.body.paired, true);
   assert.equal(sent.body.setupComplete, true);
+  assert.equal(sent.body.loginRequired, true);
 });
 
-test('info sends a UI whose session ran out back to the login (#443)', () => {
+test('info asks for a login on a server connected to a Miniserver without an admin account (#443)', () => {
+  // Its Loxone users log in with their Miniserver credentials. It used to let anyone in.
+  const sent = fetchInfo(false, { headers: {} }, []);
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.hasAdminUser, false);
+  assert.equal(sent.body.loginRequired, true);
+});
+
+test('info sends a UI whose session ran out back to the login', () => {
   // It still sends the session it had. The bootstrap answer kept it on screen as if signed in,
   // with no version, no uptime and nothing installed.
   const expired = fetchInfo(false, { headers: { authorization: 'Bearer expired-session' } });
@@ -75,11 +88,11 @@ test('info sends a UI whose session ran out back to the login (#443)', () => {
   assert.equal(cookie.status, 401);
 });
 
-test('info tells an anonymous caller nothing beyond those three flags', () => {
+test('info tells an anonymous caller nothing beyond those four flags', () => {
   const sent = fetchInfo(false);
   assert.deepEqual(
     Object.keys(sent.body).sort(),
-    ['hasAdminUser', 'paired', 'setupComplete'],
+    ['hasAdminUser', 'loginRequired', 'paired', 'setupComplete'],
     'anything else is only interesting once you are in',
   );
 
@@ -122,7 +135,7 @@ test('info still reports everything to an authenticated caller', () => {
 test('only the routes that must answer before login are exempt from auth', () => {
   const exempt: Array<[string, string]> = [
     // Says whether to show a login form or a create-admin welcome. Answers with the
-    // three flags that decide only that; the rest of the payload needs a session.
+    // four flags that decide only that; the rest of the payload needs a session.
     ['/info', 'GET'],
     // Self-guarding: refuses once an admin exists.
     ['/auth/setup', 'POST'],

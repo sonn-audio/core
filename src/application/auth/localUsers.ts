@@ -55,6 +55,18 @@ export function hasAdminUser(config: ConfigPort): boolean {
   return accounts(config).some((user) => user.admin === true);
 }
 
+/**
+ * Whether the admin UI asks for a login. Always once an admin account exists here. A server
+ * connected to a Miniserver asks too, before any account exists: its Loxone users log in with
+ * their Miniserver credentials. Without that, a paired server with no admin account stood open
+ * to anyone on the network (#443).
+ */
+export function isAdminLoginRequired(config: ConfigPort): boolean {
+  if (hasAdminUser(config)) return true;
+  const audioserver = config.getConfig().system?.audioserver;
+  return audioserver?.paired === true && audioserver?.loxoneEnabled === true;
+}
+
 function toPublic(user: UserAccount): PublicUser {
   return {
     username: user.username.trim(),

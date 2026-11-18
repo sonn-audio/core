@@ -99,7 +99,7 @@ import { buildTidalRoutes } from '@/adapters/http/adminApi/tidal/tidalHandlers';
 import { buildAlertsRoutes } from '@/adapters/http/adminApi/alerts/alertsHandlers';
 import { buildSubsonicRoutes } from '@/adapters/http/adminApi/subsonic/subsonicHandlers';
 import { buildMqttRoutes } from '@/adapters/http/adminApi/mqtt/mqttHandlers';
-import { hasAdminUser } from '@/application/auth/localUsers';
+import { isAdminLoginRequired } from '@/application/auth/localUsers';
 import { buildUsersRoutes } from '@/adapters/http/adminApi/users/usersHandlers';
 import type { AlertFilesPort } from '@/ports/AlertFilesPort';
 import { buildTransportsRoutes } from '@/adapters/http/adminApi/transports/transportsHandlers';
@@ -497,14 +497,12 @@ export class AdminApiHandler {
     const method = (req.method ?? 'GET').toUpperCase();
 
     try {
-      // Authentication is driven purely by the local admin account created during
-      // first-run setup — NOT by Miniserver pairing. So connecting Loxone never
-      // forces auth on its own, and a fresh box stays open just long enough to
-      // create that first admin (the setup endpoint is public until one exists).
-      // Miniserver credentials remain an alternate way to log in once connected.
-      // Gating on `hasAdminUser` rather than "any user" matters — a stream-only
+      // A fresh box stays open just long enough to create the first admin (the setup
+      // endpoint is public until one exists). Once one exists, or once the server is
+      // connected to a Miniserver, every call needs a session; Miniserver credentials
+      // log in as well. Gating on an admin rather than "any user" matters: a stream-only
       // Subsonic account must not lock an operator out.
-      const authRequired = hasAdminUser(this.configPort);
+      const authRequired = isAdminLoginRequired(this.configPort);
       if (authRequired && !isPublicAdminApiRoute(pathname, method)) {
         const session = this.sessionStore.getFromRequest(req);
         if (!session) {
