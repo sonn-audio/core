@@ -219,6 +219,17 @@ Ended, Unpaired.
   is exactly `secure/pair`; an answer that echoes the whole command fails with
   "result / request mismatch" (Error-Id -126), and it starts over from hello. sonn has no route
   for it, so a sonn that answered `-82` would never get paired.
+
+  **It cannot be answered without the session keys** (tried 2026-11-18, against the debug log).
+  The token after `secure/pair/` is encrypted: it decodes to random bytes, not JSON. Answers with
+  the right `command` and `error: 0` — plain with the session token, with a JWT, with both, and
+  wrapped in `secure_pair_result` — all passed the envelope check (`CHK;error: No Error`) and
+  were still refused (`HandlePairReceive: failed, lastError=No Error`). The firmware's own
+  "mTLS bare ack accepted as PAIRED (no session_token echo required)" says what is missing on the
+  plain path: the session token, echoed under the session's AES layer. The keys for that layer
+  come in `secure/init`, encrypted with the public key from the peer's hello — which sonn can
+  only give as the Miniserver's own, since the chain has to verify against Loxone's CA. So sonn
+  stays on answering `-81`, which skips pairing.
 - **Pair (from the strings):** `pair-request` with the installation id. `pair_wrong_installation_id` is tolerated
   when `info/pairing` already confirmed the same master. Over mTLS a bare acknowledgement is
   accepted as paired.
@@ -280,9 +291,26 @@ Around this the Miniserver also sends `audio/cfg/ready`, `audio/cfg/miniserverip
 `audio/cfg/groupopts/` (`SetGroupOptions`), `audio/cfg/getroomfavs/all` and periodic
 `audio/cfg/healthcheck/…` (answer: `healthcheck_response`).
 
-Three of the six player steps reach placeholders in sonn (`speakertype`, `playeropts`,
-`presencemode`), and `playercfg/…/roomfavprio` has no route. What the Miniserver counts as a
-"false" return for a step is not known; sonn does come online today.
+**The Miniserver does not read the answers to these.** Its log shows every one of them as
+`unprocessed Event <name>_result` (`speakertype`, `volumes`, `playername`, `groupopts`,
+`playeropts`, `presencemode`, `miniserverip`, `miniserverversion`, `timezone`, `bluetooth`,
+`setconfigtimestamp`, `ready`), and init completes either way: "false" for a step means the
+command could not be sent, not that it was refused. sonn acknowledges them all
+(`settingHandlers.ts`) and logs their decoded payloads; `playercfg/…/roomfavprio` was not sent by
+a 17.3.11.12 Miniserver.
+
+Captured payloads, decoded from base64 JSON:
+
+| Command | Payload |
+|---|---|
+| `playeropts` | `{"players":[{"playerid":29,"rf":"off","lock":"off","ap":"on","sp":"on"}, …]}` — `rf` room-favourite priority, `ap` AirPlay, `sp` Spotify Connect |
+| `groupopts` | `{"groups":[{"groupid":"<uuid>","name":"Woonkamer","mode":1,"sp":"on","ap":"on"}]}` — AirPlay and Spotify Connect for a player group, which override the players' own |
+| `volumes` | `{"players":[{"playerid":29,"default":10,"alarm":75,"fire":75,"bell":40,"buzzer":10,"tts":20,"volstep":1,"fading":0,"maxVolume":100}, …]}` |
+| `speakertype` | `{"speakers":[{"id":"<serial>#1","speakerType":3}, …]}` |
+| `playername` | `{"players":[{"playerid":29,"name":"Werkkamer"}, …]}` |
+
+Plain: `presencemode/<ids>/off`, `miniserverip/<ip>/<mask>/<gateway>/<dns,dns>/<own ip>/static`,
+`miniserverversion/<a>/<b>`, `timezone/<Area/City>`, `bluetooth/<zone>/visible`.
 
 ---
 
