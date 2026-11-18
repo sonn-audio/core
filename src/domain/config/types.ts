@@ -146,6 +146,12 @@ export interface AudioserverConfig {
   /** When false, admin UI is accessible without authentication even if paired (default true). */
   authEnabled?: boolean;
   extensions: AudioserverExtensionConfig[];
+  /**
+   * Serials of extensions added here that Loxone does not know yet. A search from Loxone Config
+   * finds these, so they can be added to the project without typing a serial; one that has made
+   * it into the project moves to `extensions` and is no longer offered.
+   */
+  announcedExtensions?: string[];
   /** Optional SlimProto control port (default 3483). */
   slimprotoPort?: number;
   /** Optional LMS-compatible telnet CLI port (default 9090). */

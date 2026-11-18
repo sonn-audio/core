@@ -43,6 +43,45 @@ type ConfigHandlerOptions = {
   spotifyInputService: SpotifyInputService;
 };
 
+function hexSerial(value: string | undefined): string {
+  return (value ?? '').replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+}
+
+/** The device type Loxone Config lists as "Stereo Extension" in its Tree Turbo search. */
+const STEREO_EXTENSION_TYPE = 3;
+
+/**
+ * The server's extensions the way Loxone Config's search reads them: the ones the Loxone
+ * project already has, and the ones added here that it does not have yet.
+ *
+ * While "Tree Turbo search" is open in Loxone Config, the Miniserver asks `audio/cfg/getconfig`
+ * every few seconds and Config goes through `extensions`. It offers the devices the project
+ * lacks and leaves out the ones it knows — but only for a device it can read: `type`, `subtype`
+ * and `id` have to be numbers. Anything else, a known extension included, it lists as a
+ * nameless "Audio zone" waiting to be added.
+ */
+export function describeExtensions(
+  serverSerial: string,
+  learned: Array<{ mac: string; name?: string }>,
+  announced: string[],
+  version: string,
+): Array<{ type: number; subtype: number; id: number; mac: string; version: string; name?: string }> {
+  const base = hexSerial(serverSerial);
+  const names = new Map(learned.map((entry) => [hexSerial(entry.mac), entry.name]));
+  const serials = [...names.keys(), ...announced.map(hexSerial).filter((serial) => !names.has(serial))];
+  return Array.from(new Set(serials))
+    .filter((serial) => serial.length === 12)
+    .map((serial) => ({
+      type: STEREO_EXTENSION_TYPE,
+      subtype: 0,
+      // Its place after the server: extensions are numbered from the server's own serial.
+      id: base ? Number(BigInt(`0x${serial}`) - BigInt(`0x${base}`)) : 0,
+      mac: serial,
+      version,
+      ...(names.get(serial) ? { name: names.get(serial) } : {}),
+    }));
+}
+
 /**
  * Implements the core `/audio/cfg/*` command set.
  */
@@ -70,9 +109,15 @@ export function createConfigHandlers(config: LoxoneHttpConfig, options: ConfigHa
     ),
     getConfig: handler((command) => {
       const info = configService.getCurrentConfigInfo();
+      const system = configPort.getSystemConfig();
       return buildEmptyResponseWithPayload(command, {
         crc32: info.crc32 ?? null,
-        extensions: info.extensions ?? [],
+        extensions: describeExtensions(
+          system?.audioserver?.macId || config.macAddress,
+          system?.audioserver?.extensions ?? [],
+          system?.audioserver?.announcedExtensions ?? [],
+          config.firmwareVersionNumber,
+        ),
       });
     }),
     getKey: handler((command) =>

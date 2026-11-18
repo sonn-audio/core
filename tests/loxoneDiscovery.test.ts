@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from './testHarness';
+import { describeExtensions } from '../src/adapters/loxone/commands/handlers/configHandlers';
 import { buildDiscoveryAnswer } from '../src/adapters/loxone/http/loxoneUdpDiscovery';
 import { buildLoxoneHttpConfig } from '../src/config/loxone';
 
@@ -33,4 +34,20 @@ test('discovery: a paired server names its Miniserver, and the fields keep their
   const positions = FIELD_ORDER.map((field) => answer.indexOf(` ${field}`));
   assert.ok(positions.every((position) => position > 0), 'every field is present');
   assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'fields are in the order Config reads them');
+});
+
+test('discovery: every extension is described the way a search can read it', () => {
+  // Verified in Loxone Config's "Tree Turbo search": type 3 is listed as "Stereo Extension", and
+  // only when type, subtype and id are numbers. A known extension described any other way was
+  // listed as an unused "Audio zone" to add.
+  const described = describeExtensions(
+    '50:4F:94:FE:ED:00',
+    [{ mac: '504f94feed01', name: 'Kitchen amp' }],
+    ['504F94FEED01', '50:4f:94:fe:ed:02'],
+    '18.1.0.0',
+  );
+  assert.deepEqual(described, [
+    { type: 3, subtype: 0, id: 1, mac: '504F94FEED01', version: '18.1.0.0', name: 'Kitchen amp' },
+    { type: 3, subtype: 0, id: 2, mac: '504F94FEED02', version: '18.1.0.0' },
+  ]);
 });

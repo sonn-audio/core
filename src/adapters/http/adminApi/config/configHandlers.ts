@@ -395,6 +395,7 @@ async function handleSystemUpdate(
           loxoneEnabled?: boolean;
           setupComplete?: boolean;
           managedPlayers?: boolean;
+          announcedExtensions?: unknown;
           crossfadeSec?: number;
           gapless?: boolean;
         };
@@ -421,6 +422,7 @@ async function handleSystemUpdate(
   const rawLoxoneEnabled = hasAudioserver ? body.audioserver!.loxoneEnabled : undefined;
   const rawSetupComplete = hasAudioserver ? body.audioserver!.setupComplete : undefined;
   const rawManagedPlayers = hasAudioserver ? body.audioserver!.managedPlayers : undefined;
+  const rawAnnouncedExtensions = hasAudioserver ? body.audioserver!.announcedExtensions : undefined;
   const rawCrossfadeSec = hasAudioserver ? body.audioserver!.crossfadeSec : undefined;
   const rawGapless = hasAudioserver ? body.audioserver!.gapless : undefined;
   const rawMiniserverIp = hasMiniserver ? body.miniserver!.ip : undefined;
@@ -433,6 +435,7 @@ async function handleSystemUpdate(
     typeof rawLoxoneEnabled !== 'boolean' &&
     typeof rawSetupComplete !== 'boolean' &&
     typeof rawManagedPlayers !== 'boolean' &&
+    !Array.isArray(rawAnnouncedExtensions) &&
     typeof rawCrossfadeSec !== 'number' &&
     typeof rawGapless !== 'boolean' &&
     typeof rawMiniserverIp !== 'string' &&
@@ -524,6 +527,17 @@ async function handleSystemUpdate(
     }
     if (typeof rawManagedPlayers === 'boolean') {
       cfg.system.audioserver.managedPlayers = rawManagedPlayers;
+    }
+    if (Array.isArray(rawAnnouncedExtensions)) {
+      // Whole list at a time, so removing one is sending the list without it.
+      cfg.system.audioserver.announcedExtensions = Array.from(
+        new Set(
+          rawAnnouncedExtensions
+            .filter((entry): entry is string => typeof entry === 'string')
+            .map((entry) => entry.replace(/[^a-fA-F0-9]/g, '').toUpperCase())
+            .filter((entry) => entry.length === 12),
+        ),
+      ).slice(0, 10);
     }
     if (normalizedCrossfadeSec !== null) {
       cfg.system.audioserver.crossfadeSec = normalizedCrossfadeSec;
