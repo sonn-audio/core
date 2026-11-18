@@ -245,6 +245,40 @@ test('a following speaker is stopped in the group it is in now, not the one it w
   assert.deepEqual(stopped, ['own group', 'own group']);
 });
 
+test('a speaker left playing our stream by the soundbar it followed is stopped (#430)', async () => {
+  // As lars909's log has it: Gäste-WC follows the soundbar, the soundbar goes to TV, and Sonos
+  // makes Gäste-WC a group of its own that plays on with our stream.
+  const { controller } = createController();
+  const stops: number[] = [];
+  const show = (isCoordinator: boolean, state: string, mediaUrl: string) => {
+    controller.client = {
+      player: {
+        isCoordinator,
+        group: { ...speaker(state, mediaUrl), stop: async () => void stops.push(1) },
+      },
+    };
+    controller.emitSnapshotPatch();
+  };
+
+  show(false, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_1); // following the soundbar
+  show(true, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_1); // left on its own, still on our stream
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(stops.length, 1);
+
+  // A speaker that plays our stream as its own group from the start is ours to play.
+  show(true, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_2);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(stops.length, 1);
+
+  // Nor is a speaker that was left behind on something else, or stopped.
+  show(false, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_1);
+  show(true, 'PLAYBACK_STATE_PLAYING', 'http://radio.example/stream.mp3');
+  show(false, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_1);
+  show(true, 'PLAYBACK_STATE_IDLE', OWN_TRACK_1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(stops.length, 1);
+});
+
 test('our stream is known by the service id or object id Sonos hands back (#430)', () => {
   // lars909's soundbar echoed our container's name but not `id.serviceId`, so our stream was
   // never recognised and TV audio never counted as a takeover.

@@ -79,6 +79,8 @@ export class SonosStateController implements ZoneStateController {
   // True once the speaker has been seen on our own stream, until it is seen playing something else.
   private ownStreamSeen = false;
   private pendingTakeover: ExternalTakeover | null = null;
+  // True while the speaker follows another one; see `noteInheritedStream`.
+  private following = false;
 
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
@@ -522,6 +524,7 @@ export class SonosStateController implements ZoneStateController {
     const audiotype = resolveAudiotype(group, track?.mediaUrl ?? '', container?.type ?? '');
     const sourceName = resolveSourceName(audiotype, container?.name ?? '', group.name, this.zone.name);
     this.noteSpeakerSource(ownStream, trackMediaUrl, mode, sourceName, audiotype);
+    this.noteInheritedStream(player.isCoordinator, ownStream, mode);
     const title = cleanString(track?.name) || cleanString(container?.name) || sourceName;
     const artist = cleanString(track?.artist?.name) || cleanString(metadata?.streamInfo) || '';
     const album = cleanString(track?.album?.name) || '';
@@ -629,6 +632,25 @@ export class SonosStateController implements ZoneStateController {
     });
   }
 
+  /**
+   * Stop a speaker that was left playing our stream by the speaker it followed (#430).
+   *
+   * When a group's coordinator leaves it, a soundbar going to TV audio say, Sonos hands the group
+   * to the next speaker and that one plays on. Our stream belongs to the session of the zone that
+   * led the group, which ends with the takeover, so the speaker left behind plays to nobody's
+   * intent. The stop sent to it along with the takeover can still reach the old group, as Sonos
+   * is regrouping at that moment; this catches the speaker as soon as it shows up on its own.
+   */
+  private noteInheritedStream(isCoordinator: boolean, ownStream: boolean, mode: ZoneState['mode']): void {
+    const inherited = this.following && isCoordinator === true && ownStream && mode === 'play';
+    this.following = isCoordinator === false;
+    if (!inherited) return;
+    this.log.info('sonos speaker left playing our stream by the speaker it followed; stopping it', {
+      zoneId: this.zone.id,
+    });
+    void this.dispatchCommand('stop');
+  }
+
   private async dispatchCommand(
     action: 'play' | 'pause' | 'stop' | 'next' | 'previous',
     retried = false,
@@ -637,7 +659,8 @@ export class SonosStateController implements ZoneStateController {
       // A speaker that follows another is stopped when its leader went to another source (#430).
       // Sonos has then just made it a group of its own, still playing our stream, while the view
       // here can take seconds to catch up, and the stop went to the old group: the soundbar on TV.
-      // Rebuild the view first, so the stop reaches the group the speaker is in now.
+      // Rebuild the view first, so the stop reaches the group the speaker is in now, or, while
+      // Sonos is still regrouping, so the new group is seen when it comes (noteInheritedStream).
       await this.connect();
     }
     const group = this.client?.player?.group;
