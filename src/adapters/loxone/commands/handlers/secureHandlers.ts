@@ -36,6 +36,18 @@ export function createSecureHandlers(configPort: ConfigPort) {
         jwt: LEGACY_JWT,
       }),
     ),
+    /*
+     * Removing the Audioserver in Loxone Config makes the Miniserver connect once more, run
+     * hello and init, and send `secure/forget/<token>`. Left unanswered, it retries the same
+     * token a few seconds later and then drops the connection. sonn keeps no pairing to forget
+     * and does not read the token, so this only says yes.
+     */
+    forget: createHandler((command) =>
+      buildResponse(command, 'secure_forget', {
+        command: 'secure/forget',
+        error: 0,
+      }),
+    ),
   };
 }
 

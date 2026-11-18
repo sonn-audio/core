@@ -240,14 +240,21 @@ Ended, Unpaired.
 The Miniserver will not push a configuration without a secure session ("Do not set config
 without secure session, pairingstate is %d").
 
-sonn handles `secure/hello`, `secure/init`, `secure/authenticate` and `secure/info/pairing`.
-It has no route for `secure/pair` or `secure/wrapper/`.
+- **Forget:** removing the Audioserver in Loxone Config makes the Miniserver connect once more,
+  run hello and init, and send `secure/forget/<token>`, a base64url token that is not a JWT.
+  Unanswered, it retries the same token about four seconds later and then drops the connection.
+  sonn answers `secure_forget_result` with `command: "secure/forget"` and `error: 0`, and does not
+  read the token (reported by another implementation's capture; not yet seen against sonn).
+
+sonn handles `secure/hello`, `secure/init`, `secure/authenticate`, `secure/info/pairing` and
+`secure/forget`. It has no route for `secure/pair` or `secure/wrapper/`.
 
 | Command | Code | sonn |
 |---|---|---|
 | `secure/info/pairing` | pair | handled |
 | `secure/init` | pair | handled |
 | `secure/pair` | pair | **no route** |
+| `secure/forget` | pair | handled |
 
 ---
 

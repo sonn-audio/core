@@ -219,6 +219,7 @@ import './loxoneClientSchemas.test';
 import './loxoneClientEvents.test';
 import './loxoneDiscovery.test';
 import './loxoneSettings.test';
+import './loxoneSecureForget.test';
 import './loxoneClientCommands.test';
 import './loudness.test';
 import './loxoneClientLists.test';

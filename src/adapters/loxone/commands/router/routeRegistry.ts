@@ -102,6 +102,7 @@ export function registerRoutes(
   router.registerPrefix('secure', 'secure/hello', secure.hello);
   router.registerPrefix('secure', 'secure/authenticate', secure.authenticate);
   router.registerPrefix('secure', 'secure/init', secure.init);
+  router.registerPrefix('secure', 'secure/forget', secure.forget);
 
   router.registerPrefix('audio', 'audio/cfg/globalsearch/describe', globalSearchHandlers.audioCfgGlobalSearchDescribe);
   router.registerPrefix('audio', 'audio/cfg/globalsearch', globalSearchHandlers.audioCfgGlobalSearch);
