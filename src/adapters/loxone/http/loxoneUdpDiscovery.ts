@@ -1,23 +1,34 @@
 import dgram from 'node:dgram';
+import os from 'node:os';
 import type { LoxoneHttpConfig } from '@/config/loxone';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
+import { defaultLocalIp } from '@/shared/utils/net';
 
 const DEFAULT_PORT = 7070;
 /**
- * Where a search is also answered, besides the port the probe came from. Loxone Config is
- * reported to listen here for the answers to a probe it sent from elsewhere; not confirmed
- * against Config itself, and an answer nobody listens for costs nothing.
+ * Where a search listens for its answers, whatever port it sent the probe from. The Miniserver
+ * probes from this port itself; Loxone Config probes from another and still listens here.
  */
 const REPLY_PORT = 7071;
-const BROADCAST_ADDRESS = '255.255.255.255';
+/**
+ * What kind of media server answers. Loxone Config reads anything below 1 as the old Music
+ * Server and offers to add that instead of an Audioserver.
+ */
+const AUDIOSERVER_SUBTYPE = 1;
 
+/**
+ * Answers the search the Miniserver runs for Loxone Config, so the server can be added from
+ * "Audio device search" instead of by typing its address.
+ *
+ * A search is one zero byte, broadcast to this port. What comes back decides what the device is:
+ * Config sorts the answers by how they begin, and an Audioserver is the one that begins with
+ * `LoxMedia`. A JSON answer is a generic network device (an intercom), which the audio search
+ * leaves out however its fields are filled in.
+ */
 export class LoxoneUdpDiscovery {
   private readonly log = createLogger('Loxone', 'UDPDiscovery');
   private socket: dgram.Socket | null = null;
-  private responsePayload = Buffer.alloc(0);
-  private readonly fixedTv = '3';
-  private readonly fixedDi = '1';
 
   public start(config: LoxoneHttpConfig, configPort: ConfigPort, port: number = DEFAULT_PORT): void {
     if (this.socket) {
@@ -26,10 +37,6 @@ export class LoxoneUdpDiscovery {
 
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     this.socket = socket;
-    this.responsePayload = Buffer.from(
-      this.buildPayload(config, configPort, this.fixedTv, this.fixedDi),
-      'utf8',
-    );
 
     socket.on('error', (error) => {
       this.log.warn('udp discovery socket error', {
@@ -38,54 +45,33 @@ export class LoxoneUdpDiscovery {
     });
 
     socket.on('message', (msg, rinfo) => {
-      const payload = msg.length ? msg : Buffer.alloc(0);
       this.log.info('udp discovery probe received', {
         from: `${rinfo.address}:${rinfo.port}`,
-        length: payload.length,
-        payload: payload.length <= 32 ? payload.toString('hex') : undefined,
+        length: msg.length,
+        payload: msg.length <= 32 ? msg.toString('hex') : undefined,
       });
 
-      // Every answer leaves from the socket the probe arrived on, so it comes from the
-      // discovery port itself.
-      socket.send(this.responsePayload, rinfo.port, rinfo.address, (err) => {
-        if (err) {
-          this.log.warn('udp discovery response failed', {
-            message: err instanceof Error ? err.message : String(err),
-          });
-          return;
-        }
-        this.log.info('udp discovery response sent', {
-          to: `${rinfo.address}:${rinfo.port}`,
-          length: this.responsePayload.length,
-          tv: this.fixedTv,
-          di: this.fixedDi,
-        });
-      });
-
-      // The same answer on the reply port: to the machine that asked, and to the whole
-      // network for a search whose probe reached us from another address than it listens on.
-      const alsoTo = [
-        ...(rinfo.port === REPLY_PORT ? [] : [rinfo.address]),
-        BROADCAST_ADDRESS,
-      ];
-      for (const address of alsoTo) {
-        socket.send(this.responsePayload, REPLY_PORT, address, (err) => {
+      // Built per probe: the address depends on who asks, and pairing can change while we run.
+      const answer = buildDiscoveryAnswer(config, configPort, localAddressFacing(rinfo.address));
+      const payload = Buffer.from(answer, 'utf8');
+      const ports = rinfo.port === REPLY_PORT ? [REPLY_PORT] : [rinfo.port, REPLY_PORT];
+      for (const replyPort of ports) {
+        // Sent from the socket the probe arrived on, so the answer comes from the discovery port.
+        socket.send(payload, replyPort, rinfo.address, (err) => {
           if (err) {
-            this.log.debug('udp discovery reply-port response failed', {
-              to: `${address}:${REPLY_PORT}`,
+            this.log.warn('udp discovery response failed', {
+              to: `${rinfo.address}:${replyPort}`,
               message: err instanceof Error ? err.message : String(err),
             });
+            return;
           }
+          this.log.info('udp discovery response sent', { to: `${rinfo.address}:${replyPort}`, answer });
         });
       }
     });
 
     socket.bind(port, () => {
-      socket.setBroadcast(true);
-      this.log.info('udp discovery listener started', {
-        port,
-        response: this.responsePayload.toString('utf8'),
-      });
+      this.log.info('udp discovery listener started', { port });
     });
   }
 
@@ -99,48 +85,56 @@ export class LoxoneUdpDiscovery {
       this.log.info('udp discovery listener stopped');
     });
   }
+}
 
-  private buildPayload(config: LoxoneHttpConfig, configPort: ConfigPort, tv: string, di: string): string {
-    const systemConfig = configPort.getSystemConfig();
-    const configuredName = systemConfig?.audioserver?.name?.trim();
-    const friendlyName =
-      configuredName && configuredName.toLowerCase() !== 'unconfigured'
-        ? configuredName
-        : config.mdns.name || 'sonn-core';
-    const hostname = this.sanitizeHostname(config.mdns.hostname || friendlyName);
-    const macId = systemConfig?.audioserver?.macId?.trim();
+/**
+ * The line an Audioserver answers a search with. Config reads the fields by name and in this
+ * order; everything from `Hostname` on is optional to it. `Paired` is the word `true` or
+ * `false`, and `Master` is the Miniserver the server belongs to.
+ */
+export function buildDiscoveryAnswer(config: LoxoneHttpConfig, configPort: ConfigPort, address: string): string {
+  const system = configPort.getSystemConfig();
+  const mac = hexOnly(system?.audioserver?.macId || config.macAddress);
+  const master = hexOnly(system?.miniserver?.serial);
+  const fields = [
+    `IP:${address}`,
+    `MAC:${mac}`,
+    'Product:Audioserver',
+    `Version:${config.firmwareVersionNumber}`,
+    `SubType:${AUDIOSERVER_SUBTYPE}`,
+    `Hostname:${config.hostname}`,
+    `Paired:${master ? 'true' : 'false'}`,
+    ...(master ? [`Master:${master}`] : []),
+  ];
+  return `LoxMedia ${fields.join(' ')}`;
+}
 
-    const payload = {
-      t: 'Audioserver',
-      tv,
-      n: friendlyName,
-      s: this.formatMacAddress(macId || config.macAddress),
-      v: config.firmwareVersionNumber,
-      p: String(this.resolveUdpPort(config)),
-      hn: hostname,
-      di,
-    };
-
-    return JSON.stringify(payload);
-  }
-
-  private sanitizeHostname(value: string): string {
-    const trimmed = value.trim();
-    const withoutLocal = trimmed.endsWith('.local') ? trimmed.slice(0, -6) : trimmed;
-    return withoutLocal.replace(/\s+/g, '-').replace(/\./g, '-') || 'audioserver';
-  }
-
-  private formatMacAddress(raw: string): string {
-    const normalized = raw.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
-    if (normalized.length !== 12) {
-      return raw;
+/** Our address on the network the asker is on, so the answer names one it can reach. */
+function localAddressFacing(remote: string): string {
+  const target = ipv4ToInt(remote);
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family !== 'IPv4' || entry.internal) {
+        continue;
+      }
+      const mask = ipv4ToInt(entry.netmask);
+      if (target !== null && mask !== null && (ipv4ToInt(entry.address)! & mask) === (target & mask)) {
+        return entry.address;
+      }
     }
-    return normalized.match(/.{2}/g)?.join(':') ?? raw;
   }
+  return defaultLocalIp();
+}
 
-  private resolveUdpPort(config: LoxoneHttpConfig): number {
-    const appServer = config.servers.find((server) => server.name === 'appHttp');
-    return appServer?.port ?? config.mdns.port;
+function ipv4ToInt(value: string): number | null {
+  const parts = value.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null;
   }
+  return ((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>> 0;
+}
 
+/** A serial as Loxone writes it: twelve hex digits, no separators. */
+function hexOnly(value: string | undefined): string {
+  return (value ?? '').replace(/[^a-fA-F0-9]/g, '').toUpperCase();
 }

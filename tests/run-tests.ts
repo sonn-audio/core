@@ -216,6 +216,7 @@ import './loxoneProjectionBoundary.test';
 import './loxoneServiceEntries.test';
 import './loxoneClientSchemas.test';
 import './loxoneClientEvents.test';
+import './loxoneDiscovery.test';
 import './loxoneClientCommands.test';
 import './loudness.test';
 import './loxoneClientLists.test';

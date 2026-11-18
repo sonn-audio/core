@@ -9,18 +9,6 @@ export interface LoxoneHttpServerConfig {
   identification: string;
 }
 
-export interface LoxoneMdnsConfig {
-  name: string;
-  type: string;
-  host?: string;
-  hostname: string;
-  deviceType: string;
-  version: string;
-  txtVersion: string;
-  deviceInstance: string;
-  port: number;
-}
-
 export interface LoxoneHttpConfig {
   firmwareVersion: string;
   firmwareVersionNumber: string;
@@ -28,29 +16,22 @@ export interface LoxoneHttpConfig {
   sessionToken: string;
   macAddress: string;
   servers: LoxoneHttpServerConfig[];
-  mdns: LoxoneMdnsConfig;
+  /** The host name the server gives a search for audio servers, without `.local`. */
+  hostname: string;
 }
 
-// Single source of truth for the emulated Audioserver version strings.
-// The two formats are not interchangeable: FIRMWARE_VERSION_NUMBER is the
-// LWSS / UDP discovery firmware string, MDNS_VERSION is the (zero-padded)
-// version advertised over Bonjour.
+// Single source of truth for the emulated Audioserver version: the LWSS greeting and the answer
+// to a search both carry it.
 //
 // The Loxone app switches features on by this number (see docs/loxone-client-map.md, "Greeting").
 // 18.1.0.0 is the lowest that makes it offer the loudness switch; everything else it gates sits
 // at 17.0 or below.
 const FIRMWARE_VERSION_NUMBER = '18.1.0.0';
-const MDNS_VERSION = '16.00.09.16';
 
 const DEFAULT_FIRMWARE_VERSION = `LWSS V ${FIRMWARE_VERSION_NUMBER}`;
 const DEFAULT_API_VERSION = '~API:1.6~';
 const DEFAULT_SESSION = '8WahwAfULwEQce9Yu0qIE9L7QMkXFHbi0M9ch9vKcgYArPPojXHpSiNcq0fT3lqL';
-const DEFAULT_MDNS_NAME = 'audioserver';
-const DEFAULT_MDNS_HOSTNAME = 'audioserver';
-const DEFAULT_MDNS_TYPE = 'http';
-const DEFAULT_MDNS_DEVICE_TYPE = 'Audioserver';
-const DEFAULT_MDNS_TXT_VERSION = '2';
-const DEFAULT_MDNS_DEVICE_INSTANCE = '2';
+const DEFAULT_HOSTNAME = 'audioserver';
 
 /**
  * Builds the configuration for the emulated Loxone HTTP servers.
@@ -94,21 +75,7 @@ export function buildLoxoneHttpConfig(
         ),
       },
     ],
-    mdns: buildLoxoneMdnsConfig(env),
-  };
-}
-
-function buildLoxoneMdnsConfig(env: EnvironmentConfig): LoxoneMdnsConfig {
-  return {
-    name: DEFAULT_MDNS_NAME,
-    type: DEFAULT_MDNS_TYPE,
-    host: env.hostname,
-    hostname: DEFAULT_MDNS_HOSTNAME,
-    deviceType: DEFAULT_MDNS_DEVICE_TYPE,
-    version: MDNS_VERSION,
-    txtVersion: DEFAULT_MDNS_TXT_VERSION,
-    deviceInstance: DEFAULT_MDNS_DEVICE_INSTANCE,
-    port: env.loxoneAppPort,
+    hostname: DEFAULT_HOSTNAME,
   };
 }
 
