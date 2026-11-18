@@ -284,7 +284,12 @@ function createAirplayOutput(
       ? NaN
       : Number(rawBufferMs);
   const port = Number(rawPort);
-  const initialVolume = clampVolume(zone.volumes?.default);
+  // A negative default is Loxone's "variable startup volume", not a level: it would clamp to 0.
+  const configuredDefault = zone.volumes?.default;
+  const initialVolume =
+    typeof configuredDefault === 'number' && configuredDefault < 0
+      ? undefined
+      : clampVolume(configuredDefault);
   return new AirPlayOutput(
     zone.id,
     zone.name,

@@ -219,7 +219,9 @@ export class AlertsManager {
       return DEFAULT_ALERT_VOLUME;
     }
     const key = mapAlertTypeToVolumeKey(type);
-    const requested = (volumes as unknown as Record<string, number | undefined>)[key] ?? volumes.default ?? DEFAULT_ALERT_VOLUME;
+    // A negative default is Loxone's "variable startup volume", not a level to sound an alert at.
+    const zoneDefault = volumes.default >= 0 ? volumes.default : undefined;
+    const requested = (volumes as unknown as Record<string, number | undefined>)[key] ?? zoneDefault ?? DEFAULT_ALERT_VOLUME;
     const clamped = Math.min(
       Math.max(Number(requested) || DEFAULT_ALERT_VOLUME, MIN_VOLUME),
       maxVolume,

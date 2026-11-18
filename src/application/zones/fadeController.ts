@@ -88,7 +88,9 @@ class FadeController {
     const volumes = this.zones.getZoneVolumes(zoneId) as
       | { buzzer?: number; default?: number }
       | undefined;
-    const fallback = Number(volumes?.default ?? 50);
+    // A negative default is Loxone's "variable startup volume", not a level.
+    const configuredDefault = Number(volumes?.default ?? 50);
+    const fallback = configuredDefault >= 0 ? configuredDefault : 50;
     const buzzer = Number(volumes?.buzzer ?? fallback);
     const target = Math.max(
       Number.isFinite(fallback) ? fallback : 50,

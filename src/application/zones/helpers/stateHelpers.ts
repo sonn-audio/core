@@ -30,9 +30,31 @@ export function clampVolumeForZone(zone: ZoneConfig, value: number): number {
  * unconfigured zone began every play in silence). An explicit 0 stays the user's choice.
  */
 export function getZoneDefaultVolume(zone: ZoneConfig): number {
-  const configured =
-    typeof zone.volumes?.default === 'number' ? zone.volumes.default : FALLBACK_DEFAULT_VOLUME;
+  const configured = hasVariableStartVolume(zone)
+    ? FALLBACK_DEFAULT_VOLUME
+    : typeof zone.volumes?.default === 'number'
+      ? zone.volumes.default
+      : FALLBACK_DEFAULT_VOLUME;
   return clampVolumeForZone(zone, configured);
+}
+
+/**
+ * Loxone's "variable startup volume": a default volume of -1, which the Loxone app sends when its
+ * switch is on and reads back as that switch (`-1 === defaultVolume`). The zone then starts at the
+ * level it was last left at, and -1 is not a level: taken as one, it clamped to 0 and the zone
+ * started every play muted. Switching it off in the app sends 25, the fallback below.
+ */
+export function hasVariableStartVolume(zone: ZoneConfig): boolean {
+  const configured = zone.volumes?.default;
+  return typeof configured === 'number' && configured < 0;
+}
+
+/** The level a zone starts a fresh play at: its default, or where it was left when variable. */
+export function getZoneStartVolume(zone: ZoneConfig, current: number | undefined): number {
+  if (hasVariableStartVolume(zone) && typeof current === 'number' && Number.isFinite(current)) {
+    return clampVolumeForZone(zone, current);
+  }
+  return getZoneDefaultVolume(zone);
 }
 
 const FALLBACK_DEFAULT_VOLUME = 25;

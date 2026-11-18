@@ -198,6 +198,7 @@ import './googleCastSupersededLoad.test';
 import './dlnaLineInService.test';
 import './zoneMute.test';
 import './zoneVolumeResume.test';
+import './variableStartVolume.test';
 import './sonnCoreDiscovery.test';
 import './itemAbout.test';
 import './browseContainerIdentity.test';

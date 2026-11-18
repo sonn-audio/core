@@ -1,7 +1,12 @@
 import type { PlaybackMetadata, PlaybackSession } from '@/ports/types/playback';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
 import type { ZoneContext } from '@/application/zones/internal/zoneTypes';
-import { clampVolumeForZone, getZoneDefaultVolume } from '@/application/zones/helpers/stateHelpers';
+import {
+  clampVolumeForZone,
+  getZoneDefaultVolume,
+  getZoneStartVolume,
+  hasVariableStartVolume,
+} from '@/application/zones/helpers/stateHelpers';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import type { ZoneOutput } from '@/ports/OutputsTypes';
 import {
@@ -112,6 +117,9 @@ function onPlayerPaused(
     ctx &&
     !ctx.alert &&
     ctx.config.playback?.resetVolumeOnPause === true &&
+    // With a variable startup volume there is no default to go back to: the next play starts
+    // where the zone was left.
+    !hasVariableStartVolume(ctx.config) &&
     getZoneDefaultVolume(ctx.config) > 0
   ) {
     scheduleResetVolumeOnPause(coordinator, ctx);
@@ -161,7 +169,7 @@ function onPlayerStarted(
       !startAtCurrentVolume &&
       ((ctx.state.mode === 'stop' && !wasPlayerActive) || hadPendingReset);
     const volume = isFreshStart
-      ? getZoneDefaultVolume(ctx.config)
+      ? getZoneStartVolume(ctx.config, ctx.state.volume)
       : clampVolumeForZone(ctx.config, ctx.state.volume);
     /*
      * No `player.setVolume` here.
