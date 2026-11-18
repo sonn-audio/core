@@ -12,7 +12,7 @@ const MAC = '000C290E5497';
 const MINISERVER_IP = '192.168.1.200';
 const MINISERVER_SERIAL = '504F9411157A';
 
-function fetchInfo(authenticated: boolean): { status?: number; body?: any } {
+function fetchInfo(authenticated: boolean, req: Partial<IncomingMessage> = { headers: {} }): { status?: number; body?: any } {
   const sent: { status?: number; body?: any } = {};
   const deps = {
     isAuthenticated: () => authenticated,
@@ -52,7 +52,7 @@ function fetchInfo(authenticated: boolean): { status?: number; body?: any } {
 
   const route = buildMiscRoutes(deps).find((r) => r.pattern.source === /^\/info$/.source);
   assert.ok(route, '/info route exists');
-  route!.handler({} as IncomingMessage, {} as ServerResponse, [] as any, '/info');
+  route!.handler(req as IncomingMessage, {} as ServerResponse, [] as any, '/info');
   return sent;
 }
 
@@ -62,6 +62,17 @@ test('info answers without a session, so the UI can pick login or first-run', ()
   assert.equal(sent.body.hasAdminUser, true);
   assert.equal(sent.body.paired, true);
   assert.equal(sent.body.setupComplete, true);
+});
+
+test('info sends a UI whose session ran out back to the login (#443)', () => {
+  // It still sends the session it had. The bootstrap answer kept it on screen as if signed in,
+  // with no version, no uptime and nothing installed.
+  const expired = fetchInfo(false, { headers: { authorization: 'Bearer expired-session' } });
+  assert.equal(expired.status, 401);
+  assert.deepEqual(expired.body, { error: 'auth-required' });
+
+  const cookie = fetchInfo(false, { headers: { cookie: 'lox_admin_session=expired-session' } });
+  assert.equal(cookie.status, 401);
 });
 
 test('info tells an anonymous caller nothing beyond those three flags', () => {

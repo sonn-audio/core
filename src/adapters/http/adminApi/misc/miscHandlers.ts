@@ -28,6 +28,7 @@ import { logBuffer } from '@/shared/logging/logBuffer';
 import type { LogLevel } from '@/types/logLevel';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import { hasAdminUser } from '@/application/auth/localUsers';
+import { extractSessionId } from '@/adapters/http/adminApi/auth/adminSessionStore';
 import type { GroupManagerReadPort } from '@/application/groups/groupManager';
 import type { SnapcastCore } from '@/adapters/outputs/snapcast/snapcastCore';
 import type { Route } from '@/adapters/http/adminApi/routeTypes';
@@ -426,6 +427,13 @@ function handleInfo(
     };
 
     if (!deps.isAuthenticated(req)) {
+      // A caller that still brings a session which has run out is a UI that thinks it is signed
+      // in. The bootstrap answer looked fine to it, so it sat there online with no version, no
+      // uptime and nothing installed, until reloaded (#443). Its 401 sends it to the login.
+      if (bootstrap.hasAdminUser && extractSessionId(req)) {
+        deps.sendJson(res, 401, { error: 'auth-required' });
+        return;
+      }
       deps.sendJson(res, 200, bootstrap);
       return;
     }
