@@ -2,7 +2,7 @@ import type { LoxoneHttpConfig } from '@/config/loxone';
 import type { NotifierPort } from '@/ports/NotifierPort';
 import { LoxoneRouter } from '@/adapters/loxone/commands/router/loxoneRouter';
 import { createSecureHandlers } from '@/adapters/loxone/commands/handlers/secureHandlers';
-import { createGroupOptsHandler, createPlaceholderHandler } from '@/adapters/loxone/commands/handlers/placeholderHandlers';
+import { createAcknowledgedSettingHandler } from '@/adapters/loxone/commands/handlers/settingHandlers';
 import { createConfigHandlers } from '@/adapters/loxone/commands/handlers/configHandlers';
 import { createProviderHandlers } from '@/adapters/loxone/commands/handlers/providerHandlers';
 import { createZoneHandlers } from '@/adapters/loxone/commands/handlers/zoneHandlers';
@@ -53,7 +53,7 @@ export function registerRoutes(
   dependencies: RouteDependencies,
 ): void {
   const secure = createSecureHandlers(dependencies.configPort);
-  const placeholder = (name: string) => createPlaceholderHandler(name);
+  const setting = (name: string) => createAcknowledgedSettingHandler(name);
   const configHandlers = createConfigHandlers(dependencies.config, {
     onRestart: dependencies.onRestart,
     notifier: dependencies.notifier,
@@ -149,19 +149,20 @@ export function registerRoutes(
   router.registerPrefix('audio', 'audio/cfg/setconfigtimestamp', configHandlers.setConfigTimestamp);
   router.registerPrefix('audio', 'audio/cfg/setconfig', configHandlers.setConfig);
   router.registerPrefix('audio', 'audio/cfg/volumes', configHandlers.setVolumes);
-  router.registerPrefix('audio', 'audio/cfg/playeropts', placeholder('playeropts'));
+  router.registerPrefix('audio', 'audio/cfg/playeropts', setting('playeropts'));
   router.registerPrefix('audio', 'audio/cfg/playername', configHandlers.playerName);
   router.registerPrefix('audio', 'audio/cfg/identify', configHandlers.identify);
   router.registerRegex('audio', /^audio\/cfg\/geteq\/\d+\/?$/, zoneHandlers.audioCfgGetEq);
   router.registerRegex('audio', /^audio\/cfg\/equalizer\/\d+(?:\/[^/]+)?\/?$/, zoneHandlers.audioCfgEqualizer);
   router.registerRegex('audio', /^audio\/cfg\/seteq\/\d+\/.+$/, zoneHandlers.audioCfgSetEq);
   router.registerPrefix('audio', 'audio/cfg/restart', configHandlers.restart);
-  router.registerPrefix('audio', 'audio/cfg/speakertype', placeholder('speakertype'));
-  router.registerPrefix('audio', 'audio/cfg/groupopts', createGroupOptsHandler());
-  router.registerPrefix('audio', 'audio/cfg/presencemode', placeholder('presencemode'));
-  router.registerPrefix('audio', 'audio/cfg/miniserverip', placeholder('miniserverip'));
-  router.registerPrefix('audio', 'audio/cfg/miniserverversion', placeholder('miniserverversion'));
-  router.registerPrefix('audio', 'audio/cfg/timezone', placeholder('timezone'));
+  router.registerPrefix('audio', 'audio/cfg/speakertype', setting('speakertype'));
+  router.registerPrefix('audio', 'audio/cfg/groupopts', setting('groupopts'));
+  router.registerPrefix('audio', 'audio/cfg/presencemode', setting('presencemode'));
+  router.registerPrefix('audio', 'audio/cfg/miniserverip', setting('miniserverip'));
+  router.registerPrefix('audio', 'audio/cfg/miniserverversion', setting('miniserverversion'));
+  router.registerPrefix('audio', 'audio/cfg/timezone', setting('timezone'));
+  router.registerPrefix('audio', 'audio/cfg/bluetooth', setting('bluetooth'));
   router.registerPrefix('audio', 'audio/cfg/servicecfg/getlink', configHandlers.serviceCfgGetLink);
   router.registerPrefix('audio', 'audio/cfg/servicecfg/delete', configHandlers.serviceCfgDelete);
   router.registerPrefix('audio', 'audio/cfg/servicecfg/set/', configHandlers.serviceCfgSet);

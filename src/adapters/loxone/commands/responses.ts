@@ -23,15 +23,6 @@ export function buildEmptyResponse(command: string): CommandResult {
 }
 
 /**
- * Convenience helper for placeholder handlers still awaiting implementation.
- */
-export function buildNotImplemented(command: string): CommandResult {
-  return buildResponse(command, inferResultName(command), {
-    error: 'not-implemented',
-  });
-}
-
-/**
  * Serializes a CommandResult in the wire format expected by Loxone clients.
  */
 export function serializeResult(result: CommandResult): string {
