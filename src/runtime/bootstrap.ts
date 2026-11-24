@@ -101,6 +101,7 @@ import { withDlnaReflection } from '@/adapters/inputs/dlna/dlnaNotifierTap';
 import { readBuildVersion } from '@/shared/serverVersion';
 import { ConnectionRegistry } from '@/adapters/loxone/ws/connectionRegistry';
 import { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
+import { buildLoxoneCoverUrl } from '@/adapters/loxone/ws/zoneStateProjection';
 import { ServerHeartbeat } from '@/adapters/loxone/ws/serverHeartbeat';
 import { LoxoneConfigService } from '@/adapters/loxone/services/loxoneConfigService';
 import { stopWithTimeout } from '@/runtime/stopWithTimeout';
@@ -445,6 +446,11 @@ export function createRuntime(): Runtime {
   loxoneNotifier.setTransportLookup((zoneId) => zoneManager.getTransportCapabilities(zoneId));
   loxoneNotifier.setSettingsUrlLookup(
     () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,
+  );
+  // The native client fetches artwork itself and can only read a url our gateway serves, so a
+  // cover hosted anywhere else (a Sonos speaker, a streaming CDN) is named by the zone.
+  loxoneNotifier.setCoverUrlLookup((state) =>
+    buildLoxoneCoverUrl(state, resolveCoverHost(configPort.getSystemConfig().audioserver.ip)),
   );
   loxoneNotifier.setServiceAccountsLookup(() =>
     (contentManager.getServices() as unknown as Array<{ id?: string; user?: string; fake?: boolean }>)

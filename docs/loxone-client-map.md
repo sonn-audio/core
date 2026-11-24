@@ -565,6 +565,16 @@ What a zone can do is read off the command handlers
 station's `coverurl` points there. Only JPEG, PNG, GIF and WebP are accepted, told by their
 first bytes. Pinned in `tests/customRadioCover.test.ts`.
 
+**Artwork is named by the zone, not by its host** (`buildLoxoneCoverUrl`,
+`ws/zoneStateProjection.ts`). The client GETs `coverurl` itself and caches the bytes in its
+CoverDB, which only works for a url whose response it may read: the gateway answers with
+`Access-Control-Allow-Origin: *`, a Sonos speaker's `:1400/getaa`, a streaming CDN and a station
+logo do not. A cover hosted elsewhere is therefore emitted as
+`http://<server>:7090/api/v1/zones/<pid>/cover?v=<revision>` — the same gateway route that
+serves `?size=` artwork to the web UI — and the gateway proxies whatever the zone plays now. A
+cover already on the gateway (`:7090`, library files and custom stations) is passed through
+unchanged. Pinned in `tests/loxoneCoverUrl.test.ts`.
+
 **Closed since the first comparison:** `audio/cfg/search/…` (paged category search),
 `audio/<pid>/queue/move/<uid>/end`, `audio/cfg/roomfavs/<pid>/setplus/…`,
 `audio/cfg/storage/edit/…`, `audio/cfg/radios/modify/…`. Along the way three answers that the

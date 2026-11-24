@@ -35,6 +35,7 @@ export class LoxoneWsNotifier {
   private playContextLookup: ((zoneId: number) => { path: string; name: string } | null) | null = null;
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
   private settingsUrlLookup: (() => string | null) | null = null;
+  private coverUrlLookup: ((state: ZoneState) => string) | null = null;
   private transportLookup: ((zoneId: number) => LoxoneTransport | null) | null = null;
   private readonly dialogThrottle = new DialogThrottle();
 
@@ -108,6 +109,14 @@ export class LoxoneWsNotifier {
   /** Where the audio server's own settings can be opened — the link on a dialog's button. */
   public setSettingsUrlLookup(lookup: (() => string | null) | null): void {
     this.settingsUrlLookup = lookup;
+  }
+
+  /**
+   * Rewrites a zone's artwork url into one the native client may fetch (`buildLoxoneCoverUrl`).
+   * Unset leaves the provider's url verbatim (unchanged behaviour).
+   */
+  public setCoverUrlLookup(lookup: ((state: ZoneState) => string) | null): void {
+    this.coverUrlLookup = lookup;
   }
 
   /**
@@ -194,6 +203,7 @@ export class LoxoneWsNotifier {
       serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
       transport: this.transportLookup?.(state.id) ?? null,
       alertEvent: this.alertEventLookup?.(state.id) ?? null,
+      coverUrlToLoxone: this.coverUrlLookup ?? undefined,
     });
   }
 

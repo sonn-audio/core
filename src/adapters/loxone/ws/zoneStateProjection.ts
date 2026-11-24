@@ -108,6 +108,11 @@ export type ZoneStateProjectionContext = {
   transport?: LoxoneTransport | null;
   /** The alert the zone is playing right now; null or absent when it plays none. */
   alertEvent?: AudioEventType | null;
+  /**
+   * Rewrites the zone's artwork url into one the native client may fetch — see
+   * {@link buildLoxoneCoverUrl}. Unset leaves the provider's url verbatim.
+   */
+  coverUrlToLoxone?: (state: ZoneState) => string;
 };
 
 function clamp01to100(value: unknown): number {
@@ -276,7 +281,7 @@ export function toLoxoneZoneState(
     audiopath,
     audiotype: state.audiotype,
     clientState: state.clientState,
-    coverurl: state.coverurl,
+    coverurl: ctx.coverUrlToLoxone?.(state) ?? state.coverurl,
     duration: state.duration,
     equalizerSettings: formatEqualizerSettings(state.eq),
     icontype: state.icontype,
@@ -308,4 +313,50 @@ export function toLoxoneZoneState(
     outputProtocol: ctx.outputProtocol,
     mixedGroupEnabled: ctx.mixedGroupEnabled,
   };
+}
+
+/**
+ * The artwork url the native client can actually fetch.
+ *
+ * The app GETs whatever `coverurl` names and caches the bytes in its own CoverDB. That only
+ * works for a url whose response it is allowed to read: our gateway answers with
+ * `Access-Control-Allow-Origin: *`, while a Sonos speaker's `:1400/getaa`, a streaming CDN and
+ * a station logo do not — the fetch is refused and the player draws no artwork, even though our
+ * own web UI (a plain `<img>`) shows it from the same url. Naming the zone instead lets the
+ * gateway proxy whatever the zone is playing now, with an `ETag` for revalidation.
+ *
+ * A cover the gateway already serves is left alone: it is on the gateway port and carries its
+ * own cache-busting query already.
+ */
+export function buildLoxoneCoverUrl(state: ZoneState, coverHost: string): string {
+  const source = (state.coverurl ?? '').trim();
+  if (!source || isServedByGateway(source)) {
+    return source;
+  }
+  const host = coverHost.trim() || '127.0.0.1';
+  return `http://${host}:7090/api/v1/zones/${state.id}/cover?v=${coverRevision(source)}`;
+}
+
+/** Artwork the gateway itself serves (library files, custom stations): already fetchable. */
+function isServedByGateway(source: string): boolean {
+  try {
+    const url = new URL(source);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.port === '7090';
+  } catch {
+    // A data uri, or nothing a `<img>` could fetch either; the gateway can serve both.
+    return false;
+  }
+}
+
+/**
+ * A short, stable tag that follows the artwork, so the client's cache moves with the track
+ * instead of showing the previous cover. Hashed rather than the raw url: the url is long and
+ * may carry query the client should not have to care about.
+ */
+function coverRevision(source: string): string {
+  let hash = 5381;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = ((hash << 5) + hash + source.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }
