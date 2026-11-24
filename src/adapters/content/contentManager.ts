@@ -1007,6 +1007,24 @@ export class ContentManager {
     const decodedPath = decodeAudiopath(audiopath);
     const detectedService = detectServiceFromAudiopath(audiopath);
 
+    // Radio Paradise station metadata lives in the catalogue, not in a per-track
+    // service lookup. Without this branch a `radioparadise:<id>` path — and the
+    // `tunein:station:b64_<radioparadise:id>` source it is stored as — has no
+    // resolver: the folder listing is deliberately not harvested for radio, so
+    // the queue row and Recently Played received an empty coverurl and the
+    // clients drew the generic radio icon. The icon is the same catalogue image
+    // the browse row already carries, on the configured artwork origin.
+    const radioParadiseStation = this.radioParadise.resolveStationFromAudiopath(decodedPath || audiopath);
+    if (radioParadiseStation) {
+      return {
+        title: radioParadiseStation.name,
+        artist: '',
+        album: '',
+        coverurl: this.radioParadise.stationCoverUrl(radioParadiseStation),
+        station: radioParadiseStation.name,
+      };
+    }
+
     // Music Assistant bridge items: try to resolve via bridge provider (stored under spotify manager).
     if (detectedService === 'musicassistant') {
       const providerSegment = (audiopath.split(':')[0] ?? '').trim();

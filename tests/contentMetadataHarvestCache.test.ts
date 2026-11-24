@@ -15,6 +15,7 @@ import type { SpotifyServiceManagerProvider } from '../src/adapters/content/prov
 import type { QueueItem } from '../src/ports/types/queueTypes';
 import { createFavoritesManager } from '../src/application/zones/favorites/favoritesManager';
 import { createRecentsManager } from '../src/application/zones/recents/recentsManager';
+import { toApiRecents } from '../src/adapters/http/api/libraryProjection';
 
 type TrackCall = { service: string; user: string; trackId: string };
 
@@ -323,6 +324,153 @@ test('recents record fills metadata from the harvest cache (no live lookup)', as
     assert.equal(stored.items.length, 1);
     assert.equal(stored.items[0]?.title, 'Harvested Song');
     assert.equal(calls.getTrack, 0);
+  });
+});
+
+test('a Radio Paradise recent keeps the catalogue station icon', async () => {
+  await withTempCwd(async () => {
+    const { cm } = makeManager();
+    const contentPort = {
+      resolveMetadata: (p: string) => cm.resolveMetadata(p),
+      getDefaultSpotifyAccountId: () => null,
+      listBrowsableServices: () => [],
+      getBridgeRegistry: () => buildBridgeRegistry([]),
+    } as unknown as ContentPort;
+    const recents = createRecentsManager({
+      notifier: { notifyRecentlyPlayedChanged: () => {} } as unknown as NotifierPort,
+      contentPort,
+    });
+
+    // This is the queue row the radio play produces: the audiopath names the
+    // station, the station label is already known, and the queue has no cover.
+    await recents.record(
+      9,
+      makeQueueItem({
+        audiopath: 'radioparadise:1',
+        audiotype: 1,
+        title: '',
+        station: 'Radio Paradise - Mellow Mix',
+      }),
+    );
+
+    const stored = await recents.get(9);
+    assert.equal(stored.items.length, 1);
+    assert.equal(stored.items[0]?.title, 'Radio Paradise - Mellow Mix');
+    assert.match(
+      stored.items[0]?.coverurl ?? '',
+      /\/assets\/icons\/radioparadise-logo-mellow\.png$/,
+      'the station logo is resolved from the catalogue, not the now-playing track cover',
+    );
+    assert.equal(stored.items[0]?.thumbnail, stored.items[0]?.coverurl);
+
+    // The public API surface the Web UI reads is a direct projection of the store.
+    const api = toApiRecents(9, stored, 0, 10, buildBridgeRegistry([]), 'Living');
+    assert.match(api.items[0]?.coverUrl ?? '', /\/assets\/icons\/radioparadise-logo-mellow\.png$/);
+  });
+});
+
+test('a tunein-wrapped Radio Paradise source resolves the same station icon', async () => {
+  await withTempCwd(async () => {
+    const { cm } = makeManager();
+    const wrapped = `tunein:station:b64_${Buffer.from('radioparadise:0').toString('base64')}`;
+    const meta = await cm.resolveMetadata(wrapped);
+    assert.equal(meta?.title, 'Radio Paradise - Main Mix');
+    assert.match(meta?.coverurl ?? '', /\/assets\/icons\/radioparadise-logo-main\.png$/);
+  });
+});
+
+test('an empty queue cover falls through to the metadata cover', async () => {
+  // The queue row for a service item carries `coverurl: ''` whenever the picture is
+  // only known from metadata. `??` treated that empty string as a value and shadowed
+  // the resolved cover; the recent then lost the artwork the browse row had.
+  await withTempCwd(async () => {
+    const { cm, setTrack } = makeManager();
+    setTrack(LIVE_TRACK);
+    const contentPort = {
+      resolveMetadata: (p: string) => cm.resolveMetadata(p),
+      getDefaultSpotifyAccountId: () => null,
+      listBrowsableServices: () => [],
+      getBridgeRegistry: () => buildBridgeRegistry([]),
+    } as unknown as ContentPort;
+    const recents = createRecentsManager({
+      notifier: { notifyRecentlyPlayedChanged: () => {} } as unknown as NotifierPort,
+      contentPort,
+    });
+
+    await recents.record(
+      11,
+      makeQueueItem({ audiopath: 'applemusic:track:123', audiotype: 5, coverurl: '' }),
+    );
+
+    const stored = await recents.get(11);
+    assert.equal(stored.items[0]?.coverurl, LIVE_TRACK.coverurl, 'the metadata cover is used');
+    assert.equal(stored.items[0]?.thumbnail, LIVE_TRACK.coverurl, 'thumbnail follows the cover');
+
+    const api = toApiRecents(11, stored, 0, 10, buildBridgeRegistry([]), 'Living');
+    assert.equal(api.items[0]?.coverUrl, LIVE_TRACK.coverurl, 'the public response carries it');
+  });
+});
+
+test('a queue cover still wins over metadata', async () => {
+  await withTempCwd(async () => {
+    const { cm, setTrack } = makeManager();
+    setTrack(LIVE_TRACK);
+    const contentPort = {
+      resolveMetadata: (p: string) => cm.resolveMetadata(p),
+      getDefaultSpotifyAccountId: () => null,
+      listBrowsableServices: () => [],
+      getBridgeRegistry: () => buildBridgeRegistry([]),
+    } as unknown as ContentPort;
+    const recents = createRecentsManager({
+      notifier: { notifyRecentlyPlayedChanged: () => {} } as unknown as NotifierPort,
+      contentPort,
+    });
+
+    await recents.record(
+      12,
+      makeQueueItem({
+        audiopath: 'applemusic:track:123',
+        audiotype: 5,
+        coverurl: 'http://cover/queue',
+      }),
+    );
+
+    assert.equal((await recents.get(12)).items[0]?.coverurl, 'http://cover/queue');
+  });
+});
+
+test('a replay with no cover keeps the artwork already stored', async () => {
+  // Neither the queue row nor metadata names a picture this time; the recent must
+  // not lose the image it had.
+  await withTempCwd(async () => {
+    const { cm, setTrack } = makeManager();
+    setTrack(LIVE_TRACK);
+    const contentPort = {
+      resolveMetadata: (p: string) => cm.resolveMetadata(p),
+      getDefaultSpotifyAccountId: () => null,
+      listBrowsableServices: () => [],
+      getBridgeRegistry: () => buildBridgeRegistry([]),
+    } as unknown as ContentPort;
+    const recents = createRecentsManager({
+      notifier: { notifyRecentlyPlayedChanged: () => {} } as unknown as NotifierPort,
+      contentPort,
+    });
+
+    await recents.record(
+      13,
+      makeQueueItem({ audiopath: 'applemusic:track:123', audiotype: 5, coverurl: '' }),
+    );
+    const first = await recents.get(13);
+    assert.equal(first.items[0]?.coverurl, LIVE_TRACK.coverurl);
+
+    setTrack(null);
+    await recents.record(
+      13,
+      makeQueueItem({ audiopath: 'applemusic:track:123', audiotype: 5, coverurl: '' }),
+    );
+    const second = await recents.get(13);
+    assert.equal(second.items[0]?.coverurl, LIVE_TRACK.coverurl, 'the stored cover survives');
+    assert.equal(second.items[0]?.thumbnail, LIVE_TRACK.coverurl);
   });
 });
 

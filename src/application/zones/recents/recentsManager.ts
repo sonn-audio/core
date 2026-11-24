@@ -258,7 +258,14 @@ export class RecentsManager {
     const preferredAudiopath = existing?.audiopath ?? audiopath;
     const entry = {
       audiopath: preferredAudiopath,
-      coverurl: item.coverurl ?? meta?.coverurl ?? '',
+      // A queue row can carry an empty string for a field the provider only
+      // knows from metadata (radio stations are the common case: their title,
+      // artist and cover are stripped from the queue, and the station logo only
+      // exists in the catalogue). `??` would treat that empty string as a
+      // deliberate value and shadow the resolved metadata, which is how a
+      // Radio Paradise recent lost the icon the browse row had. An empty string
+      // means "not provided here", so fall through to the metadata.
+      coverurl: item.coverurl || meta?.coverurl || '',
       owner: ownerBase,
       owner_id: ownerBase,
       service: service.service,
@@ -267,8 +274,8 @@ export class RecentsManager {
         ? safeTitle
         : '',
       type: service.type,
-      album: item.album ?? meta?.album ?? '',
-      artist: item.artist ?? meta?.artist ?? '',
+      album: item.album || meta?.album || '',
+      artist: item.artist || meta?.artist || '',
     };
 
     // Merge with existing entry to avoid wiping metadata when replaying an old recent.

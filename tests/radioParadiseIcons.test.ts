@@ -43,3 +43,21 @@ test('without the setting the icons stay on the plain gateway', async () => {
   const folder = await provider.getFolder('start', 0, 1);
   assert.ok((folder!.items[0]?.coverurl ?? '').startsWith(`http://${HOST}:7090/assets/icons/`));
 });
+
+test('a radioparadise audiopath resolves its catalogue station and icon', () => {
+  const iconBaseUrl = localImageUrl('/assets/icons', HOST, { protocol: 'https', port: 443 });
+  const provider = new RadioParadiseProvider({ iconBaseUrl });
+
+  const station = provider.resolveStationFromAudiopath('radioparadise:1');
+  assert.ok(station, 'the Mellow Mix station is in the catalogue');
+  assert.equal(station!.name, 'Radio Paradise - Mellow Mix');
+  assert.equal(
+    provider.stationCoverUrl(station!),
+    `https://${HOST}/assets/icons/radioparadise-logo-mellow.png`,
+    'the queue and recents get the same https icon the browse row carries',
+  );
+
+  assert.equal(provider.resolveStationFromAudiopath('radioparadise://2/skip')?.id, '2');
+  assert.equal(provider.resolveStationFromAudiopath('radioparadise:99'), null);
+  assert.equal(provider.resolveStationFromAudiopath('tunein:station:b64_x'), null);
+});

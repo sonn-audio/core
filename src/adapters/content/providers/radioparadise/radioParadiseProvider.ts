@@ -1,4 +1,5 @@
 import type { ContentFolder, ContentFolderItem, RadioMenuEntry } from '@/ports/ContentTypes';
+import type { RadioParadiseStation } from '@/domain/radioparadise/stations';
 import {
   RADIO_PARADISE_ICON_BASE_URL,
   RADIO_PARADISE_STATIONS,
@@ -26,6 +27,30 @@ export class RadioParadiseProvider {
       root: 'start',
       description: 'Human-curated, listener-supported radio streams.',
     };
+  }
+
+  /**
+   * The station a `radioparadise:<id>` audiopath names. The path may carry the
+   * `radioparadise://` form or query/hash suffixes the clients append; only the
+   * id before the first separator is significant.
+   */
+  public resolveStationFromAudiopath(audiopath: string): RadioParadiseStation | null {
+    const raw = (audiopath ?? '').trim();
+    if (!raw) return null;
+    const match = /^radioparadise:(?:\/\/)?(.+)$/i.exec(raw);
+    if (!match || !match[1]) return null;
+    const stationId = match[1].split(/[/?#]/)[0]?.trim().toLowerCase();
+    if (!stationId) return null;
+    return RADIO_PARADISE_STATIONS.find((station) => station.id === stationId) ?? null;
+  }
+
+  /**
+   * The catalogue icon on the artwork origin every client-facing image uses.
+   * That origin is the one cbd326c7 fixed for the HTTPS Web UI, so the queue and
+   * Recently Played receive exactly the URL the browse row already has.
+   */
+  public stationCoverUrl(station: RadioParadiseStation): string {
+    return buildRadioParadiseIconUrl(station.icon, this.iconBaseUrl);
   }
 
   public async getFolder(
