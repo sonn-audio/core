@@ -24,6 +24,7 @@ async function postSystem(
         mutate(cfg);
       },
     },
+    contentManager: { refreshFromConfig: () => undefined },
   } as never);
   const route = routes.find((entry) => entry.method === 'POST' && entry.pattern.test('/config/system'));
   assert.ok(route, 'POST /config/system route missing');

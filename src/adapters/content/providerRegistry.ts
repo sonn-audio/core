@@ -1,5 +1,6 @@
 import type { StreamingServiceConfig } from '@/ports/ContentTypes';
 import type { ContentProvider } from '@/adapters/content/ContentProvider';
+import type { ArtworkOriginSettings } from '@/shared/artworkOrigin';
 import { AppleMusicProvider } from '@/adapters/content/providers/applemusic/appleMusicProvider';
 import { DeezerProvider } from '@/adapters/content/providers/deezer/deezerProvider';
 import { TidalProvider } from '@/adapters/content/providers/tidal/tidalProvider';
@@ -25,6 +26,8 @@ export type ProviderConstructionArgs = {
   bridge: StreamingServiceConfig;
   /** Host to build cover-proxy URLs against, for services whose artwork we re-serve. */
   coverHost: string;
+  /** Scheme and port of those urls; defaults to the plain gateway. */
+  coverOrigin?: ArtworkOriginSettings;
 };
 
 export type ProviderDefinition = {
@@ -82,7 +85,7 @@ export const CONTENT_PROVIDERS: readonly ProviderDefinition[] = [
     id: 'applemusic',
     title: 'Apple Music',
     icon: '/admin/providers/apple-music.svg',
-    create: ({ providerId, serviceNativePrefix, label, bridge, coverHost }) =>
+    create: ({ providerId, serviceNativePrefix, label, bridge, coverHost, coverOrigin }) =>
       new AppleMusicProvider({
         providerId,
         serviceNativePrefix,
@@ -90,6 +93,7 @@ export const CONTENT_PROVIDERS: readonly ProviderDefinition[] = [
         developerToken: bridge.developerToken,
         userToken: bridge.userToken,
         coverHost,
+        coverOrigin,
       }),
   },
   {

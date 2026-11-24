@@ -51,6 +51,7 @@ import {
 import { createLogger } from '@/shared/logging/logger';
 import type { CustomRadioStore } from '@/adapters/content/providers/customRadioStore';
 import { resolveCoverHost } from '@/shared/utils/net';
+import { localImageUrl } from '@/shared/artworkOrigin';
 import {
   CUSTOM_RADIO_COVER_DIR,
   removeCustomRadioCover,
@@ -396,8 +397,13 @@ export class ContentManager {
     if (!fileName) {
       return null;
     }
-    const host = resolveCoverHost(this.getConfigPort().getSystemConfig().audioserver.ip);
-    const coverurl = `http://${host}:7090/music/${CUSTOM_RADIO_COVER_DIR}/${fileName}?cb=${Date.now()}`;
+    const audioserver = this.getConfigPort().getSystemConfig().audioserver;
+    const host = resolveCoverHost(audioserver.ip);
+    const coverurl = localImageUrl(
+      `/music/${CUSTOM_RADIO_COVER_DIR}/${fileName}?cb=${Date.now()}`,
+      host,
+      { protocol: audioserver.artworkProtocol, port: audioserver.artworkPort },
+    );
     await this.customRadioStore.update(id, { coverurl });
     return coverurl;
   }
@@ -1163,11 +1169,14 @@ export class ContentManager {
 
   private readLocalIconBaseUrl(): string {
     try {
-      const cfg = this.getConfigPort().getConfig();
-      const host = cfg.system?.audioserver?.ip?.trim() || '127.0.0.1';
-      return `http://${host}:7090/assets/icons`;
+      const audioserver = this.getConfigPort().getConfig().system?.audioserver;
+      const host = audioserver?.ip?.trim() || '127.0.0.1';
+      return localImageUrl('/assets/icons', host, {
+        protocol: audioserver?.artworkProtocol,
+        port: audioserver?.artworkPort,
+      });
     } catch {
-      return 'http://127.0.0.1:7090/assets/icons';
+      return localImageUrl('/assets/icons', '127.0.0.1');
     }
   }
 

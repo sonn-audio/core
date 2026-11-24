@@ -788,6 +788,10 @@ export class SpotifyServiceManager {
             label: labelOverride,
             bridge,
             coverHost: resolveCoverHost(this.configPort.getConfig()?.system?.audioserver?.ip),
+            coverOrigin: {
+              protocol: this.configPort.getConfig()?.system?.audioserver?.artworkProtocol,
+              port: this.configPort.getConfig()?.system?.audioserver?.artworkPort,
+            },
           }),
         );
         continue;

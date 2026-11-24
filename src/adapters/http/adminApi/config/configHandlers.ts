@@ -598,6 +598,11 @@ async function handleSystemUpdate(
       cfg.system.miniserver.protocol = normalizedMiniserverProtocol;
     }
   });
+  // Providers build their own image base urls (station icons, mosaic covers). Rebuilding them is
+  // what makes an artwork-origin change take effect without a restart.
+  if (rawArtworkProtocol !== undefined || rawArtworkPort !== undefined) {
+    deps.contentManager.refreshFromConfig();
+  }
   deps.sendJson(res, 204, {});
 }
 

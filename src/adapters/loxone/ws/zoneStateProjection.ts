@@ -12,6 +12,7 @@ import type { AudioEventType, AudioType, FileType, LineInIconType } from '@/doma
 import { parseServiceNativeAudiopath } from '@/domain/zones/audiopath';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { formatEqualizerSettings } from '@/domain/zones/equalizer';
+import { artworkOrigin, type ArtworkOriginSettings } from '@/shared/artworkOrigin';
 
 /**
  * The `audio_event` entry as the Loxone Miniserver and native app parse it.
@@ -334,7 +335,7 @@ export function toLoxoneZoneState(
 export function buildLoxoneCoverUrl(
   state: ZoneState,
   coverHost: string,
-  artwork: LoxoneArtworkOrigin = {},
+  artwork: ArtworkOriginSettings = {},
 ): string {
   const source = (state.coverurl ?? '').trim();
   if (!source) {
@@ -346,28 +347,6 @@ export function buildLoxoneCoverUrl(
     return `${origin}${parsed.pathname}${parsed.search}`;
   }
   return `${origin}/api/v1/zones/${state.id}/cover?v=${coverRevision(source)}`;
-}
-
-/** Where Loxone clients fetch artwork from; see {@link buildLoxoneCoverUrl}. */
-export type LoxoneArtworkOrigin = {
-  protocol?: 'http' | 'https' | null;
-  port?: number | null;
-};
-
-function artworkOrigin(coverHost: string, artwork: LoxoneArtworkOrigin): string {
-  const protocol = artwork.protocol === 'https' ? 'https' : 'http';
-  const fallbackPort = protocol === 'https' ? 443 : 7090;
-  const port =
-    typeof artwork.port === 'number' &&
-    Number.isInteger(artwork.port) &&
-    artwork.port > 0 &&
-    artwork.port <= 65535
-      ? artwork.port
-      : fallbackPort;
-  const host = coverHost.trim() || '127.0.0.1';
-  // A default port is left out of the url, as clients and caches expect.
-  const defaultPort = protocol === 'https' ? 443 : 80;
-  return port === defaultPort ? `${protocol}://${host}` : `${protocol}://${host}:${port}`;
 }
 
 /** Artwork the gateway itself serves (library files, custom stations): already fetchable. */

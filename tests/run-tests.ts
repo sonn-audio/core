@@ -57,6 +57,8 @@ import './nodeVersionGuard.test';
 import './localLibraryStore.rollup.test';
 import './trackPosition.test';
 import './folderCover.test';
+import './artworkOrigin.test';
+import './radioParadiseIcons.test';
 import './rateLimit.test';
 import './soundcloudTranscodings.test';
 import './groupVolumeBalance.test';

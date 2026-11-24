@@ -7,6 +7,7 @@ import * as mm from 'music-metadata';
 import { Jimp, JimpMime } from 'jimp';
 import { createLogger } from '@/shared/logging/logger';
 import { ensureDir, resolveDataDir } from '@/shared/utils/file';
+import { localImageUrl } from '@/shared/artworkOrigin';
 import { bestEffort, bestEffortSync } from '@/shared/bestEffort';
 import { isLibraryAudioFile, mayLackAudioStream } from '@/shared/audio/libraryAudioFiles';
 import {
@@ -1261,8 +1262,13 @@ export class LocalLibraryProvider {
     if (!coverFile || !dirRelPath) {
       return '';
     }
+    const audioserver = this.getConfigPort().getSystemConfig().audioserver;
     const host = this.resolveCoverHost();
-    const baseUrl = `http://${host}:7090/music/${encodePath(path.join(dirRelPath, coverFile))}`;
+    const baseUrl = localImageUrl(
+      `/music/${encodePath(path.join(dirRelPath, coverFile))}`,
+      host,
+      { protocol: audioserver.artworkProtocol, port: audioserver.artworkPort },
+    );
     if (typeof cacheBust === 'number' && Number.isFinite(cacheBust) && cacheBust > 0) {
       return `${baseUrl}?cb=${cacheBust}`;
     }

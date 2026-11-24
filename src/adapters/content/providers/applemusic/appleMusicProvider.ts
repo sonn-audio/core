@@ -17,6 +17,7 @@ import {
 } from './appleMusicParsers';
 import { getShippedDeveloperToken, buildBaseHeaders, scrapeBearerToken, describeFetchError } from './appleMusicAuth';
 import { collageKey, collageCachedUrl, ensureCollage } from '@/shared/playlistCollage';
+import type { ArtworkOriginSettings } from '@/shared/artworkOrigin';
 import type { ContentProvider, ProviderSearchCategories, ProviderSearchResult } from '@/adapters/content/ContentProvider';
 
 const APPLE_MUSIC_API_BASE = 'https://amp-api.music.apple.com/v1';
@@ -47,6 +48,8 @@ interface AppleMusicProviderOptions {
   userToken?: string;
   /** Host clients use to fetch locally-served mosaic covers (the /music route). */
   coverHost?: string;
+  /** Scheme and port of those mosaic covers; defaults to the plain gateway. */
+  coverOrigin?: ArtworkOriginSettings;
 }
 
 /**
@@ -62,6 +65,7 @@ export class AppleMusicProvider implements ContentProvider {
   private readonly developerToken?: string;
   private readonly userToken?: string;
   private readonly coverHost: string;
+  private readonly coverOrigin: ArtworkOriginSettings;
   private bearerToken?: string;
   private bearerTokenFetchedAt = 0;
   private bearerTokenPromise: Promise<string | null> | null = null;
@@ -76,6 +80,7 @@ export class AppleMusicProvider implements ContentProvider {
     this.developerToken = options.developerToken;
     this.userToken = options.userToken;
     this.coverHost = options.coverHost || '127.0.0.1';
+    this.coverOrigin = options.coverOrigin ?? {};
   }
 
   public get accountId(): string {
@@ -751,7 +756,7 @@ export class AppleMusicProvider implements ContentProvider {
     await Promise.all(
       coverless.map(async ({ it, id }) => {
         const key = collageKey(this.audiopathPrefix, 'playlist', String(id));
-        const cached = await collageCachedUrl(this.coverHost, key);
+        const cached = await collageCachedUrl(this.coverHost, key, this.coverOrigin);
         if (cached) {
           it.coverurl = cached;
           it.thumbnail = cached;
