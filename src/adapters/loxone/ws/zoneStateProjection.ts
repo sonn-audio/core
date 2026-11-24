@@ -325,16 +325,49 @@ export function toLoxoneZoneState(
  * own web UI (a plain `<img>`) shows it from the same url. Naming the zone instead lets the
  * gateway proxy whatever the zone is playing now, with an `ETag` for revalidation.
  *
- * A cover the gateway already serves is left alone: it is on the gateway port and carries its
- * own cache-busting query already.
+ * `artwork` is the origin Loxone clients may reach this server at. The server always serves
+ * plain HTTP on its gateway port; a reverse proxy usually terminates TLS on 443 in front of it,
+ * and a Loxone Web UI served over HTTPS refuses an HTTP image as mixed content. Both the proxied
+ * cover route and artwork the gateway already hosts (`/music/…`) are therefore emitted on that
+ * one origin, with their path and query preserved — the cache-busting tag travels with them.
  */
-export function buildLoxoneCoverUrl(state: ZoneState, coverHost: string): string {
+export function buildLoxoneCoverUrl(
+  state: ZoneState,
+  coverHost: string,
+  artwork: LoxoneArtworkOrigin = {},
+): string {
   const source = (state.coverurl ?? '').trim();
-  if (!source || isServedByGateway(source)) {
-    return source;
+  if (!source) {
+    return '';
   }
+  const origin = artworkOrigin(coverHost, artwork);
+  if (isServedByGateway(source)) {
+    const parsed = new URL(source);
+    return `${origin}${parsed.pathname}${parsed.search}`;
+  }
+  return `${origin}/api/v1/zones/${state.id}/cover?v=${coverRevision(source)}`;
+}
+
+/** Where Loxone clients fetch artwork from; see {@link buildLoxoneCoverUrl}. */
+export type LoxoneArtworkOrigin = {
+  protocol?: 'http' | 'https' | null;
+  port?: number | null;
+};
+
+function artworkOrigin(coverHost: string, artwork: LoxoneArtworkOrigin): string {
+  const protocol = artwork.protocol === 'https' ? 'https' : 'http';
+  const fallbackPort = protocol === 'https' ? 443 : 7090;
+  const port =
+    typeof artwork.port === 'number' &&
+    Number.isInteger(artwork.port) &&
+    artwork.port > 0 &&
+    artwork.port <= 65535
+      ? artwork.port
+      : fallbackPort;
   const host = coverHost.trim() || '127.0.0.1';
-  return `http://${host}:7090/api/v1/zones/${state.id}/cover?v=${coverRevision(source)}`;
+  // A default port is left out of the url, as clients and caches expect.
+  const defaultPort = protocol === 'https' ? 443 : 80;
+  return port === defaultPort ? `${protocol}://${host}` : `${protocol}://${host}:${port}`;
 }
 
 /** Artwork the gateway itself serves (library files, custom stations): already fetchable. */

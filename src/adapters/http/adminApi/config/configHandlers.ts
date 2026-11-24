@@ -397,6 +397,10 @@ async function handleSystemUpdate(
           managedPlayers?: boolean;
           crossfadeSec?: number;
           gapless?: boolean;
+          /** `https` puts the reverse proxy in front of the artwork urls; null resets to `http`. */
+          artworkProtocol?: string | null;
+          /** Artwork port; null resets to the protocol default (7090 / 443). */
+          artworkPort?: number | null;
         };
         miniserver?: { ip?: string; port?: number; protocol?: 'http' | 'https' };
       }
@@ -423,6 +427,8 @@ async function handleSystemUpdate(
   const rawManagedPlayers = hasAudioserver ? body.audioserver!.managedPlayers : undefined;
   const rawCrossfadeSec = hasAudioserver ? body.audioserver!.crossfadeSec : undefined;
   const rawGapless = hasAudioserver ? body.audioserver!.gapless : undefined;
+  const rawArtworkProtocol = hasAudioserver ? body.audioserver!.artworkProtocol : undefined;
+  const rawArtworkPort = hasAudioserver ? body.audioserver!.artworkPort : undefined;
   const rawMiniserverIp = hasMiniserver ? body.miniserver!.ip : undefined;
   const rawMiniserverPort = hasMiniserver ? body.miniserver!.port : undefined;
   const rawMiniserverProtocol = hasMiniserver ? body.miniserver!.protocol : undefined;
@@ -435,6 +441,8 @@ async function handleSystemUpdate(
     typeof rawManagedPlayers !== 'boolean' &&
     typeof rawCrossfadeSec !== 'number' &&
     typeof rawGapless !== 'boolean' &&
+    rawArtworkProtocol === undefined &&
+    rawArtworkPort === undefined &&
     typeof rawMiniserverIp !== 'string' &&
     typeof rawMiniserverPort !== 'number' &&
     typeof rawMiniserverProtocol !== 'string'
@@ -505,6 +513,29 @@ async function handleSystemUpdate(
     }
     normalizedMiniserverProtocol = value;
   }
+  let normalizedArtworkProtocol: 'http' | 'https' | null = null;
+  if (typeof rawArtworkProtocol === 'string') {
+    const value = rawArtworkProtocol.trim().toLowerCase();
+    if (value !== 'http' && value !== 'https') {
+      deps.sendJson(res, 400, { error: 'invalid-artwork-protocol' });
+      return;
+    }
+    normalizedArtworkProtocol = value;
+  } else if (rawArtworkProtocol !== null && rawArtworkProtocol !== undefined) {
+    deps.sendJson(res, 400, { error: 'invalid-artwork-protocol' });
+    return;
+  }
+  let normalizedArtworkPort: number | null = null;
+  if (typeof rawArtworkPort === 'number') {
+    if (!Number.isInteger(rawArtworkPort) || rawArtworkPort <= 0 || rawArtworkPort > 65535) {
+      deps.sendJson(res, 400, { error: 'invalid-artwork-port' });
+      return;
+    }
+    normalizedArtworkPort = rawArtworkPort;
+  } else if (rawArtworkPort !== null && rawArtworkPort !== undefined) {
+    deps.sendJson(res, 400, { error: 'invalid-artwork-port' });
+    return;
+  }
   await deps.configPort.updateConfig((cfg) => {
     if (!cfg.system) cfg.system = defaultConfig().system;
     if (!cfg.system.audioserver) {
@@ -530,6 +561,17 @@ async function handleSystemUpdate(
     }
     if (typeof rawGapless === 'boolean') {
       cfg.system.audioserver.gapless = rawGapless;
+    }
+    // null is the explicit way back to the default; absent leaves the setting alone.
+    if (rawArtworkProtocol === null) {
+      delete cfg.system.audioserver.artworkProtocol;
+    } else if (normalizedArtworkProtocol !== null) {
+      cfg.system.audioserver.artworkProtocol = normalizedArtworkProtocol;
+    }
+    if (rawArtworkPort === null) {
+      delete cfg.system.audioserver.artworkPort;
+    } else if (normalizedArtworkPort !== null) {
+      cfg.system.audioserver.artworkPort = normalizedArtworkPort;
     }
     if (typeof rawLoxoneEnabled === 'boolean') {
       cfg.system.audioserver.loxoneEnabled = rawLoxoneEnabled;

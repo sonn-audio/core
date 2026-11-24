@@ -152,6 +152,19 @@ export interface AudioserverConfig {
   slimprotoCliPort?: number;
   /** Optional LMS-compatible JSON-RPC port (default 9000). */
   slimprotoJsonPort?: number;
+  /**
+   * Scheme wrapped around artwork URLs handed to Loxone clients. The server itself keeps
+   * listening on plain HTTP at the gateway port; a reverse proxy terminates TLS. Absent means
+   * `http`, which is what every existing install speaks and what the internal endpoint serves.
+   * Set this to `https` when the Loxone Web UI (an HTTPS page) must load covers without a
+   * mixed-content block.
+   */
+  artworkProtocol?: 'http' | 'https';
+  /**
+   * Port Loxone clients fetch artwork from. Defaults to 7090 for `http` and 443 for `https`, so a
+   * reverse proxy publishing the gateway on its normal TLS port needs only the protocol above.
+   */
+  artworkPort?: number;
   /** Global crossfade duration in seconds between songs (0 or absent = disabled). */
   crossfadeSec?: number;
   /**

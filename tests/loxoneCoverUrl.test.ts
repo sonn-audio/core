@@ -47,13 +47,79 @@ test('a cover hosted elsewhere is named by the zone, so the client can fetch it'
   );
 });
 
-test('a cover the gateway already serves is left alone', () => {
-  for (const coverurl of [
-    `http://${HOST}:7090/music/Song/cover.jpg?cb=12`,
-    'http://192.168.1.99:7090/music/Other/cover.jpg',
-  ]) {
-    assert.equal(buildLoxoneCoverUrl(zoneState({ coverurl }), HOST), coverurl);
+test('a cover the gateway serves keeps its path and query, on the configured origin', () => {
+  // The origin is whatever Loxone clients may reach; the file and its cache-busting tag stay.
+  const sameHost = `http://${HOST}:7090/music/Song/cover.jpg?cb=12`;
+  assert.equal(buildLoxoneCoverUrl(zoneState({ coverurl: sameHost }), HOST), sameHost);
+
+  const otherHost = 'http://192.168.1.99:7090/music/Other/cover.jpg';
+  assert.equal(
+    buildLoxoneCoverUrl(zoneState({ coverurl: otherHost }), HOST),
+    `http://${HOST}:7090/music/Other/cover.jpg`,
+    'a stale gateway host is replaced, the path is not',
+  );
+});
+
+test('https on the default TLS port is emitted without a port', () => {
+  const url = buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'https', port: 443 });
+  assert.ok(
+    url.startsWith(`https://${HOST}/api/v1/zones/5/cover?v=`),
+    `expected an https url without a port, got ${url}`,
+  );
+});
+
+test('https without a port means 443', () => {
+  const url = buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'https' });
+  assert.ok(url.startsWith(`https://${HOST}/api/v1/zones/5/cover?v=`), url);
+});
+
+test('a custom artwork port is kept in the url', () => {
+  assert.equal(
+    buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'https', port: 8443 }).startsWith(
+      `https://${HOST}:8443/api/v1/zones/5/cover?v=`,
+    ),
+    true,
+  );
+  assert.equal(
+    buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'http', port: 8080 }).startsWith(
+      `http://${HOST}:8080/api/v1/zones/5/cover?v=`,
+    ),
+    true,
+  );
+});
+
+test('http on port 80 is emitted without a port', () => {
+  assert.equal(
+    buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'http', port: 80 }).startsWith(
+      `http://${HOST}/api/v1/zones/5/cover?v=`,
+    ),
+    true,
+  );
+});
+
+test('gateway-served artwork moves to the configured origin', () => {
+  const coverurl = `http://${HOST}:7090/music/Song/cover.jpg?cb=12`;
+  assert.equal(
+    buildLoxoneCoverUrl(zoneState({ coverurl }), HOST, { protocol: 'https', port: 443 }),
+    `https://${HOST}/music/Song/cover.jpg?cb=12`,
+    'path and cache-busting query survive the move',
+  );
+});
+
+test('an unusable port falls back to the protocol default', () => {
+  // Defensive: the config handler rejects these, but a hand-edited file must not emit garbage.
+  for (const port of [0, 70000, 1.5, Number.NaN]) {
+    const url = buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'https', port });
+    assert.ok(
+      url.startsWith(`https://${HOST}/api/v1/zones/5/cover?v=`),
+      `port ${port} should fall back to 443, got ${url}`,
+    );
   }
+});
+
+test('an unknown protocol is http, never a broken url', () => {
+  const url = buildLoxoneCoverUrl(zoneState(), HOST, { protocol: 'ftp' as never, port: 443 });
+  assert.ok(url.startsWith(`http://${HOST}:443/api/v1/zones/5/cover?v=`), url);
 });
 
 test('no cover stays no cover', () => {

@@ -466,6 +466,22 @@ function normalizeSystem(config: AudioServerConfig): boolean {
     config.system.audioserver.slimprotoJsonPort = 9000;
     changed = true;
   }
+  // Artwork origin for Loxone clients: a hand-edited value that no client could use is dropped
+  // rather than emitted, so a typo cannot break every cover url at once. Absent means the
+  // defaults (http, 7090 / 443).
+  const artworkProtocol = config.system.audioserver.artworkProtocol;
+  if (artworkProtocol !== undefined && artworkProtocol !== 'http' && artworkProtocol !== 'https') {
+    delete config.system.audioserver.artworkProtocol;
+    changed = true;
+  }
+  const artworkPort = config.system.audioserver.artworkPort;
+  if (
+    artworkPort !== undefined &&
+    (!Number.isInteger(artworkPort) || artworkPort <= 0 || artworkPort > 65535)
+  ) {
+    delete config.system.audioserver.artworkPort;
+    changed = true;
+  }
   if ('alertPreDelayMs' in config.system.audioserver) {
     delete (config.system.audioserver as Record<string, unknown>).alertPreDelayMs;
     changed = true;

@@ -62,3 +62,51 @@ test('system update still refuses a body with no known field', async () => {
   assert.equal(result.status, 400);
   assert.deepEqual(result.payload, { error: 'invalid-system-payload' });
 });
+
+test('system update stores the artwork protocol and port', async () => {
+  const result = await postSystem({ audioserver: { artworkProtocol: 'HTTPS', artworkPort: 443 } });
+  assert.equal(result.status, 204);
+  assert.equal(result.cfg.system.audioserver.artworkProtocol, 'https');
+  assert.equal(result.cfg.system.audioserver.artworkPort, 443);
+});
+
+test('artwork settings survive an unrelated system save', async () => {
+  const configured = await postSystem({ audioserver: { artworkProtocol: 'https', artworkPort: 443 } });
+  const unrelated = await postSystem({ audioserver: { crossfadeSec: 4 } }, configured.cfg);
+  assert.equal(unrelated.status, 204);
+  assert.equal(unrelated.cfg.system.audioserver.artworkProtocol, 'https');
+  assert.equal(unrelated.cfg.system.audioserver.artworkPort, 443);
+  assert.equal(unrelated.cfg.system.audioserver.crossfadeSec, 4);
+});
+
+test('an unsupported artwork protocol is refused', async () => {
+  for (const value of ['ftp', 'HTTPS2', '']) {
+    const result = await postSystem({ audioserver: { artworkProtocol: value } });
+    assert.equal(result.status, 400, `protocol ${JSON.stringify(value)} should be refused`);
+    assert.deepEqual(result.payload, { error: 'invalid-artwork-protocol' });
+    assert.equal(result.cfg.system.audioserver.artworkProtocol, undefined);
+  }
+  const wrongType = await postSystem({ audioserver: { artworkProtocol: 5 } });
+  assert.equal(wrongType.status, 400);
+  assert.deepEqual(wrongType.payload, { error: 'invalid-artwork-protocol' });
+});
+
+test('an invalid artwork port is refused', async () => {
+  for (const value of [0, -1, 65536, 1.5, Number.NaN]) {
+    const result = await postSystem({ audioserver: { artworkPort: value } });
+    assert.equal(result.status, 400, `port ${value} should be refused`);
+    assert.deepEqual(result.payload, { error: 'invalid-artwork-port' });
+    assert.equal(result.cfg.system.audioserver.artworkPort, undefined);
+  }
+});
+
+test('null resets the artwork origin to the defaults', async () => {
+  const configured = await postSystem({ audioserver: { artworkProtocol: 'https', artworkPort: 8443 } });
+  const reset = await postSystem(
+    { audioserver: { artworkProtocol: null, artworkPort: null } },
+    configured.cfg,
+  );
+  assert.equal(reset.status, 204);
+  assert.equal(reset.cfg.system.audioserver.artworkProtocol, undefined);
+  assert.equal(reset.cfg.system.audioserver.artworkPort, undefined);
+});

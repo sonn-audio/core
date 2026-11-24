@@ -448,10 +448,15 @@ export function createRuntime(): Runtime {
     () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,
   );
   // The native client fetches artwork itself and can only read a url our gateway serves, so a
-  // cover hosted anywhere else (a Sonos speaker, a streaming CDN) is named by the zone.
-  loxoneNotifier.setCoverUrlLookup((state) =>
-    buildLoxoneCoverUrl(state, resolveCoverHost(configPort.getSystemConfig().audioserver.ip)),
-  );
+  // cover hosted anywhere else (a Sonos speaker, a streaming CDN) is named by the zone — on the
+  // origin Loxone clients may reach, which is HTTPS behind the reverse proxy when configured.
+  loxoneNotifier.setCoverUrlLookup((state) => {
+    const audioserver = configPort.getSystemConfig().audioserver;
+    return buildLoxoneCoverUrl(state, resolveCoverHost(audioserver.ip), {
+      protocol: audioserver.artworkProtocol,
+      port: audioserver.artworkPort,
+    });
+  });
   loxoneNotifier.setServiceAccountsLookup(() =>
     (contentManager.getServices() as unknown as Array<{ id?: string; user?: string; fake?: boolean }>)
       .filter((entry) => typeof entry.id === 'string' && typeof entry.user === 'string')
