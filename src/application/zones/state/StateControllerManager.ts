@@ -1,6 +1,6 @@
 import { createLogger } from '@/shared/logging/logger';
 import type { ZoneConfig } from '@/domain/config/types';
-import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
+import type { ExternalTakeover, ExternalTransportCapabilities, ZoneStateController } from '@/application/zones/state/StateController';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { InternalStateController } from '@/application/zones/state/InternalStateController';
 import { BeoLinkStateController } from '@/application/zones/state/BeoLinkStateController';
@@ -58,6 +58,28 @@ export class StateControllerManager {
         message: err instanceof Error ? err.message : String(err),
       });
       return false;
+    }
+  }
+
+  /**
+   * What the controller that owns this zone says it can do, or null when it cannot say.
+   *
+   * The projection asks this to decide which transport controls to offer; a controller that does
+   * not implement it keeps whatever the projection offered before.
+   */
+  public getTransportCapabilities(zoneId: number): ExternalTransportCapabilities | null {
+    const controller = this.controllers.get(zoneId);
+    if (!controller?.getTransportCapabilities) {
+      return null;
+    }
+    try {
+      return controller.getTransportCapabilities();
+    } catch (err) {
+      this.log.debug('state controller capabilities failed', {
+        zoneId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return null;
     }
   }
 

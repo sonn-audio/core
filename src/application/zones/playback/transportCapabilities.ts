@@ -1,5 +1,6 @@
 import type { QueueAuthority, ZoneContext } from '@/application/zones/internal/zoneTypes';
 import { isQueueDrivenInput } from '@/application/zones/playback/guards';
+import type { ExternalTransportCapabilities } from '@/application/zones/state/StateController';
 
 /**
  * What the transport controls of a zone will actually do right now.
@@ -21,7 +22,24 @@ export type ZoneTransportCapabilities = {
 export function zoneTransportCapabilities(
   zone: { inputMode: ZoneContext['inputMode']; queue: { authority?: QueueAuthority | null } },
   isLocalQueueAuthority: (authority: QueueAuthority | undefined | null) => boolean,
+  /**
+   * What the player that owns the zone right now will actually perform.
+   *
+   * Present only while the zone follows someone else. It then decides the mask on its own: the
+   * local queue is not what is playing, so reading it would advertise controls the room has no
+   * use for - and seeking, on this server, has historically meant "start our own copy of the
+   * item" (see handlePosition), which replaces the session rather than moving it.
+   */
+  external?: ExternalTransportCapabilities | null,
 ): ZoneTransportCapabilities {
+  if (external) {
+    return {
+      skip: external.skip,
+      seek: external.seek,
+      shuffle: external.shuffle,
+      repeat: external.repeat,
+    };
+  }
   const mode = zone.inputMode;
   const queueDriven = isQueueDrivenInput(mode);
   const ownQueue = queueDriven && isLocalQueueAuthority(zone.queue.authority);

@@ -126,3 +126,23 @@ test('a zone that can do nothing still sends a mask the app does not read as "no
   assert.equal(app.offersSkip(none), false);
   assert.equal(app.blocksSeek(none), true);
 });
+
+test('a zone following an external player is offered only what that player can do', () => {
+  // The speaker owns the session: the mask is its answer, not this server's queue. Shuffle and
+  // repeat are reported unsupported because they are not forwarded for a queue the speaker owns.
+  const caps = (external: { skip: boolean; seek: boolean; shuffle: boolean; repeat: boolean } | null) =>
+    zoneTransportCapabilities({ inputMode: null, queue: { authority: 'local' } }, isLocal, external);
+
+  assert.deepEqual(
+    caps({ skip: true, seek: true, shuffle: false, repeat: false }),
+    { skip: true, seek: true, shuffle: false, repeat: false },
+    'next, previous and seek survive; shuffle and repeat do not',
+  );
+  assert.deepEqual(
+    caps({ skip: false, seek: false, shuffle: false, repeat: false }),
+    { skip: false, seek: false, shuffle: false, repeat: false },
+    'a player that can only pause offers nothing else',
+  );
+  // No external answer: the local queue decides, exactly as it did before this existed.
+  assert.deepEqual(caps(null), { skip: true, seek: true, shuffle: true, repeat: true });
+});

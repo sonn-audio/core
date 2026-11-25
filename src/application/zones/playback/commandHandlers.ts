@@ -15,6 +15,7 @@ import type { PlaybackMetadata, PlaybackSession } from '@/ports/types/playback';
 import type { AirplayRemoteCommand, LineInControlCommand } from '@/ports/InputsPort';
 import { parseLineInInputId } from '@/application/zones/internal/zoneAudioHelpers';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
+import { resolveZoneStateControllerId } from '@/application/zones/state/authorityPolicies';
 
 type CommandCoordinator = {
   log: ComponentLogger;
@@ -274,6 +275,20 @@ function handlePosition(
   posSeconds: number,
 ): void {
   if (!isQueueDrivenInput(mode)) {
+    return;
+  }
+  if (zoneFollowsExternalPlayer(ctx)) {
+    // The speaker's own item is not ours to reposition, and the queue branch below does not move
+    // it: it starts this server's playback of a stale queue item, which replaces the session the
+    // speaker is playing (measured: a Spotify session was replaced by a sonn stream and the
+    // Spotify app showed the room's Connect device instead). The state controller forwards the
+    // seek when the speaker advertises one; when it cannot, nothing happens - which is the
+    // correct outcome for a control that cannot be honoured.
+    coordinator.log.debug('position ignored; the zone follows an external player', {
+      zoneId,
+      audiopath: ctx.queueController.current()?.audiopath ?? ctx.state.audiopath ?? '',
+      requestedSeconds: posSeconds,
+    });
     return;
   }
   if (mode === 'musicassistant') {
@@ -655,4 +670,15 @@ function handleRepeat(
   }
   coordinator.applyPatch(zoneId, { plrepeat: resolved });
   ctx.queue.repeat = resolved;
+}
+
+/**
+ * Whether the speaker is playing something this server did not start.
+ *
+ * Narrow on purpose: the Sonos controller owns the speaker's own session, and it is the one that
+ * reports an external item with no audiopath. Music Assistant routes its seeks through its own
+ * input service and the internal controller is this server by definition, so neither is affected.
+ */
+function zoneFollowsExternalPlayer(ctx: ZoneContext): boolean {
+  return resolveZoneStateControllerId(ctx.config) === 'sonos' && !ctx.player.getSession();
 }

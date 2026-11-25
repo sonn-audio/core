@@ -19,7 +19,11 @@ import { SONOS_OWN_CONTAINER_SERVICE_ID, isOwnStreamUrl } from '@/domain/outputs
 import { buildBaseUrl } from '@/shared/streamUrl';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import { createLogger } from '@/shared/logging/logger';
-import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
+import type {
+  ExternalTakeover,
+  ExternalTransportCapabilities,
+  ZoneStateController,
+} from '@/application/zones/state/StateController';
 
 type SonosControllerOptions = {
   zone: ZoneConfig;
@@ -289,7 +293,7 @@ export class SonosStateController implements ZoneStateController {
     }
   }
 
-  public handleCommand(command: string): boolean {
+  public handleCommand(command: string, payload?: string): boolean {
     const action = normalizeCommand(command);
     if (!action) {
       return false;
@@ -301,6 +305,34 @@ export class SonosStateController implements ZoneStateController {
       // restart the queue where it left off (issue #327).
       this.log.warn('sonos command declined; no active group', { zoneId: this.zone.id, action });
       return false;
+    }
+    if (action === 'unsupported') {
+      // Consumed, not declined: the zone is following this speaker, and a shuffle of a queue the
+      // speaker owns would otherwise be applied to a local list the room is not playing.
+      this.log.debug('sonos command ignored; not forwarded for speaker-owned playback', {
+        zoneId: this.zone.id,
+        command,
+      });
+      return true;
+    }
+    if (action === 'seek') {
+      const seconds = Number(payload);
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        // Malformed: consumed so it cannot be read as a request to play the local queue from 0.
+        this.log.debug('sonos seek ignored; unusable position', { zoneId: this.zone.id, payload });
+        return true;
+      }
+      if (!this.advertisedActions().canSeek) {
+        this.log.debug('sonos seek ignored; the speaker does not advertise seeking this item', {
+          zoneId: this.zone.id,
+          seconds,
+        });
+        return true;
+      }
+      const duration = this.currentTrackDurationSec();
+      const clamped = duration > 0 ? Math.min(seconds, Math.max(0, duration - 1)) : seconds;
+      void this.dispatchCommand('seek', false, Math.round(clamped * 1000));
+      return true;
     }
     if (action === 'play') {
       const strategy = this.resolvePlayStrategy(this.client.player.group);
@@ -317,6 +349,58 @@ export class SonosStateController implements ZoneStateController {
     }
     void this.dispatchCommand(action);
     return true;
+  }
+
+  /**
+   * What the speaker itself says it will do, for the client's capability mask.
+   *
+   * `seek` comes from the raw action set because `PlaybackActionsWrapper` exposes getters for
+   * play/pause/stop/skip but not for seek; everything else is read through the wrapper. Shuffle
+   * and repeat are reported unsupported because the speaker's own queue is not ours to reorder -
+   * the flags would otherwise be applied to the local queue and change nothing audible.
+   */
+  public getTransportCapabilities(): ExternalTransportCapabilities | null {
+    if (!this.client?.player?.group) {
+      return null;
+    }
+    const actions = this.advertisedActions();
+    return {
+      // Both firmware generations skip, so an S1 speaker that cannot describe itself is still
+      // offered next and previous; an S2 speaker that says it cannot is believed.
+      skip: actions.canSkip ?? true,
+      seek: actions.canSeek === true,
+      shuffle: false,
+      repeat: false,
+    };
+  }
+
+  private advertisedActions(): { canSkip: boolean | null; canSeek: boolean | null } {
+    const group = this.client?.player?.group;
+    if (!group) {
+      return { canSkip: null, canSeek: null };
+    }
+    // S1 firmware has no local playback-actions API. It can still be told to skip - both
+    // generations take that - but it can neither say whether it may seek nor seek at all.
+    if (!('playbackActionsWrapper' in group)) {
+      return { canSkip: null, canSeek: null };
+    }
+    const wrapper = (group as SonosGroup).playbackActionsWrapper;
+    // See `getTransportCapabilities`: the seek flag exists only on the raw object the wrapper
+    // holds, and reading it is what keeps the mask honest to the speaker instead of the media.
+    const raw = (wrapper as unknown as { raw?: { canSeek?: unknown } }).raw;
+    return {
+      canSkip: wrapper.canSkipForward || wrapper.canSkipBackward,
+      canSeek: raw?.canSeek === true,
+    };
+  }
+
+  /** The length of the speaker's current item, when it states one; 0 when it does not. */
+  private currentTrackDurationSec(): number {
+    const durationMs = this.client?.player?.group?.playbackMetadataStatus?.currentItem?.track
+      ?.durationMillis;
+    return typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
+      ? durationMs / 1000
+      : 0;
   }
 
   private startTicker(): void {
@@ -652,8 +736,9 @@ export class SonosStateController implements ZoneStateController {
   }
 
   private async dispatchCommand(
-    action: 'play' | 'pause' | 'stop' | 'next' | 'previous',
+    action: 'play' | 'pause' | 'stop' | 'next' | 'previous' | 'seek',
     retried = false,
+    positionMs = 0,
   ): Promise<void> {
     if (action === 'stop' && !retried && this.client?.player?.isCoordinator === false) {
       // A speaker that follows another is stopped when its leader went to another source (#430).
@@ -677,7 +762,16 @@ export class SonosStateController implements ZoneStateController {
       } else if (action === 'pause') await group.pause();
       else if (action === 'stop') await group.stop();
       else if (action === 'next') await group.skipToNextTrack();
-      else await group.skipToPreviousTrack();
+      else if (action === 'seek') {
+        // S1 firmware has no seek at all; `handleCommand` already declines for it, and this
+        // narrows the union for the type checker as well as guarding the call.
+        const seekable = group as SonosGroup;
+        if (typeof seekable.seek !== 'function') {
+          this.log.debug('sonos seek ignored; this firmware cannot seek', { zoneId: this.zone.id });
+          return;
+        }
+        await seekable.seek(positionMs);
+      } else await group.skipToPreviousTrack();
 
       this.log.info('sonos command sent', { zoneId: this.zone.id, action });
     } catch (err) {
@@ -691,7 +785,7 @@ export class SonosStateController implements ZoneStateController {
         });
         await this.connect();
         if (this.client?.player?.group) {
-          await this.dispatchCommand(action, true);
+          await this.dispatchCommand(action, true, positionMs);
           return;
         }
       }
@@ -842,7 +936,9 @@ async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void
   }
 }
 
-function normalizeCommand(command: string): 'play' | 'pause' | 'stop' | 'next' | 'previous' | null {
+function normalizeCommand(
+  command: string,
+): 'play' | 'pause' | 'stop' | 'next' | 'previous' | 'seek' | 'unsupported' | null {
   const normalized = command.trim().toLowerCase();
   if (!normalized) return null;
   if (normalized === 'play' || normalized === 'resume') return 'play';
@@ -850,6 +946,12 @@ function normalizeCommand(command: string): 'play' | 'pause' | 'stop' | 'next' |
   if (normalized === 'stop') return 'stop';
   if (normalized === 'next' || normalized === 'queueplus' || normalized === 'skip') return 'next';
   if (normalized === 'previous' || normalized === 'prev' || normalized === 'queueminus') return 'previous';
+  // A position request is a seek of the speaker's own item. Forwarding it keeps the session the
+  // speaker is already playing; leaving it to the command layer starts a stream of our own instead.
+  if (normalized === 'position' || normalized === 'seek') return 'seek';
+  // Reordering the speaker's queue is not implemented here. Consumed rather than declined, so the
+  // caller cannot fall through to the local queue and reorder a list the room is not playing.
+  if (normalized === 'shuffle' || normalized === 'repeat') return 'unsupported';
   return null;
 }
 

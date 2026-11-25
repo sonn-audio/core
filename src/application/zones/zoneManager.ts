@@ -5,6 +5,7 @@ import {
   type ZoneTransportCapabilities,
 } from '@/application/zones/playback/transportCapabilities';
 import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
+import type { ExternalTransportCapabilities } from '@/application/zones/state/StateController';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ZoneConfig, InputConfig, GroupConfig } from '@/domain/config/types';
@@ -140,6 +141,25 @@ const GROUP_LEADER_COMMANDS: ReadonlySet<string> = new Set([
   'shuffle',
   'repeat',
 ]);
+
+/**
+ * Commands a zone following an external player must not fall through with.
+ *
+ * The state controller is asked first and its own answer decides; these are the ones where a
+ * "no" from the controller would otherwise be answered by the local queue: a position would
+ * start this server's playback of a stale item (replacing the session), and shuffle/repeat
+ * would reorder a list the room is not playing. Refused, not redirected.
+ */
+const EXTERNAL_UNSUPPORTED_COMMANDS: ReadonlySet<string> = new Set([
+  'position',
+  'shuffle',
+  'repeat',
+]);
+
+/** A command name in the form the handlers and intents use, without a payload. */
+function normalizeCommandName(command: string): string {
+  return command.trim().toLowerCase();
+}
 
 export type ZoneQueueOps = Pick<
   ZoneQueueController,
@@ -813,6 +833,16 @@ export class ZoneManager {
       if (shouldUseExternalController && this.stateControllers.handleCommand(zoneId, command, payload)) {
         return;
       }
+      if (shouldUseExternalController && EXTERNAL_UNSUPPORTED_COMMANDS.has(normalizeCommandName(command))) {
+        // Nobody in this zone can act on it, and the fall-through would act on the local queue
+        // instead - for a position that means starting our own playback of a stale item and
+        // replacing the session the speaker is playing. Refused rather than redirected.
+        this.log.debug('command ignored; the zone follows an external player', {
+          zoneId,
+          command: normalizeCommandName(command),
+        });
+        return;
+      }
       if (this.routeGroupMemberTransport(ctx, command, context?.groupedTargets)) {
         return;
       }
@@ -1178,8 +1208,30 @@ export class ZoneManager {
   public getTransportCapabilities(zoneId: number): ZoneTransportCapabilities | null {
     const ctx = this.zoneRepo.get(zoneId);
     return ctx
-      ? zoneTransportCapabilities(ctx, (authority) => this.queueController.isLocalQueueAuthority(authority))
+      ? zoneTransportCapabilities(
+          ctx,
+          (authority) => this.queueController.isLocalQueueAuthority(authority),
+          this.externalTransportCapabilities(ctx),
+        )
       : null;
+  }
+
+  /**
+   * What the player owning this zone offers, or null when this server is the one playing.
+   *
+   * A zone follows its controller only while nothing of ours is sounding; the moment a local
+   * session is running, the queue decides the mask exactly as it always has. A controller that
+   * cannot describe itself (`musicassistant`, `beolink`) also returns null here and keeps the
+   * behaviour it had, so this only narrows what a controller can honestly answer for.
+   */
+  private externalTransportCapabilities(ctx: ZoneContext): ExternalTransportCapabilities | null {
+    if (resolveZoneStateControllerId(ctx.config) === 'internal') {
+      return null;
+    }
+    if (this.audioManager.hasActiveLocalSession(ctx.id) || this.audioManager.hasLocalEngineSession(ctx.id)) {
+      return null;
+    }
+    return this.stateControllers.getTransportCapabilities(ctx.id);
   }
 
   /** The alert a zone is playing right now; null when it plays none or is unknown. */
