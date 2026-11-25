@@ -10,6 +10,7 @@ import {
 import { executePlaybackPlan } from '../src/application/playback/executePlaybackPlan';
 import { handleEndOfTrack, stepQueueAsync } from '../src/application/zones/playback/queueTransitions';
 import { QueueAdvanceController } from '../src/application/zones/playback/queueAdvanceController';
+import { ExternalStateRouter } from '../src/application/zones/state/ExternalStateRouter';
 
 // A zone that follows an outside player keeps its queue but must not walk it: measured, a queue
 // advance claimed a Sonos speaker two minutes after the zone had yielded to a Spotify session
@@ -178,4 +179,56 @@ test('a start nobody interrupted is played, as before', async () => {
   assert.equal(await run(), null, 'the harness player returns no session');
   assert.equal(played.length, 1, 'the source reached the player');
   assert.deepEqual(stopped, []);
+});
+
+function routerHarness(options: { session: unknown; activeLocalSession: boolean }) {
+  const calls: string[] = [];
+  const applied: Array<Partial<Record<string, unknown>>> = [];
+  const zone: any = { config: { state: { controller: 'sonos' } }, state: {} };
+  const router = new ExternalStateRouter({
+    zones: { get: (zoneId: number) => (zoneId === 2 ? zone : undefined) } as any,
+    audioManager: {
+      hasActiveLocalSession: () => options.activeLocalSession,
+      getSession: () => options.session,
+      stopPlayback: () => {
+        calls.push('stopPlayback');
+        return null;
+      },
+    } as any,
+    applyPatch: (_zoneId, patch) => {
+      calls.push('applyPatch');
+      applied.push(patch);
+    },
+    notifyQueueUpdated: () => undefined,
+    yieldToExternalSource: () => {
+      calls.push('yield');
+      return true;
+    },
+    log: silentLog,
+  });
+  return { router, calls, applied };
+}
+
+test("a stale session is given up before the speaker's own state is taken", () => {
+  const { router, calls, applied } = routerHarness({
+    session: { state: 'playing', playbackSource: { kind: 'pipe' } },
+    activeLocalSession: false,
+  });
+
+  router.onStatePatch(2, { mode: 'play', title: 'Radio Paradise' });
+
+  assert.equal(calls[0], 'yield', 'the zone is handed over, not merely its session dropped');
+  assert.ok(calls.includes('stopPlayback'), 'the session itself is still dropped');
+  assert.equal(applied[applied.length - 1]?.title, 'Radio Paradise', 'what the speaker plays wins');
+});
+
+test('an external takeover asks for the zone even when nothing of ours is left', () => {
+  const { router, calls } = routerHarness({ session: null, activeLocalSession: false });
+
+  router.onExternalTakeover(2, {
+    mediaUrl: 'x-sonos-spotify:spotify%3atrack%3a1',
+    sourceName: 'Spotify',
+  });
+
+  assert.deepEqual(calls, ['yield'], 'the queue is held back whatever was left of the session');
 });

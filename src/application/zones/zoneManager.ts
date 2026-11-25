@@ -251,11 +251,17 @@ export class ZoneManager {
       notifyQueueUpdated: (zoneId, count) => this.notifier.notifyQueueUpdated(zoneId, count),
       yieldToExternalSource: (zoneId) => {
         const ctx = this.zoneRepo.get(zoneId);
-        if (!ctx || !this.endOwnSession(ctx, 'switch_to_external')) {
+        if (!ctx) {
           return false;
         }
-        this.stopFollowersAfterTakeover(zoneId);
-        return true;
+        // The zone belongs to the speaker's new source from here, whether or not it still had
+        // playback of its own when the news arrived: its queue stops advancing and whatever fed
+        // it is let go of either way.
+        const hadOwnPlayback = this.endOwnSession(ctx, 'switch_to_external');
+        if (hadOwnPlayback) {
+          this.stopFollowersAfterTakeover(zoneId);
+        }
+        return hadOwnPlayback;
       },
       log: this.log,
     });
@@ -1372,17 +1378,27 @@ export class ZoneManager {
    * Only what is the zone's own: a line-in is not released by its audiopath here, since
    * a member mirrors its leader's and the source would be the group's.
    *
-   * Returns false when the zone had no session or input of its own to end.
+   * Giving the speaker up does not depend on there still being a session to end. Measured: an
+   * engine session was already stopping when the speaker was taken by a session started
+   * elsewhere, so nothing of ours was left to end - and the zone came out of that takeover with
+   * its queue still armed and the Spotify run that had fed it still alive, holding the Connect
+   * device the account could wake up again later. Whatever is left of our own playback is let go
+   * of here, and the return value only says whether there was any of it to let go. A member
+   * joining a group is the one case that is not a change of hands: it keeps following the leader
+   * and has nothing of its own to give up.
    *
    * The `switch_to_` reason makes an AirPlay receiver restart and drop its sender, so a phone
    * streaming into a speaker that went to another source falls back to its own speaker.
    */
   private endOwnSession(ctx: ZoneContext, reason: 'joined_group' | 'switch_to_external'): boolean {
     const input = ctx.activeInput ?? ctx.inputMode;
-    if (!this.audioManager.getSession(ctx.id) && !input) {
+    const hadOwnPlayback = Boolean(this.audioManager.getSession(ctx.id) || input);
+    if (!hadOwnPlayback && reason === 'joined_group') {
+      // A member joining a group with nothing of its own to give up keeps following the leader;
+      // the speaker is the group's, and there is no run of its own to let go of.
       return false;
     }
-    if (reason === 'joined_group') {
+    if (hadOwnPlayback && reason === 'joined_group') {
       this.log.info('zone joined a group it follows; ending its own session', { zoneId: ctx.id, input });
     }
     // The speaker is somebody else's from here on. Whatever this zone's queue was playing stays
@@ -1413,7 +1429,7 @@ export class ZoneManager {
     ctx.queue.authority = 'local';
     this.playbackCoordinator.setInputMode(ctx, null);
     ctx.player.stop();
-    return true;
+    return hadOwnPlayback;
   }
 
   public getMetadata(zoneId: number): Record<string, unknown> | undefined {

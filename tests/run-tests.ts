@@ -1737,13 +1737,20 @@ test('a zone whose speaker went to another source ends its session but leaves th
     assert.deepEqual(playerStops, [ZONE], 'its own playback ends');
     assert.equal(ctx.inputMode, null);
     assert.equal(ctx.queue.authority, 'local');
+    assert.equal(ctx.queueSuspended, true, 'its queue is held back');
     assert.ok(!stub.calls.includes(`${ZONE}:stop`), 'the speaker playing the TV is not stopped');
 
     spotifyStops.length = 0;
     playerStops.length = 0;
-    assert.equal(yieldToExternalSource(ZONE), false, 'with nothing of its own left there is nothing to end');
-    assert.deepEqual(spotifyStops, []);
-    assert.deepEqual(playerStops, []);
+    // Nothing of the zone's own is left - the measured shape of a takeover that arrives while our
+    // own session is already ending. It is still a change of hands: the queue is held back and
+    // whatever fed it is let go of, or the queue advances onto the speaker later. The speaker,
+    // playing somebody else's source, is still not told to stop.
+    assert.equal(yieldToExternalSource(ZONE), false, 'nothing of its own was left to end');
+    assert.deepEqual(spotifyStops, [`${ZONE}:switch_to_external`], 'the run that fed it is let go of');
+    assert.deepEqual(playerStops, [ZONE], 'the zone stops trying to play');
+    assert.equal(ctx.queueSuspended, true, 'its queue is held back');
+    assert.ok(!stub.calls.includes(`${ZONE}:stop`), 'the speaker is still not stopped');
   } finally {
     inputs.stopSpotifySession = realStopSpotify;
     ctx.player.stop = realPlayerStop;

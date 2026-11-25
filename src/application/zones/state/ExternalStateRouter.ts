@@ -13,8 +13,10 @@ export type ExternalStateRouterDeps = {
   applyPatch: (zoneId: number, patch: Partial<ZoneState>, force?: boolean) => void;
   notifyQueueUpdated: (zoneId: number, queueSize: number) => void;
   /**
-   * End the zone's own session and whatever feeds it, as a stop would, but leave the speaker
-   * alone: it is playing something else now. False when the zone had nothing of its own going.
+   * Give the zone up to whoever has the speaker now: its queue stops advancing and whatever fed
+   * it is let go of, without touching the speaker, which is playing something else. True when the
+   * zone had playback of its own to let go of - the handing over happens either way, because a
+   * session that ended on its own still leaves a queue armed and a Spotify run alive.
    */
   yieldToExternalSource: (zoneId: number) => boolean;
   log: ComponentLogger;
@@ -84,6 +86,10 @@ export class ExternalStateRouter {
         return;
       }
       // Session object can outlive real output playback; drop it before accepting external authority.
+      // The zone is given up first: the speaker is playing somebody else's source, so its queue
+      // must stop advancing and the run that fed this session must be let go of - a stale session
+      // dropped on its own left both behind and the queue could take the speaker back later.
+      this.deps.yieldToExternalSource(zoneId);
       this.deps.audioManager.stopPlayback(zoneId);
       this.deps.log.info('cleared stale local session before external state patch', {
         zoneId,
@@ -104,12 +110,16 @@ export class ExternalStateRouter {
     if (!ctx) return;
     const controllerId = resolveZoneStateControllerId(ctx.config);
     if (controllerId === 'internal') return;
-    if (!this.deps.yieldToExternalSource(zoneId)) return;
+    // Logged whether or not the zone still had playback of its own: the handing over happens
+    // either way, and a takeover that arrives after our session ended on its own is exactly the
+    // case that has to stay diagnosable.
+    const hadOwnPlayback = this.deps.yieldToExternalSource(zoneId);
     this.deps.log.info('zone yielded its speaker to an external source', {
       zoneId,
       controller: controllerId,
       source: takeover.sourceName,
       mediaUrl: takeover.mediaUrl,
+      hadOwnPlayback,
     });
   }
 
