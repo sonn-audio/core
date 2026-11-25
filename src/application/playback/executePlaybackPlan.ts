@@ -5,6 +5,10 @@ import { applyPreferredPlaybackSettings } from '@/application/playback/PlaybackS
 import type { PlaybackPlan } from '@/application/playback/types/PlaybackPlan';
 import type { ZoneContext } from '@/application/zones/internal/zoneTypes';
 import { normalizeSpotifyAudiopath, resolveSpotifyAccountId } from '@/application/zones/helpers/queueHelpers';
+import {
+  captureOwnershipEpoch,
+  ownershipMoved,
+} from '@/application/zones/playback/playbackOwnership';
 import type { ContentPort } from '@/ports/ContentPort';
 import type { InputsPort } from '@/ports/InputsPort';
 import type { ComponentLogger } from '@/shared/logging/logger';
@@ -21,6 +25,26 @@ export type ExecutePlaybackPlanArgs = {
 
 export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promise<PlaybackSession | null> {
   const { ctx, plan, content, inputs, log, zoneAudioPrefs, startAtSec } = args;
+  // Resolving a source can take seconds (a Spotify run has to start and become ready). If the
+  // zone is handed to somebody else in that window, what comes back belongs to the previous
+  // owner and must not be handed to the speaker: measured, a queue advance claimed a Sonos
+  // speaker two minutes after the zone had yielded to a session started elsewhere.
+  const ownershipEpoch = captureOwnershipEpoch(ctx);
+  const abandonIfOwnershipMoved = (label: string | null, resolved: boolean): boolean => {
+    if (!resolved || !ownershipMoved(ctx, ownershipEpoch)) {
+      return false;
+    }
+    log.info('playback start abandoned; the zone changed hands while it was starting', {
+      zoneId: ctx.id,
+      source: label,
+      audiopath: plan.audiopath,
+    });
+    if (label === 'spotify') {
+      // The run holds the account and has to be let go of; nothing was dispatched to the output.
+      inputs.stopSpotifySession(ctx.id, 'ownership_changed');
+    }
+    return true;
+  };
   applyPreferredPlaybackSettings(zoneAudioPrefs, ctx.id, plan.preferredSettings);
   const normalizedStartAt =
     typeof startAtSec === 'number' && Number.isFinite(startAtSec) && startAtSec > 0 ? startAtSec : undefined;
@@ -70,6 +94,9 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
       requester: { kind: 'zone', zoneId: plan.zoneId },
     });
     if (result.playbackSource) {
+      if (abandonIfOwnershipMoved(plan.playExternalLabel, true)) {
+        return null;
+      }
       return ctx.player.playExternal(
         plan.playExternalLabel,
         result.playbackSource,
@@ -105,6 +132,9 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
     });
     if (!playbackSource) {
       log.warn('spotify input not ready; blocking playback to avoid skips', { zoneId: ctx.id });
+      return null;
+    }
+    if (abandonIfOwnershipMoved('spotify', true)) {
       return null;
     }
     const queueUris = ctx.queue.items.map((q) => q.audiopath);

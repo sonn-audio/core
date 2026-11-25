@@ -161,4 +161,24 @@ export interface ZoneContext {
    * One-shot -- `onPlayerStarted` consumes it -- so it cannot leak into the next cold start.
    */
   startAtCurrentVolume?: boolean;
+
+  /**
+   * Ownership epoch of this zone's playback.
+   *
+   * Bumped whenever the zone changes hands: an outside player takes the speaker (a TV input, a
+   * phone starting Spotify in the room, a group regrouping) or an explicit local command starts
+   * playback again. Work that was already under way captured the value it began with and
+   * abandons itself when it has moved, so a start that was resolving a source cannot land on a
+   * speaker somebody else is now using. See `playbackOwnership`.
+   */
+  playbackEpoch: number;
+
+  /**
+   * True while this zone's queue is held back because the speaker belongs to an outside player.
+   *
+   * The queue and its position are kept - it is the listener's list - but nothing advances it on
+   * its own. An explicit play, queue step or row pick clears this and resumes; the end of a track
+   * never does.
+   */
+  queueSuspended?: boolean;
 }

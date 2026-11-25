@@ -689,6 +689,7 @@ function createHarness(options?: {
     lastMetadataDispatchAt: 0,
     inputMode: null,
     alert: undefined,
+    playbackEpoch: 0,
   };
 
   zoneRepo.set(ctx.id, ctx);

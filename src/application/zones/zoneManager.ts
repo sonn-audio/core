@@ -5,6 +5,7 @@ import {
   type ZoneTransportCapabilities,
 } from '@/application/zones/playback/transportCapabilities';
 import { loudnessContourChanges, withLoudness } from '@/domain/zones/loudness';
+import { yieldLocalOwnership } from '@/application/zones/playback/playbackOwnership';
 import { createLogger } from '@/shared/logging/logger';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import type { ZoneConfig, InputConfig, GroupConfig } from '@/domain/config/types';
@@ -1384,6 +1385,17 @@ export class ZoneManager {
     if (reason === 'joined_group') {
       this.log.info('zone joined a group it follows; ending its own session', { zoneId: ctx.id, input });
     }
+    // The speaker is somebody else's from here on. Whatever this zone's queue was playing stays
+    // as the listener left it, but it must not advance on its own and work already in flight must
+    // not land: measured, a queue advance took a Sonos speaker back two minutes after the zone
+    // had yielded to a Spotify session that was started elsewhere.
+    yieldLocalOwnership(ctx);
+    this.log.info('zone yielded its speaker; its queue is held back', {
+      zoneId: ctx.id,
+      reason,
+      input: input ?? null,
+      epoch: ctx.playbackEpoch,
+    });
     // Nothing of the zone's own goes to the speaker from here on, so the stop below is not
     // dispatched to it either.
     ctx.activeOutput = null;
@@ -1540,6 +1552,8 @@ export class ZoneManager {
       activeInput: null,
       inputMode: null,
       alert: undefined,
+      playbackEpoch: 0,
+      queueSuspended: false,
     };
     this.zoneRepo.set(config.id, context);
     this.stateStore.setInitial(config.id, context.state);

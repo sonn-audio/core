@@ -5,6 +5,7 @@ import type { ZoneState } from '@/domain/zones/zoneState';
 import type { QueueItem } from '@/ports/types/queueTypes';
 import type { ZoneOutput } from '@/ports/OutputsTypes';
 import { buildQueueItemPlaybackPatch } from '@/application/zones/playback/patchBuilder';
+import { localAdvanceBlocked, resumeLocalOwnership } from '@/application/zones/playback/playbackOwnership';
 
 type QueueTransitionCoordinator = {
   getZone: (zoneId: number) => ZoneContext | undefined;
@@ -40,6 +41,10 @@ export async function stepQueueAsync(args: {
   if (!coordinator.isLocalQueueAuthority(ctx.queue.authority)) {
     return;
   }
+
+  // An explicit step is a listener asking for this zone's music, so it takes ownership back
+  // before the queue is walked. The automatic end-of-track path never gets here.
+  resumeLocalOwnership(ctx);
 
   const nextIndex = ctx.queueController.step(delta);
   if (nextIndex < 0) {
@@ -80,6 +85,12 @@ export async function handleEndOfTrack(args: {
   ctx: ZoneContext;
 }): Promise<void> {
   const { coordinator, ctx } = args;
+
+  if (localAdvanceBlocked(ctx)) {
+    // Defence in depth: the caller checks this too, and logs it there. A track that ends while
+    // the zone follows an external player must not start the next item of a queue nobody hears.
+    return;
+  }
 
   // Stop at a real end-of-track (nothing more to play), keeping the just-ended
   // track's duration in the stopped state. buildStoppedPatch zeroes duration,

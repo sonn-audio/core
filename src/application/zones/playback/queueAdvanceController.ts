@@ -13,6 +13,7 @@ import type { RadioParadiseBlockService } from '@/application/zones/radioparadis
 import type { CrossfadeController } from '@/application/zones/playback/crossfadeController';
 import type { GaplessController } from '@/application/zones/playback/gaplessController';
 import { handleEndOfTrack as handleEndOfTrackTransition } from '@/application/zones/playback/queueTransitions';
+import { localAdvanceBlocked } from '@/application/zones/playback/playbackOwnership';
 
 export interface QueueAdvanceControllerDeps {
   zoneRepo: ZoneRepository;
@@ -63,6 +64,15 @@ export class QueueAdvanceController {
   constructor(private readonly deps: QueueAdvanceControllerDeps) {}
 
   public async advanceTrack(ctx: ZoneContext): Promise<void> {
+    if (localAdvanceBlocked(ctx)) {
+      // The queue is kept but not walked: the speaker belongs to somebody else until a listener
+      // asks for this zone's music again. Advancing here is what used to take the room back.
+      this.deps.log.debug('queue advancement held back; the zone follows an external player', {
+        zoneId: ctx.id,
+        audiopath: ctx.queueController.current()?.audiopath ?? ctx.state.audiopath ?? '',
+      });
+      return;
+    }
     const suppressMs =
       ((this.deps.configPort.getSystemConfig()?.audioserver?.crossfadeSec ?? 5) + 5) * 1000;
     if (this.deps.crossfade.consumeRecentTrigger(ctx.id, suppressMs)) {
