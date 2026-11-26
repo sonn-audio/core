@@ -74,12 +74,13 @@ test('isVolumeOwnedByStateController: internal does not own volume', () => {
   assert.equal(isVolumeOwnedByStateController('internal'), false);
 });
 
-test('isVolumeOwnedByStateController: beolink and musicassistant own volume', () => {
+test('isVolumeOwnedByStateController: beolink, musicassistant and sonos own volume', () => {
   assert.equal(isVolumeOwnedByStateController('beolink'), true);
   assert.equal(isVolumeOwnedByStateController('musicassistant'), true);
+  // The speaker is the authority for its own level, and the controller reports it back.
+  assert.equal(isVolumeOwnedByStateController('sonos'), true);
 });
 
 test('isVolumeOwnedByStateController: unknown controllers do not own volume', () => {
   assert.equal(isVolumeOwnedByStateController('homepod'), false);
-  assert.equal(isVolumeOwnedByStateController('sonos'), false);
 });

@@ -28,11 +28,17 @@ export function clampVolumeForZone(zone: ZoneConfig, value: number): number {
  * The fallback must not be 0: this value seeds the zone state, the fresh-start dispatch and
  * the unmute restore, and 0 in all of those means a zone that starts muted (issue #358, an
  * unconfigured zone began every play in silence). An explicit 0 stays the user's choice.
+ *
+ * A negative default means "not set". The Audioserver configuration writes -1 for it and the
+ * public API reports that -1 unchanged, so the value is not a level and must not be clamped as
+ * one: read as a number, it became 0, and every zone without a default started muted. An
+ * installation that leaves the sentinel in place lost its speaker volumes on every restart.
  */
 export function getZoneDefaultVolume(zone: ZoneConfig): number {
-  const configured =
-    typeof zone.volumes?.default === 'number' ? zone.volumes.default : FALLBACK_DEFAULT_VOLUME;
-  return clampVolumeForZone(zone, configured);
+  const configured = zone.volumes?.default;
+  const resolved =
+    typeof configured === 'number' && configured >= 0 ? configured : FALLBACK_DEFAULT_VOLUME;
+  return clampVolumeForZone(zone, resolved);
 }
 
 const FALLBACK_DEFAULT_VOLUME = 25;

@@ -38,6 +38,13 @@ const CONTROLLER_AUTHORITY_POLICIES: Record<string, StateControllerAuthorityPoli
     ownsVolumeState: true,
     commandAuthorityWhenLocalSessionActive: () => true,
   },
+  sonos: {
+    // The speaker owns its own level. Its keys, the Sonos app and the Spotify app all move it,
+    // and the state controller reports the level back, so the zone follows the room. Seeding a
+    // configured default on top of it at startup is what put three speakers at 0 whenever the
+    // container restarted: a Sonos zone has no reason to be told a level it never lost.
+    ownsVolumeState: true,
+  },
 };
 
 export function shouldUseStateControllerForCommand(
