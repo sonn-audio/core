@@ -675,6 +675,7 @@ export function createRuntime(): Runtime {
     // Stop the Loxone subsystem and detach the command engine so :7090 rejects
     // /audio/... again. Idempotent. The rest of the server is untouched.
     async function disableLoxone(persist = true): Promise<void> {
+      serverHeartbeat.stop();
       if (loxoneService) {
         await loxoneService.stop();
         loxoneService = null;
@@ -901,6 +902,10 @@ export function createRuntime(): Runtime {
     // uses; persist=false because the flag is already set. A plain server skips it.
     if (loxoneEnabled) {
       await startWithTimeout('loxone', () => enableLoxone(false), LOXONE_START_TIMEOUT_MS);
+      // The audioserver has to keep saying it is alive, not only when a client attaches:
+      // without that the Miniserver treats it as offline and every Audio Player block with
+      // it, while the sockets stay up. Stops with the subsystem, below.
+      serverHeartbeat.start(configPort);
     }
 
     // Not just a log line: this is what /ready and /health answer from, so a supervisor

@@ -29,4 +29,9 @@ export class ConnectionRegistry {
       }
     }
   }
+
+  /** How many clients are attached, so a periodic sender can stay quiet when nobody listens. */
+  public get size(): number {
+    return this.connections.size;
+  }
 }

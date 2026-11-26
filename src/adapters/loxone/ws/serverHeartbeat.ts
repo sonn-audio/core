@@ -5,6 +5,15 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 
 const channelsPerExtension = 2;
 
+/**
+ * How often the audioserver says it is still there.
+ *
+ * The appliance this emulates reports on a short cycle; ten seconds keeps the Miniserver's view
+ * current without making the debug log unreadable (one line per interval while a client is
+ * attached, and nothing at all when nobody is).
+ */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 interface HeartbeatEvent {
   client_id: string;
   event_id: number;
@@ -77,8 +86,38 @@ function computeHeartbeatPayload(
 export class ServerHeartbeat {
   private readonly log = createLogger('LoxoneHttp', 'Heartbeat');
   private readonly heartbeatStart = Date.now();
+  private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly registry: ConnectionRegistry) {}
+
+  /**
+   * Keep the audioserver alive on the Miniserver, the way the appliance it emulates does.
+   *
+   * `hw_event` is the only message that says "this audioserver is still here"; it carries no
+   * zone state, so nothing else stands in for it. It used to go out once, when an msHttp client
+   * connected, which left a long-lived installation with no liveness signal at all after the
+   * first minute: the Miniserver and the app then treat the audioserver as offline and every
+   * Audio Player block with it, while the sockets stay up and the zone states keep flowing.
+   */
+  public start(configPort: ConfigPort, intervalMs: number = HEARTBEAT_INTERVAL_MS): void {
+    this.stop();
+    this.timer = setInterval(() => {
+      try {
+        this.tick(configPort, { onlyWhenAttached: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log.warn('failed to broadcast periodic heartbeat', { message });
+      }
+    }, intervalMs);
+    this.timer.unref?.();
+  }
+
+  public stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
 
   public emit(configPort: ConfigPort): void {
     try {
@@ -89,7 +128,10 @@ export class ServerHeartbeat {
     }
   }
 
-  private tick(configPort: ConfigPort): void {
+  private tick(configPort: ConfigPort, options: { onlyWhenAttached?: boolean } = {}): void {
+    if (options.onlyWhenAttached && this.registry.size === 0) {
+      return;
+    }
     const systemConfig = configPort.getSystemConfig();
     const serverConfig = systemConfig?.audioserver;
     if (!serverConfig?.paired || !serverConfig.macId) {
