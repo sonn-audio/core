@@ -595,14 +595,18 @@ export class SonosStateController implements ZoneStateController {
     const itemKey = this.currentItemKey(group);
     const itemChanged =
       itemKey !== null && this.lastItemKey !== null && itemKey !== this.lastItemKey;
+    if (itemChanged) {
+      // A new item is unknown until it says otherwise: the previous item's duration describes
+      // nothing about this one, and holding a fresh position to it would freeze the bar of a
+      // track that has not reported a length yet.
+      this.lastPublishedDurationSec = null;
+    }
     const knownDuration =
-      trackDurationSec !== null && trackDurationSec > 0
-        ? trackDurationSec
-        : this.lastPublishedDurationSec;
+      trackDurationSec !== null && trackDurationSec > 0 ? trackDurationSec : null;
     const time = itemChanged ? 0 : this.holdToDuration(group.positionSeconds, knownDuration);
 
-    if (trackDurationSec !== null && trackDurationSec > 0) {
-      this.lastPublishedDurationSec = trackDurationSec;
+    if (knownDuration !== null) {
+      this.lastPublishedDurationSec = knownDuration;
     }
     if (itemKey !== null) {
       this.lastItemKey = itemKey;

@@ -146,6 +146,29 @@ test('a pause keeps position and duration, and resuming continues from there', (
   assert.equal(patches[0]!.time, 91);
 });
 
+test('a new item that has not reported a length is not held to the previous one', () => {
+  const { controller, patches, group } = makeController();
+  // A short track first, so a wrong clamp would be obvious.
+  playingItem(group, { name: 'Short', mediaUrl: 'x-sonos-spotify:f', durationMillis: 60_000 }, 59);
+  snapshot(controller);
+  patches.length = 0;
+
+  // The next item starts with no duration in its metadata, as a stream or a not yet enriched
+  // item does, and the speaker is already well past the previous length.
+  playingItem(group, { name: 'Long', mediaUrl: 'x-sonos-spotify:g' }, 600);
+  snapshot(controller);
+  assert.equal(patches[0]!.time, 0, 'a new item starts at zero');
+
+  patches.length = 0;
+  playingItem(group, { name: 'Long', mediaUrl: 'x-sonos-spotify:g' }, 640);
+  snapshot(controller);
+  assert.equal(patches[0]!.time, 640, 'and is not frozen at the previous item length');
+
+  patches.length = 0;
+  tick(controller);
+  assert.equal(patches[0]!.time, 640, 'the ticker does not clamp it either');
+});
+
 test('a seek inside the same item is published as it is', () => {
   const { controller, patches, group } = makeController();
   playingItem(group, { name: 'Seeked', mediaUrl: 'x-sonos-spotify:e', durationMillis: 600_000 }, 20);
