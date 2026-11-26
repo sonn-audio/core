@@ -418,7 +418,13 @@ function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
   const cmd = (parts[2] ?? '').toLowerCase();
   const payload = parts.slice(3).join('/');
   const shuffleBefore = Boolean(zoneManager.getState(zoneId)?.plshuffle);
-  zoneManager.handleCommand(zoneId, cmd, payload);
+  // A position with no value is a read, not a command: dispatching it as a seek has nothing to
+  // seek to. Everything else here is dispatched whether or not it carries a value (`play` does
+  // not), so the exception is the position read alone.
+  const positionRead = cmd === 'position' && payload.trim() === '';
+  if (!positionRead) {
+    zoneManager.handleCommand(zoneId, cmd, payload);
+  }
   // Each of these has its own answer in the app's schemas, and an answer it cannot read is a
   // command it reports as failed — after we carried it out.
   switch (cmd) {
@@ -430,8 +436,21 @@ function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
     case 'resume':
     case 'volume':
       return buildResponse(command, cmd, true);
-    case 'position':
-      return buildResponse(command, cmd, [{ position: Number(payload) || 0 }]);
+    case 'position': {
+      // With a value this is a seek, and the answer echoes where it was asked to go, which is
+      // what the client correlates with the request it sent. Without one it is a read: the
+      // client is asking where the zone is. `Number('') || 0` answered the read with 0, and the
+      // Loxone bar spent the rest of the track jumping between the start and the real position
+      // while the audioserver's own event stream was correct. Measured after a Loxone-initiated
+      // seek during native Spotify playback.
+      const requested = payload.trim();
+      if (requested !== '') {
+        return buildResponse(command, cmd, [{ position: Number(requested) || 0 }]);
+      }
+      const current = zoneManager.getState(zoneId)?.time;
+      const position = Math.max(0, Math.round(typeof current === 'number' ? current : 0));
+      return buildResponse(command, cmd, [{ position }]);
+    }
     case 'repeat':
       return buildResponse(command, cmd, { repeat: Number(payload) || 0 });
     case 'shuffle': {

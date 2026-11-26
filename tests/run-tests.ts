@@ -148,6 +148,7 @@ import './externalStateRouter.test';
 import './storageMountOptions.test';
 import './sonosExternalTakeover.test';
 import './positionProgress.test';
+import './loxonePositionRead.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
 import './inputSourceConfigurator.test';
