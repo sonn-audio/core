@@ -474,29 +474,34 @@ export class SonosStateController implements ZoneStateController {
   /**
    * What the speaker is playing right now, for telling one item from the next.
    *
-   * The identity, not the URL. A Sonos media url carries a sequence number that changes on every
-   * seek and again when the speaker loads the next item, so keying on it made a seek look like a
-   * track change (the position was reset to zero once) and made a real change arrive as two: the
-   * new URL with the old name first, which published zero against the finished item, and the new
-   * name a moment later. Recorded at 13:33:37 on 2026-11-26: `t=218 dur=219 'Come As You Are'`,
+   * The item's name and album, not its url and not its artist.
+   *
+   * Not the url: a Sonos media url carries a sequence number that changes on every seek and again
+   * when the speaker loads the next item, so keying on it made a seek look like a track change
+   * (the position was reset to zero once) and made a real change arrive as two frames, the new url
+   * with the old name first. Recorded at 13:33:37 on 2026-11-26: `t=218 dur=219 'Come As You Are'`,
    * then `t=0 dur=219 'Come As You Are'`, then `t=0 dur=270 'House of the Rising Sun'`.
    *
-   * The name is what changes once, and it arrives together with the new duration, which is the
-   * one frame a client can render as a single transition. Null when the speaker reports nothing
-   * at all, which is not a change.
+   * Not the artist either: a radio stream keeps its station as the name and changes the artist
+   * with every song it plays (`'Radio Paradise'` with `'Dave Matthews Band - All Along the
+   * Watchtower'`), so keying on the artist would reset a listener's bar at every song on a stream
+   * that has not changed item at all.
+   *
+   * The name is what changes once, and it arrives together with the new duration, which is the one
+   * frame a client can render as a single transition. Null when the speaker reports nothing at
+   * all, which is not a change.
    */
   private currentItemKey(group: { playbackMetadataStatus?: unknown }): string | null {
     const metadata = group.playbackMetadataStatus as
-      | { currentItem?: { track?: { name?: string; artist?: { name?: string }; album?: { name?: string } } }; container?: { name?: string } }
+      | { currentItem?: { track?: { name?: string; album?: { name?: string } } }; container?: { name?: string } }
       | undefined;
     const track = metadata?.currentItem?.track;
     const title = cleanString(track?.name) || cleanString(metadata?.container?.name);
-    const artist = cleanString(track?.artist?.name);
     const album = cleanString(track?.album?.name);
-    if (!title && !artist && !album) {
+    if (!title && !album) {
       return null;
     }
-    return [title, artist, album].join('|');
+    return [title, album].join('|');
   }
 
   private emitSnapshotPatch(): void {

@@ -233,3 +233,16 @@ test('a transition is published once, when the new name arrives with its length'
   assert.equal(patches[0]!.duration, 270, 'the new length travels with the new name');
   assert.equal(patches[0]!.time, 0, 'and the position starts at the beginning of that item');
 });
+test('a song changing inside a radio stream is not a change of item', () => {
+  const { controller, patches, group } = makeController();
+  // A station keeps its name and reports the song it is playing as the artist.
+  playingItem(group, { name: 'Radio Paradise', artist: { name: 'Dave Matthews Band - All Along the Watchtower' } }, 110);
+  snapshot(controller);
+  patches.length = 0;
+
+  playingItem(group, { name: 'Radio Paradise', artist: { name: 'Nirvana - Come As You Are' } }, 120);
+  snapshot(controller);
+
+  assert.equal(patches[0]!.time, 120, 'the stream keeps its position');
+  assert.notEqual(patches[0]!.time, 0, 'and is not reset when the song inside it changes');
+});
