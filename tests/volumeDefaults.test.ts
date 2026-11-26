@@ -5,6 +5,7 @@ import {
   isVolumeOwnedByStateController,
   shouldUseStateControllerForCommand,
 } from '../src/application/zones/state/authorityPolicies';
+import { keepsSpeakerLevelOnStart } from '../src/application/zones/playback/playerListeners';
 import type { ZoneConfig } from '../src/domain/config/types';
 
 // Two defects in one path. The configuration writes -1 for "no default volume" and the API
@@ -62,4 +63,14 @@ test('the Sonos policy does not hand commands to the controller during our own p
   // unchanged: the controller does not take a command away from a running local session.
   assert.equal(shouldUseStateControllerForCommand('sonos', true, 'volume'), false);
   assert.equal(shouldUseStateControllerForCommand('sonos', false, 'volume'), true);
+});
+
+test('a start keeps the room level when a speaker owns it and no default is configured', () => {
+  const sonosUnset = { config: { state: { controller: 'sonos' }, volumes: { default: -1 } } } as any;
+  const sonosConfigured = { config: { state: { controller: 'sonos' }, volumes: { default: 40 } } } as any;
+  const internalUnset = { config: { state: { controller: 'internal' }, volumes: { default: -1 } } } as any;
+
+  assert.equal(keepsSpeakerLevelOnStart(sonosUnset), true, 'the speaker level is the room level');
+  assert.equal(keepsSpeakerLevelOnStart(sonosConfigured), false, 'a configured default applies');
+  assert.equal(keepsSpeakerLevelOnStart(internalUnset), false, 'other zones keep their behaviour');
 });

@@ -2,6 +2,10 @@ import type { PlaybackMetadata, PlaybackSession } from '@/ports/types/playback';
 import type { ZoneAudioHelpers } from '@/application/zones/internal/zoneAudioHelpers';
 import type { ZoneContext } from '@/application/zones/internal/zoneTypes';
 import { clampVolumeForZone, getZoneDefaultVolume } from '@/application/zones/helpers/stateHelpers';
+import {
+  isVolumeOwnedByStateController,
+  resolveZoneStateControllerId,
+} from '@/application/zones/state/authorityPolicies';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import type { ZoneOutput } from '@/ports/OutputsTypes';
 import {
@@ -12,7 +16,6 @@ import {
   buildStoppedPatch,
   buildVolumePatch,
 } from '@/application/zones/playback/patchBuilder';
-import { resolveZoneStateControllerId } from '@/application/zones/state/authorityPolicies';
 import { createLogger } from '@/shared/logging/logger';
 
 const log = createLogger('Zones', 'PlayerListeners');
@@ -65,6 +68,23 @@ export function attachPlayerListeners(args: {
 
 const RESET_VOLUME_ON_PAUSE_DELAY_MS = 20000;
 
+/**
+ * Whether starting playback should keep the level the room is at instead of a zone default.
+ *
+ * A speaker that owns its own volume reports the level it was left at, and an operator who left
+ * the default unset never asked for one. Applying the fallback there turns a quiet room into a
+ * 25% one the moment something starts, which is the same complaint as a restart that silences
+ * the house, one direction round. An explicitly configured default still applies: that is an
+ * instruction, not a gap.
+ */
+export function keepsSpeakerLevelOnStart(ctx: ZoneContext): boolean {
+  if (!isVolumeOwnedByStateController(resolveZoneStateControllerId(ctx.config))) {
+    return false;
+  }
+  const configured = ctx.config.volumes?.default;
+  return !(typeof configured === 'number' && configured >= 0);
+}
+
 function clearResetVolumeTimer(ctx: ZoneContext | undefined): void {
   if (ctx?.resetVolumeTimer) {
     clearTimeout(ctx.resetVolumeTimer);
@@ -112,7 +132,8 @@ function onPlayerPaused(
     ctx &&
     !ctx.alert &&
     ctx.config.playback?.resetVolumeOnPause === true &&
-    getZoneDefaultVolume(ctx.config) > 0
+    getZoneDefaultVolume(ctx.config) > 0 &&
+    !keepsSpeakerLevelOnStart(ctx)
   ) {
     scheduleResetVolumeOnPause(coordinator, ctx);
   }
@@ -160,9 +181,11 @@ function onPlayerStarted(
       !ctx.alert &&
       !startAtCurrentVolume &&
       ((ctx.state.mode === 'stop' && !wasPlayerActive) || hadPendingReset);
-    const volume = isFreshStart
-      ? getZoneDefaultVolume(ctx.config)
-      : clampVolumeForZone(ctx.config, ctx.state.volume);
+    const keepLevel = isFreshStart && keepsSpeakerLevelOnStart(ctx);
+    const volume =
+      isFreshStart && !keepLevel
+        ? getZoneDefaultVolume(ctx.config)
+        : clampVolumeForZone(ctx.config, ctx.state.volume);
     /*
      * No `player.setVolume` here.
      *
@@ -223,7 +246,7 @@ function onPlayerResumed(
   const ctx = coordinator.getZone(zoneId);
   if (ctx) {
     const patch = buildResumedPatch({ ctx, audioHelpers: coordinator.audioHelpers });
-    if (!ctx.alert && hadPendingReset) {
+    if (!ctx.alert && hadPendingReset && !keepsSpeakerLevelOnStart(ctx)) {
       const defaultVolume = getZoneDefaultVolume(ctx.config);
       /*
        * `setVolume` dispatches on its own (synchronous emit -> onPlayerVolume), so
