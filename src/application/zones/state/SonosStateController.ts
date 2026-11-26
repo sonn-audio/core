@@ -81,6 +81,12 @@ export class SonosStateController implements ZoneStateController {
   private pendingTakeover: ExternalTakeover | null = null;
   // True while the speaker follows another one; see `noteInheritedStream`.
   private following = false;
+  // What the position last published belongs to, and how long that item is. A position is only
+  // meaningful for the item it was read for: the speaker keeps advancing the old one until the
+  // new item's metadata arrives, and the ticker would carry it over. Measured on a real zone:
+  // 225 seconds published against a 203 second track, then 29, then 0 within 250 ms.
+  private lastItemKey: string | null = null;
+  private lastPublishedDurationSec: number | null = null;
 
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
@@ -191,6 +197,10 @@ export class SonosStateController implements ZoneStateController {
 
       this.reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
 
+      // A connection is a fresh look at the speaker: what it is playing now is not a change from
+      // what it played before, and a session adopted mid-track keeps its real position.
+      this.lastItemKey = null;
+      this.lastPublishedDurationSec = null;
       this.emitSnapshotPatch();
       this.startTicker();
 
@@ -436,8 +446,50 @@ export class SonosStateController implements ZoneStateController {
     if (mode !== 'play') {
       return;
     }
-    const time = Math.max(0, Math.floor(group.positionSeconds));
+    // The ticker publishes a position on its own, so it has to belong to the item the zone is
+    // showing. While the speaker has already moved on but no snapshot has published the new item
+    // yet, a tick is the previous item's position: it is what made the bar jump back and forth
+    // at a track change. The snapshot that follows publishes the pair together.
+    const itemKey = this.currentItemKey(group);
+    if (itemKey !== null && itemKey !== this.lastItemKey) {
+      return;
+    }
+    const raw = Math.max(0, Math.floor(group.positionSeconds));
+    const time = this.holdToDuration(raw);
     this.onStatePatch(this.zone.id, { time });
+  }
+
+  /** A position inside the item it belongs to, so a bar cannot run past its own duration. */
+  private holdToDuration(
+    seconds: number,
+    duration: number | null = this.lastPublishedDurationSec,
+  ): number {
+    if (!Number.isFinite(seconds)) {
+      return 0;
+    }
+    const clamped = Math.max(0, Math.floor(seconds));
+    return duration !== null && duration > 0 ? Math.min(clamped, duration) : clamped;
+  }
+
+  /**
+   * What the speaker is playing right now, for telling one item from the next.
+   *
+   * Media url first, because two items can share a title and still be different. Null when the
+   * speaker reports nothing at all, which is not a change.
+   */
+  private currentItemKey(group: { playbackMetadataStatus?: unknown }): string | null {
+    const metadata = group.playbackMetadataStatus as
+      | { currentItem?: { track?: { mediaUrl?: string; name?: string; artist?: { name?: string }; album?: { name?: string } } }; container?: { name?: string } }
+      | undefined;
+    const track = metadata?.currentItem?.track;
+    const mediaUrl = cleanString(track?.mediaUrl);
+    const title = cleanString(track?.name) || cleanString(metadata?.container?.name);
+    const artist = cleanString(track?.artist?.name);
+    const album = cleanString(track?.album?.name);
+    if (!mediaUrl && !title && !artist && !album) {
+      return null;
+    }
+    return [mediaUrl, title, artist, album].join('|');
   }
 
   private emitSnapshotPatch(): void {
@@ -534,7 +586,27 @@ export class SonosStateController implements ZoneStateController {
         ? Math.max(0, Math.round(track.durationMillis / 1000))
         : null;
 
-    const time = Math.max(0, Math.floor(group.positionSeconds));
+    // A position belongs to the item it was read for. At a change of item the speaker reports a
+    // position that still belongs to the previous one for a moment, and publishing it beside the
+    // new duration is what made the bar jump: 225 seconds against a 203 second track, then 29,
+    // then 0 within 250 ms. A new item starts at 0 here and the speaker's own position takes
+    // over from the next snapshot. The first snapshot after connecting is not a change, so a
+    // session adopted while it is already playing keeps its real position.
+    const itemKey = this.currentItemKey(group);
+    const itemChanged =
+      itemKey !== null && this.lastItemKey !== null && itemKey !== this.lastItemKey;
+    const knownDuration =
+      trackDurationSec !== null && trackDurationSec > 0
+        ? trackDurationSec
+        : this.lastPublishedDurationSec;
+    const time = itemChanged ? 0 : this.holdToDuration(group.positionSeconds, knownDuration);
+
+    if (trackDurationSec !== null && trackDurationSec > 0) {
+      this.lastPublishedDurationSec = trackDurationSec;
+    }
+    if (itemKey !== null) {
+      this.lastItemKey = itemKey;
+    }
 
     const rawCover =
       normalizeCoverUrl(firstImage(track?.images), this.host) ||
