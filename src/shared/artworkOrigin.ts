@@ -13,9 +13,17 @@ export type ArtworkOriginSettings = {
   port?: number | null;
 };
 
+/**
+ * The port the gateway always serves plain HTTP on, whatever origin clients are given.
+ *
+ * Named because it is now referenced from two places: the fallback origin here, and the test that
+ * decides whether a cover url is this server's own artwork or something to proxy.
+ */
+export const GATEWAY_PORT = 7090;
+
 export function artworkOrigin(host: string, settings: ArtworkOriginSettings = {}): string {
   const protocol = settings.protocol === 'https' ? 'https' : 'http';
-  const fallbackPort = protocol === 'https' ? 443 : 7090;
+  const fallbackPort = protocol === 'https' ? 443 : GATEWAY_PORT;
   const port =
     typeof settings.port === 'number' &&
     Number.isInteger(settings.port) &&

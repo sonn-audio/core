@@ -12,7 +12,7 @@ import type { AudioEventType, AudioType, FileType, LineInIconType } from '@/doma
 import { parseServiceNativeAudiopath } from '@/domain/zones/audiopath';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import { formatEqualizerSettings } from '@/domain/zones/equalizer';
-import { artworkOrigin, type ArtworkOriginSettings } from '@/shared/artworkOrigin';
+import { GATEWAY_PORT, artworkOrigin, type ArtworkOriginSettings } from '@/shared/artworkOrigin';
 
 /**
  * The `audio_event` entry as the Loxone Miniserver and native app parse it.
@@ -342,22 +342,55 @@ export function buildLoxoneCoverUrl(
     return '';
   }
   const origin = artworkOrigin(coverHost, artwork);
-  if (isServedByGateway(source)) {
+  if (isServedByGateway(source, origin)) {
     const parsed = new URL(source);
     return `${origin}${parsed.pathname}${parsed.search}`;
   }
   return `${origin}/api/v1/zones/${state.id}/cover?v=${coverRevision(source)}`;
 }
 
-/** Artwork the gateway itself serves (library files, custom stations): already fetchable. */
-function isServedByGateway(source: string): boolean {
+/**
+ * Artwork the gateway itself serves — station icons, library files, collages, custom stations —
+ * which the client can therefore fetch directly, with no proxying.
+ *
+ * Two things are this server's own: the gateway port, and whatever origin the clients are being
+ * given (which is not the same thing once `artworkProtocol`/`artworkPort` are configured — an HTTPS
+ * install omits the port, because 443 is the default). The configured origin is compared as an
+ * origin — scheme, host and effective port — so an unrelated server on that port, or the same host
+ * reached over a different scheme, is not mistaken for this one.
+ *
+ * The earlier form tested `url.port === '7090'` alone. That covered the plain gateway and missed
+ * every configured origin: with `artworkProtocol: https`, a station icon on this very server was
+ * classified as remote, routed through the zone cover proxy, and fetched back from the reverse proxy
+ * the request had just come through. It failed, the zone published no cover, and the client kept the
+ * previous track's artwork — measured on 2026-11-27, `cover proxy failed` for
+ * `https://sonn.dts.home/assets/icons/radioparadise-logo-rock.png`.
+ */
+function isServedByGateway(source: string, origin: string): boolean {
+  let url: URL;
+  let artworkUrl: URL;
   try {
-    const url = new URL(source);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && url.port === '7090';
+    url = new URL(source);
+    artworkUrl = new URL(origin);
   } catch {
     // A data uri, or nothing a `<img>` could fetch either; the gateway can serve both.
     return false;
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return false;
+  }
+  // The gateway port is this server's own whatever host names it: a cover url minted before the
+  // address changed still points at a gateway on this port, and the caller rewrites the host to the
+  // one clients are given, so the client is never sent to the stale host. Nothing else listens on
+  // this port and serves artwork. 7090 is never a default port, so there is nothing to normalise.
+  if (url.port === String(GATEWAY_PORT)) {
+    return true;
+  }
+  // Otherwise it is ours only on the very origin clients were given. `origin` is the scheme, host
+  // and *effective* port together — the default port for the scheme omitted — so it compares
+  // protocol as well as address, and treats `https://h/x` and `https://h:443/x` as one origin
+  // while keeping `http://h:443/x` distinct.
+  return url.origin === artworkUrl.origin;
 }
 
 /**
