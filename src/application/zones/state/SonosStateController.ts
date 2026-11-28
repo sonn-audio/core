@@ -663,6 +663,15 @@ export class SonosStateController implements ZoneStateController {
       patch.coverurl = coverurl;
     }
 
+    if (ownStream) {
+      // What plays on a stream of ours is ours to describe. The speaker only knows the title it
+      // was handed when the stream started, and taking it over kept the first track's title and
+      // a duration of 0 through every track change after it (#464).
+      for (const key of ['audiopath', 'audiotype', 'sourceName', 'title', 'artist', 'album', 'coverurl'] as const) {
+        delete patch[key];
+      }
+    }
+
     if ((audiotype === AudioType.LineIn || audiotype === AudioType.Bluetooth) && !artist && !album) {
       patch.station = '';
       patch.title = sourceName;
