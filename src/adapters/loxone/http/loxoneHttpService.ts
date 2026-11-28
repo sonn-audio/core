@@ -71,6 +71,7 @@ export class LoxoneHttpService {
     }
 
     this.udpDiscovery.start(this.config, this.options.configPort);
+    this.options.serverHeartbeat.start(this.options.configPort);
 
     this.log.info('loxone servers ready', {
       ports: this.config.servers.map((s) => s.port).join(', '),
@@ -80,6 +81,7 @@ export class LoxoneHttpService {
 
   public async stop(): Promise<void> {
     this.udpDiscovery.stop();
+    this.options.serverHeartbeat.stop();
     const runtimes = [...this.servers];
     this.servers.length = 0;
     // Drop live sessions BEFORE closing: the Loxone app holds a WebSocket open and

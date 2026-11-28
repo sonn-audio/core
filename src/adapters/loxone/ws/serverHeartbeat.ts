@@ -5,6 +5,9 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 
 const channelsPerExtension = 2;
 
+/** How often the server repeats its hw_event while a client is connected (#460). */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 interface HeartbeatEvent {
   client_id: string;
   event_id: number;
@@ -78,7 +81,29 @@ export class ServerHeartbeat {
   private readonly log = createLogger('LoxoneHttp', 'Heartbeat');
   private readonly heartbeatStart = Date.now();
 
+  private timer: NodeJS.Timeout | null = null;
+
   constructor(private readonly registry: ConnectionRegistry) {}
+
+  /**
+   * Repeat the hw_event while the Loxone subsystem runs. It used to go out once, when the
+   * Miniserver connected, and Audio Player blocks were reported offline after a while on
+   * installations whose sockets and zone states were fine, until sonn was restarted (#460).
+   */
+  public start(configPort: ConfigPort, intervalMs = HEARTBEAT_INTERVAL_MS): void {
+    this.stop();
+    this.timer = setInterval(() => {
+      if (this.registry.size === 0) return;
+      this.emit(configPort);
+    }, intervalMs);
+    this.timer.unref?.();
+  }
+
+  public stop(): void {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = null;
+  }
 
   public emit(configPort: ConfigPort): void {
     try {

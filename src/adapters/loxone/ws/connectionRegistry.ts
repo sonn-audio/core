@@ -29,4 +29,8 @@ export class ConnectionRegistry {
       }
     }
   }
+
+  public get size(): number {
+    return this.connections.size;
+  }
 }
