@@ -415,7 +415,11 @@ export class SonosStateController implements ZoneStateController {
     if (!group || !this.host || this.stopRequested || this.transportCheckInFlight) {
       return;
     }
-    if (mapPlaybackState(group.playbackState) !== 'play') {
+    // Asked while the cache says 'play', and also while the speaker holds our own stream but the
+    // cache says it does not play it: that one stuck at 'stop' while the stream was audible, and
+    // Loxone said the favourite could not be played (#464).
+    const cached = mapPlaybackState(group.playbackState);
+    if (cached !== 'play' && !this.holdsOwnStream()) {
       this.transportStaleCount = 0;
       return;
     }
@@ -431,15 +435,11 @@ export class SonosStateController implements ZoneStateController {
       return;
     }
     const observed = mapTransportInfoState(state);
-    if (observed === 'play') {
-      this.transportStaleCount = 0;
-      return;
-    }
-    if (observed === null) {
-      // No answer, or a transitional one, says nothing about our events.
-      return;
-    }
-    if (mapPlaybackState(this.client?.player?.group?.playbackState) !== 'play') {
+    const now = mapPlaybackState(this.client?.player?.group?.playbackState);
+    // Stale only when the speaker plays and the cache says it does not, or the other way round.
+    // A paused stream of ours is reported STOPPED by the speaker; that is not a disagreement.
+    const stale = observed !== null && (now === 'play' ? observed !== 'play' : observed === 'play');
+    if (!stale) {
       this.transportStaleCount = 0;
       return;
     }
@@ -448,13 +448,20 @@ export class SonosStateController implements ZoneStateController {
       return;
     }
     this.transportStaleCount = 0;
-    this.log.warn('sonos state stale; speaker is not playing but no event said so, reconnecting', {
+    this.log.warn('sonos state stale; the speaker says otherwise than its events did, reconnecting', {
       zoneId: this.zone.id,
       host: this.host,
+      cached: now,
       transportState: state,
     });
     this.onStatePatch(this.zone.id, { mode: observed });
     void this.connect();
+  }
+
+  /** Whether the speaker's current item is a stream of ours. */
+  private holdsOwnStream(): boolean {
+    const metadata = this.client?.player?.group?.playbackMetadataStatus;
+    return isOwnStream(cleanString(metadata?.currentItem?.track?.mediaUrl), metadata?.container, this.ownStreamBaseUrl());
   }
 
   private async fetchTransportState(host: string): Promise<string | null> {

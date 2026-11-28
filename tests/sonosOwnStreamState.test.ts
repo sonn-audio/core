@@ -40,3 +40,24 @@ test('the speaker does not name what plays on a stream of ours (#464)', () => {
     assert.equal(key in patch, false, `${key} is sonn's to say`);
   }
 });
+
+test('a speaker playing our stream while its events say stopped is asked, and believed (#464)', async () => {
+  const { controller, patches } = speaker('PLAYBACK_STATE_IDLE');
+  let reconnects = 0;
+  controller.fetchTransportState = async () => 'PLAYING';
+  controller.connect = async () => void (reconnects += 1);
+  await controller.checkTransportState();
+  assert.equal(patches.length, 0, 'one answer can be a moment caught wrong');
+  await controller.checkTransportState();
+  assert.deepEqual(patches, [{ mode: 'play' }]);
+  assert.equal(reconnects, 1, 'and the stale view is rebuilt');
+});
+
+test('a paused stream of ours that the speaker calls stopped is no disagreement', async () => {
+  const { controller, patches } = speaker('PLAYBACK_STATE_PAUSED');
+  controller.fetchTransportState = async () => 'STOPPED';
+  controller.connect = async () => assert.fail('no reconnect');
+  await controller.checkTransportState();
+  await controller.checkTransportState();
+  assert.deepEqual(patches, []);
+});
