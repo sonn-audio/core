@@ -443,6 +443,9 @@ export function createRuntime(): Runtime {
   loxoneNotifier.setPlayContextLookup((zoneId) => zoneManager.getPlayContext(zoneId));
   loxoneNotifier.setAlertEventLookup((zoneId) => zoneManager.getActiveAlertEvent(zoneId));
   loxoneNotifier.setTransportLookup((zoneId) => zoneManager.getTransportCapabilities(zoneId));
+  loxoneNotifier.setCoverOriginLookup(
+    () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090`,
+  );
   loxoneNotifier.setSettingsUrlLookup(
     () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,
   );

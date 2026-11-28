@@ -36,6 +36,7 @@ export class LoxoneWsNotifier {
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
   private settingsUrlLookup: (() => string | null) | null = null;
   private transportLookup: ((zoneId: number) => LoxoneTransport | null) | null = null;
+  private coverOriginLookup: (() => string | null) | null = null;
   private readonly dialogThrottle = new DialogThrottle();
 
   constructor(
@@ -95,6 +96,14 @@ export class LoxoneWsNotifier {
    */
   public setTransportLookup(lookup: ((zoneId: number) => LoxoneTransport | null) | null): void {
     this.transportLookup = lookup;
+  }
+
+  /**
+   * This server's own origin for covers the client cannot load from where they are, such as
+   * a Sonos speaker's album art (#449). When unset, every cover goes out as it is.
+   */
+  public setCoverOriginLookup(lookup: (() => string | null) | null): void {
+    this.coverOriginLookup = lookup;
   }
 
   /**
@@ -194,6 +203,7 @@ export class LoxoneWsNotifier {
       serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
       transport: this.transportLookup?.(state.id) ?? null,
       alertEvent: this.alertEventLookup?.(state.id) ?? null,
+      coverOrigin: this.coverOriginLookup?.() ?? null,
     });
   }
 

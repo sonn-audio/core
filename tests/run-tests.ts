@@ -222,6 +222,7 @@ import './loxoneServiceEntries.test';
 import './loxoneClientSchemas.test';
 import './loxoneClientEvents.test';
 import './loxoneHeartbeat.test';
+import './loxoneSpeakerCover.test';
 import './loxoneDiscovery.test';
 import './loxoneSettings.test';
 import './loxoneSecureForget.test';

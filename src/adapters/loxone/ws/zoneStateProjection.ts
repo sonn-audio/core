@@ -108,6 +108,8 @@ export type ZoneStateProjectionContext = {
   transport?: LoxoneTransport | null;
   /** The alert the zone is playing right now; null or absent when it plays none. */
   alertEvent?: AudioEventType | null;
+  /** This server's origin, for covers the client cannot load where they are; see {@link loxoneCoverUrl}. */
+  coverOrigin?: string | null;
 };
 
 function clamp01to100(value: unknown): number {
@@ -259,6 +261,37 @@ function toLoxoneParent(
   return { id, name: context.name, audiopath: id };
 }
 
+/**
+ * The cover as the Loxone client can load it.
+ *
+ * A Sonos zone's art is served by the speaker itself (`http://<speaker>:1400/getaa?…`), and the
+ * Loxone app showed no cover for it while sonn's own web UI did (#449). Such a cover goes out as
+ * this server's cover route for the zone, which fetches it from the speaker; `v` follows the
+ * art, so a client's cache moves on with the track. Every other cover goes out as it is.
+ */
+export function loxoneCoverUrl(state: Pick<ZoneState, 'id' | 'coverurl'>, origin: string | null | undefined): string {
+  const cover = state.coverurl ?? '';
+  if (!origin || !isSpeakerArt(cover)) return cover;
+  return `${origin.replace(/\/+$/, '')}/api/v1/zones/${state.id}/cover?v=${shortHash(cover)}`;
+}
+
+function isSpeakerArt(cover: string): boolean {
+  try {
+    const url = new URL(cover);
+    return url.protocol === 'http:' && url.port === '1400' && url.pathname.startsWith('/getaa');
+  } catch {
+    return false;
+  }
+}
+
+function shortHash(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export function toLoxoneZoneState(
   state: ZoneState,
   ctx: ZoneStateProjectionContext,
@@ -276,7 +309,7 @@ export function toLoxoneZoneState(
     audiopath,
     audiotype: state.audiotype,
     clientState: state.clientState,
-    coverurl: state.coverurl,
+    coverurl: loxoneCoverUrl(state, ctx.coverOrigin),
     duration: state.duration,
     equalizerSettings: formatEqualizerSettings(state.eq),
     icontype: state.icontype,
