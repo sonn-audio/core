@@ -1177,9 +1177,16 @@ export class ZoneManager {
   /** What the zone's transport controls will do right now; null when the zone is unknown. */
   public getTransportCapabilities(zoneId: number): ZoneTransportCapabilities | null {
     const ctx = this.zoneRepo.get(zoneId);
-    return ctx
-      ? zoneTransportCapabilities(ctx, (authority) => this.queueController.isLocalQueueAuthority(authority))
-      : null;
+    if (!ctx) return null;
+    // While the speaker plays something of its own, its controller says what the controls do;
+    // the local queue is not what is playing (#451).
+    const ownSession =
+      this.audioManager.hasActiveLocalSession(zoneId) || this.audioManager.hasLocalEngineSession(zoneId);
+    if (!ownSession && resolveZoneStateControllerId(ctx.config) !== 'internal') {
+      const external = this.stateControllers.getTransportCapabilities(zoneId);
+      if (external) return external;
+    }
+    return zoneTransportCapabilities(ctx, (authority) => this.queueController.isLocalQueueAuthority(authority));
   }
 
   /** The alert a zone is playing right now; null when it plays none or is unknown. */

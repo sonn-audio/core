@@ -3,6 +3,7 @@ import {
   S1Client,
   SonosClient,
   detectGeneration,
+  type PlaybackActions,
   type S1SonosGroup,
   type S1SonosPlayer,
   type SonosGroup,
@@ -23,6 +24,7 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 import { createLogger } from '@/shared/logging/logger';
 import { clampVolumeForZone } from '@/application/zones/helpers/stateHelpers';
 import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
+import type { ZoneTransportCapabilities } from '@/application/zones/playback/transportCapabilities';
 
 type SonosControllerOptions = {
   zone: ZoneConfig;
@@ -301,10 +303,21 @@ export class SonosStateController implements ZoneStateController {
     }
   }
 
-  public handleCommand(command: string): boolean {
+  public handleCommand(command: string, payload?: string): boolean {
     const action = normalizeCommand(command);
     if (!action) {
       return false;
+    }
+    // Asked only while sonn plays nothing here, so the speaker plays something of its own.
+    // Handing these back would act on the local queue: a seek started sonn's own playback of a
+    // stale item and replaced the speaker's session, and shuffle or repeat reordered a list
+    // nobody hears (#451). They are taken here, and a seek goes to the speaker.
+    if (action === 'shuffle-repeat') {
+      return true;
+    }
+    if (action === 'seek') {
+      this.seekSpeaker(payload);
+      return true;
     }
     if (!this.client?.player?.group) {
       // Decline instead of accepting-and-dropping: returning true told the caller the speaker
@@ -329,6 +342,37 @@ export class SonosStateController implements ZoneStateController {
     }
     void this.dispatchCommand(action);
     return true;
+  }
+
+  public getTransportCapabilities(): ZoneTransportCapabilities | null {
+    const group = this.client?.player?.group;
+    if (!group) return null;
+    const actions = speakerActions(group);
+    return {
+      // An S1 speaker cannot say, but takes next and previous.
+      skip: actions ? actions.canSkip === true || actions.canSkipBack === true || actions.canSkipToPrevious === true : true,
+      seek: actions?.canSeek === true,
+      shuffle: false,
+      repeat: false,
+    };
+  }
+
+  private seekSpeaker(payload: string | undefined): void {
+    const seconds = Number(payload);
+    const group = this.client?.player?.group;
+    if (!group || !payload?.trim() || !Number.isFinite(seconds) || seconds < 0) return;
+    if (speakerActions(group)?.canSeek !== true || !('seek' in group)) {
+      this.log.debug('sonos seek ignored; the speaker cannot seek this item', { zoneId: this.zone.id });
+      return;
+    }
+    void group.seek(Math.round(seconds * 1000)).then(
+      () => this.log.info('sonos command sent', { zoneId: this.zone.id, action: 'seek', seconds }),
+      (err: unknown) =>
+        this.log.warn('sonos seek failed', {
+          zoneId: this.zone.id,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+    );
   }
 
   private startTicker(): void {
@@ -883,7 +927,16 @@ async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void
   }
 }
 
-function normalizeCommand(command: string): 'play' | 'pause' | 'stop' | 'next' | 'previous' | null {
+/** What an S2 speaker says it can do with its current item; null on S1, which cannot say. */
+function speakerActions(group: AnySonosGroup): PlaybackActions | null {
+  if (!('playbackActionsWrapper' in group)) return null;
+  const raw = (group.playbackActionsWrapper as unknown as { raw?: PlaybackActions }).raw;
+  return raw ?? null;
+}
+
+function normalizeCommand(
+  command: string,
+): 'play' | 'pause' | 'stop' | 'next' | 'previous' | 'seek' | 'shuffle-repeat' | null {
   const normalized = command.trim().toLowerCase();
   if (!normalized) return null;
   if (normalized === 'play' || normalized === 'resume') return 'play';
@@ -891,6 +944,8 @@ function normalizeCommand(command: string): 'play' | 'pause' | 'stop' | 'next' |
   if (normalized === 'stop') return 'stop';
   if (normalized === 'next' || normalized === 'queueplus' || normalized === 'skip') return 'next';
   if (normalized === 'previous' || normalized === 'prev' || normalized === 'queueminus') return 'previous';
+  if (normalized === 'position' || normalized === 'seek') return 'seek';
+  if (normalized === 'shuffle' || normalized === 'repeat') return 'shuffle-repeat';
   return null;
 }
 

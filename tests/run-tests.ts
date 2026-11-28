@@ -149,6 +149,7 @@ import './storageMountOptions.test';
 import './sonosExternalTakeover.test';
 import './sonosSpeakerVolume.test';
 import './sonosPosition.test';
+import './sonosExternalSeek.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
 import './inputSourceConfigurator.test';

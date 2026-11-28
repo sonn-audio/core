@@ -1,4 +1,5 @@
 import { createLogger } from '@/shared/logging/logger';
+import type { ZoneTransportCapabilities } from '@/application/zones/playback/transportCapabilities';
 import type { ZoneConfig } from '@/domain/config/types';
 import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
 import type { ZoneState } from '@/domain/zones/zoneState';
@@ -30,6 +31,14 @@ export class StateControllerManager {
     this.onQueueMirror = options.onQueueMirror;
     this.onExternalTakeover = options.onExternalTakeover;
     this.configPort = options.configPort;
+  }
+
+  public getTransportCapabilities(zoneId: number): ZoneTransportCapabilities | null {
+    try {
+      return this.controllers.get(zoneId)?.getTransportCapabilities?.() ?? null;
+    } catch {
+      return null;
+    }
   }
 
   public handleCommand(zoneId: number, command: string, payload?: string): boolean {
