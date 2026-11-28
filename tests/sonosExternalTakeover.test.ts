@@ -250,6 +250,10 @@ test('a speaker left playing our stream by the soundbar it followed is stopped (
   // makes Gäste-WC a group of its own that plays on with our stream.
   const { controller } = createController();
   const stops: number[] = [];
+  // The speaker's own transport is stopped too: the group the websocket names can still be the old
+  // one, and lars909's speaker played on through four stops until its buffer ran out.
+  const transportStops: number[] = [];
+  controller.stopSpeakerTransport = async () => void transportStops.push(1);
   const show = (isCoordinator: boolean, state: string, mediaUrl: string) => {
     controller.client = {
       player: {
@@ -264,6 +268,7 @@ test('a speaker left playing our stream by the soundbar it followed is stopped (
   show(true, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_1); // left on its own, still on our stream
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(stops.length, 1);
+  assert.equal(transportStops.length, 1, 'and on its own transport');
 
   // A speaker that plays our stream as its own group from the start is ours to play.
   show(true, 'PLAYBACK_STATE_PLAYING', OWN_TRACK_2);
@@ -277,6 +282,7 @@ test('a speaker left playing our stream by the soundbar it followed is stopped (
   show(true, 'PLAYBACK_STATE_IDLE', OWN_TRACK_1);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(stops.length, 1);
+  assert.equal(transportStops.length, 1);
 });
 
 test('our stream is known by the service id or object id Sonos hands back (#430)', () => {

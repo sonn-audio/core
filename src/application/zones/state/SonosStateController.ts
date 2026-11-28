@@ -750,6 +750,40 @@ export class SonosStateController implements ZoneStateController {
       zoneId: this.zone.id,
     });
     void this.dispatchCommand('stop');
+    // And to the speaker itself. The stop above goes to the group the websocket view names, and
+    // that view still named the old group for seconds after Sonos regrouped: four stops were sent
+    // and the speaker played on until the stream it had buffered ran out (#430). Its own transport,
+    // addressed by its own address, is the group it now leads.
+    void this.stopSpeakerTransport();
+  }
+
+  private async stopSpeakerTransport(): Promise<void> {
+    if (!this.host) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TRANSPORT_CHECK_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      const response = await fetch(`http://${formatHost(this.host)}:1400/MediaRenderer/AVTransport/Control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/xml; charset="utf-8"',
+          SOAPAction: '"urn:schemas-upnp-org:service:AVTransport:1#Stop"',
+        },
+        body: TRANSPORT_STOP_BODY,
+        signal: controller.signal,
+      });
+      this.log.info('sonos speaker stopped on its own transport', {
+        zoneId: this.zone.id,
+        status: response.status,
+      });
+    } catch (err) {
+      this.log.warn('sonos speaker transport stop failed', {
+        zoneId: this.zone.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async dispatchCommand(
@@ -892,6 +926,15 @@ const GET_TRANSPORT_INFO_BODY = `<?xml version="1.0" encoding="utf-8"?>
     <u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
       <InstanceID>0</InstanceID>
     </u:GetTransportInfo>
+  </s:Body>
+</s:Envelope>`;
+
+const TRANSPORT_STOP_BODY = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+    </u:Stop>
   </s:Body>
 </s:Envelope>`;
 
