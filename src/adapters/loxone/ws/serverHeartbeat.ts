@@ -6,7 +6,7 @@ import type { ConfigPort } from '@/ports/ConfigPort';
 const channelsPerExtension = 2;
 
 /** How often the server repeats its hw_event while a client is connected (#460). */
-const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 interface HeartbeatEvent {
   client_id: string;
@@ -118,7 +118,7 @@ export class ServerHeartbeat {
     const systemConfig = configPort.getSystemConfig();
     const serverConfig = systemConfig?.audioserver;
     if (!serverConfig?.paired || !serverConfig.macId) {
-      this.log.debug('skipped heartbeat tick (not paired)');
+      this.log.spam('skipped heartbeat tick (not paired)');
       return;
     }
 
@@ -135,7 +135,7 @@ export class ServerHeartbeat {
     }
 
     this.registry.broadcastMessage(JSON.stringify({ hw_event: events }));
-    this.log.debug('broadcast hw_event', {
+    this.log.spam('broadcast hw_event', {
       total: events.length,
       extensions: extensions.length,
     });
