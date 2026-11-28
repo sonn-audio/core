@@ -71,7 +71,7 @@
     "@sonn-audio/node-sendspin": "^0.7.0",
     "@sonn-audio/node-slimproto": "0.1.4",
     "@sonn-audio/node-snapcast": "^0.2.2",
-    "@sonn-audio/node-sonos": "^0.3.0",
+    "@sonn-audio/node-sonos": "^0.3.1",
     "@sonn-audio/node-upnp": "^0.4.2",
     "better-sqlite3": "^13.0.3",
     "bonjour-service": "^1.3.0",
