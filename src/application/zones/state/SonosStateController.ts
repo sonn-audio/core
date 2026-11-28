@@ -84,6 +84,11 @@ export class SonosStateController implements ZoneStateController {
   private pendingTakeover: ExternalTakeover | null = null;
   // True while the speaker follows another one; see `noteInheritedStream`.
   private following = false;
+  // The item the published position belongs to, and its length (#462). At a change of item the
+  // speaker keeps reporting the previous item's position for a moment, and a position published
+  // beside the new duration made the bar jump: 225 s against a 203 s track, then 29, then 0.
+  private positionItem: string | null = null;
+  private positionDuration: number | null = null;
 
   constructor(options: SonosControllerOptions) {
     this.zone = options.zone;
@@ -193,6 +198,10 @@ export class SonosStateController implements ZoneStateController {
       });
 
       this.reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
+      // What the speaker plays on connecting is not a change of item: a session picked up
+      // mid-track keeps its real position.
+      this.positionItem = null;
+      this.positionDuration = null;
 
       this.emitSnapshotPatch();
       this.startTicker();
@@ -439,7 +448,13 @@ export class SonosStateController implements ZoneStateController {
     if (mode !== 'play') {
       return;
     }
-    const time = Math.max(0, Math.floor(group.positionSeconds));
+    // A tick for an item the zone does not show yet is the old item's position; the snapshot
+    // that publishes the new item brings its own.
+    const item = positionItemOf(group);
+    if (item !== null && item !== this.positionItem) {
+      return;
+    }
+    const time = holdToDuration(group.positionSeconds, this.positionDuration);
     this.onStatePatch(this.zone.id, { time });
   }
 
@@ -541,7 +556,12 @@ export class SonosStateController implements ZoneStateController {
         ? Math.max(0, Math.round(track.durationMillis / 1000))
         : null;
 
-    const time = Math.max(0, Math.floor(group.positionSeconds));
+    // A new item starts at 0; the speaker's own position takes over from the next tick.
+    const item = positionItemOf(group);
+    const itemChanged = item !== null && this.positionItem !== null && item !== this.positionItem;
+    this.positionDuration = trackDurationSec !== null && trackDurationSec > 0 ? trackDurationSec : null;
+    if (item !== null) this.positionItem = item;
+    const time = itemChanged ? 0 : holdToDuration(group.positionSeconds, this.positionDuration);
 
     const rawCover =
       normalizeCoverUrl(firstImage(track?.images), this.host) ||
@@ -911,6 +931,24 @@ function extractHostname(url: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * What the speaker is playing, to tell one item from the next: its name and album. Not the media
+ * URL, which changes with every seek, and not the artist, which a radio stream changes with every
+ * song while its name stays the station. Null when the speaker names nothing.
+ */
+function positionItemOf(group: AnySonosGroup): string | null {
+  const metadata = group.playbackMetadataStatus;
+  const name = cleanString(metadata?.currentItem?.track?.name) || cleanString(metadata?.container?.name);
+  const album = cleanString(metadata?.currentItem?.track?.album?.name);
+  return name || album ? `${name}|${album}` : null;
+}
+
+/** A position inside its item, so a bar cannot run past the item's own length. */
+function holdToDuration(seconds: number, duration: number | null): number {
+  const position = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  return duration !== null ? Math.min(position, duration) : position;
 }
 
 /**
