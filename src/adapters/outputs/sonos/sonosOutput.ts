@@ -751,8 +751,9 @@ export class SonosOutput implements ZoneOutput {
 
     const pending = (async (): Promise<SonosClient | null> => {
       const client = new SonosClient(host, { logger: console });
+      const connecting = client.connect();
       try {
-        await withTimeout(client.connect(), 4000);
+        await withTimeout(connecting, 4000);
         this.s2Client = client;
         void client.start().catch((err) => {
           this.log.debug('sonos s2 client stopped', {
@@ -770,11 +771,13 @@ export class SonosOutput implements ZoneOutput {
           message: err instanceof Error ? err.message : String(err),
         });
         this.s2RetryAfter = Date.now() + 30000;
-        try {
-          await client.disconnect();
-        } catch {
-          /* ignore */
-        }
+        // Closed once the connect has settled, not while its socket may still be in the
+        // handshake: terminating it then raised an error nobody listened to, and the uncaught
+        // exception shut the whole server down (#444).
+        void connecting
+          .catch(() => undefined)
+          .then(() => client.disconnect())
+          .catch(() => undefined);
         return null;
       }
     })();
