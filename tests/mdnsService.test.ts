@@ -28,3 +28,30 @@ test('mDNS still advertises after a shutdown and a restart', () => {
 
   service.shutdown();
 });
+
+// Every service of a type shares its PTR name, and the library removed records by name alone:
+// restarting one zone's AirPlay receiver took every AirPlay zone off the network (#455).
+test('unpublishing one service leaves the others of its type advertised (#455)', async () => {
+  const service = new MdnsService();
+  const zones = ['01-Wohnen', '02-Kueche', '03-Bad'].map((name, i) =>
+    service.publish({ name, type: 'raop', port: 7100 + i }),
+  );
+  const pointers = () => {
+    const registry = (service as unknown as { instance: { server: { registry: Record<string, Array<{ name: string; data: string }>> } } })
+      .instance.server.registry;
+    return (registry.PTR ?? []).filter((record) => record.name === '_raop._tcp.local').map((record) => record.data);
+  };
+  // Records are registered once the name has been probed, about a second after publishing.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  assert.equal(pointers().length, 3);
+
+  zones[1]!.stop();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(
+    pointers().sort(),
+    ['01-Wohnen._raop._tcp.local', '03-Bad._raop._tcp.local'],
+    'only the stopped zone is gone',
+  );
+
+  service.shutdown();
+});

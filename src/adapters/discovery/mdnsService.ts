@@ -26,8 +26,41 @@ export class MdnsService implements MdnsPort {
   private instance: Bonjour | null = null;
 
   private get bonjour(): Bonjour {
-    this.instance ??= new Bonjour();
+    if (!this.instance) {
+      this.instance = new Bonjour();
+      this.unregisterOnlyOwnPointers(this.instance);
+    }
     return this.instance;
+  }
+
+  /**
+   * Make unpublishing one service leave the others of its type alone (#455).
+   *
+   * Every service of a type shares the PTR name (`_raop._tcp.local`), and bonjour-service removes
+   * records by name alone: stopping one AirPlay receiver took every AirPlay zone's pointer with it,
+   * and they all disappeared from the senders until the next restart, with nothing logged. A PTR
+   * record is removed only when its data, the service it points to, matches as well; every other
+   * type keeps the library's behaviour.
+   */
+  private unregisterOnlyOwnPointers(instance: Bonjour): void {
+    type MdnsRecord = { type: string; name: string; data?: unknown };
+    const server = (instance as unknown as {
+      server?: { registry?: { [type: string]: MdnsRecord[] | undefined }; unregister?: unknown };
+    }).server;
+    if (!server?.registry || typeof server.unregister !== 'function') {
+      this.log.debug('mdns registry unavailable; unpublishing as the library does');
+      return;
+    }
+    const registry = server.registry;
+    server.unregister = (records: MdnsRecord | MdnsRecord[]) => {
+      for (const record of Array.isArray(records) ? records : [records]) {
+        const list = registry[record.type];
+        if (!list) continue;
+        registry[record.type] = list.filter(
+          (entry) => entry.name !== record.name || (record.type === 'PTR' && entry.data !== record.data),
+        );
+      }
+    };
   }
 
   public publish(options: MdnsPublishOptions): MdnsRegistration {
