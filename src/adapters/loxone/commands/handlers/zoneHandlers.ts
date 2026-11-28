@@ -430,8 +430,18 @@ function audioDynamicCommand(zoneManager: ZoneManagerFacade, command: string) {
     case 'resume':
     case 'volume':
       return buildResponse(command, cmd, true);
-    case 'position':
-      return buildResponse(command, cmd, [{ position: Number(payload) || 0 }]);
+    case 'position': {
+      // A seek is answered with where it was asked to go; a read, without a value, with where
+      // the zone is. It was answered with 0, and the Loxone bar jumped between the start and
+      // the real position (#462).
+      if (payload.trim() !== '') {
+        return buildResponse(command, cmd, [{ position: Number(payload) || 0 }]);
+      }
+      const time = zoneManager.getState(zoneId)?.time;
+      return buildResponse(command, cmd, [
+        { position: typeof time === 'number' && Number.isFinite(time) ? Math.max(0, Math.round(time)) : 0 },
+      ]);
+    }
     case 'repeat':
       return buildResponse(command, cmd, { repeat: Number(payload) || 0 });
     case 'shuffle': {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { test } from './testHarness';
+import { mapZoneCommandToIntent } from '../src/application/zones/playback/commandIntents';
 import { LoxoneRouter } from '../src/adapters/loxone/commands/router/loxoneRouter';
 import { registerRoutes } from '../src/adapters/loxone/commands/router/routeRegistry';
 import { serializeResult } from '../src/adapters/loxone/commands/responses';
@@ -480,11 +481,13 @@ const SetEqSingleResponse = BaseResponse.extend({
 /** `RescanScheme`. */
 const RescanResponse = BaseResponse.extend({ rescan_result: z.boolean() });
 
-function playbackHandlers(options: { shuffle?: number; commands?: unknown[][]; played?: unknown[][] } = {}) {
+function playbackHandlers(
+  options: { shuffle?: number; time?: number; commands?: unknown[][]; played?: unknown[][] } = {},
+) {
   const bands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   return createZoneHandlers(
     {
-      getState: () => ({ plshuffle: options.shuffle ?? 0, audiopath: '' }),
+      getState: () => ({ plshuffle: options.shuffle ?? 0, audiopath: '', time: options.time ?? 0 }),
       getMetadata: () => ({}),
       handleCommand: (...args: unknown[]) => options.commands?.push(args),
       playContent: async (...args: unknown[]) => {
@@ -511,6 +514,17 @@ function playbackHandlers(options: { shuffle?: number; commands?: unknown[][]; p
     { getConfig: () => ({ zones: [{ id: 7, equalizer: { bands } }] }) } as any,
   );
 }
+
+test('client commands: a position without a value reads where the zone is, and does not seek (#462)', async () => {
+  const commands: unknown[][] = [];
+  const handlers = playbackHandlers({ commands, time: 101.4 });
+  assert.deepEqual(
+    clientResult(PositionResponse, await handlers.audioDynamicCommand('audio/7/position'), 'position_result'),
+    [{ position: 101 }],
+  );
+  assert.equal(mapZoneCommandToIntent({ command: 'position', payload: '', mode: 'queue' }), null, 'no seek to 0');
+  assert.deepEqual(mapZoneCommandToIntent({ command: 'position', payload: '42', mode: 'queue' }), { kind: 'Position', posSeconds: 42 });
+});
 
 test('client commands: play, pause, volume, seek, repeat and shuffle each answer in their own shape', async () => {
   const commands: unknown[][] = [];

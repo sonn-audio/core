@@ -21,6 +21,11 @@ export function mapZoneCommandToIntent(input: {
     case 'off':
       return { kind: 'StopOff' };
     case 'position': {
+      // Without a value it is a read, answered by the Loxone handler; Number('') is 0, which
+      // made every read a seek to the start (#462).
+      if (typeof payload !== 'string' || payload.trim() === '') {
+        return null;
+      }
       const posSeconds = Number(payload);
       if (!Number.isFinite(posSeconds) || posSeconds < 0) {
         return null;
