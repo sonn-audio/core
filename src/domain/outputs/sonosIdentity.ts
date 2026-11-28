@@ -16,7 +16,10 @@ export function isOwnStreamUrl(mediaUrl: string, baseUrl: string): boolean {
     return false;
   }
   try {
-    const parsed = new URL(mediaUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, 'http://'));
+    // A speaker can report the URI with the original scheme nested inside its own,
+    // `x-rincon-mp3radio://http://<host>:7090/streams/…` (seen from an S1 over SOAP), so every
+    // leading scheme is stripped, not just the first (#444).
+    const parsed = new URL(`http://${mediaUrl.replace(/^(?:[a-z][a-z0-9+.-]*:\/\/)+/i, '')}`);
     const base = new URL(baseUrl);
     return parsed.host.toLowerCase() === base.host.toLowerCase() && /^\/streams\/\d+\//.test(parsed.pathname);
   } catch {

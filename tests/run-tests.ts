@@ -150,6 +150,7 @@ import './sonosExternalTakeover.test';
 import './sonosSpeakerVolume.test';
 import './sonosPosition.test';
 import './sonosExternalSeek.test';
+import './sonosOwnStreamUrl.test';
 import './queueHeldAfterTakeover.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
