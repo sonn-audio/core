@@ -8,6 +8,8 @@ import {
   server as WebSocketServer,
 } from 'websocket';
 import { createLogger } from '@/shared/logging/logger';
+import { LoxoneCoverProxy } from '@/adapters/loxone/coverProxy';
+import { serveCover } from '@/adapters/http/streams/serveCover';
 import type { LoxoneHttpConfig } from '@/config/loxone';
 import { LoxoneCommandProcessor } from '@/adapters/loxone/http/commandProcessor';
 import { LoxoneUdpDiscovery } from '@/adapters/loxone/http/loxoneUdpDiscovery';
@@ -176,6 +178,13 @@ export class LoxoneHttpService {
     const url = req.url ?? '/';
     if (req.method === 'OPTIONS') {
       this.sendOptions(res);
+      return;
+    }
+    if (req.method === 'GET' && LoxoneCoverProxy.isCoverRequest(url)) {
+      // A cover handed to the clients by way of this server, asked for directly or through the
+      // Miniserver's proxy (#449).
+      const cover = this.options.notifier.getCoverProxy()?.resolve(url) ?? null;
+      await serveCover(res, cover, this.log, { cacheControl: 'public, max-age=86400' });
       return;
     }
 

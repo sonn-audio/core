@@ -45,7 +45,10 @@ export class LoxoneCommandProcessor {
   private readonly router = new LoxoneRouter();
   private readonly slowCommandWarnMs = 100;
 
+  private readonly loxoneNotifier: LoxoneWsNotifier;
+
   constructor(config: LoxoneHttpConfig, options: LoxoneCommandProcessorOptions) {
+    this.loxoneNotifier = options.loxoneNotifier;
     registerRoutes(this.router, {
       config,
       onRestart: options.onRestart,
@@ -71,7 +74,10 @@ export class LoxoneCommandProcessor {
     const startedAt = Date.now();
     try {
       const result = await this.router.dispatch(command, payload);
-      return serializeResult(result);
+      // Covers in an answer go out as the clients can load them (#449).
+      const answer =
+        typeof result.payload === 'string' ? result.payload : this.loxoneNotifier.rewriteCovers(result.payload);
+      return serializeResult({ ...result, payload: answer });
     } finally {
       const tookMs = Date.now() - startedAt;
       if (tookMs >= this.slowCommandWarnMs) {

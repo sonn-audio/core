@@ -102,6 +102,7 @@ import { readBuildVersion } from '@/shared/serverVersion';
 import { ConnectionRegistry } from '@/adapters/loxone/ws/connectionRegistry';
 import { LoxoneWsNotifier } from '@/adapters/loxone/ws/notifier';
 import { ServerHeartbeat } from '@/adapters/loxone/ws/serverHeartbeat';
+import { LoxoneCoverProxy } from '@/adapters/loxone/coverProxy';
 import { LoxoneConfigService } from '@/adapters/loxone/services/loxoneConfigService';
 import { stopWithTimeout } from '@/runtime/stopWithTimeout';
 import { startWithTimeout } from '@/runtime/startWithTimeout';
@@ -443,8 +444,12 @@ export function createRuntime(): Runtime {
   loxoneNotifier.setPlayContextLookup((zoneId) => zoneManager.getPlayContext(zoneId));
   loxoneNotifier.setAlertEventLookup((zoneId) => zoneManager.getActiveAlertEvent(zoneId));
   loxoneNotifier.setTransportLookup((zoneId) => zoneManager.getTransportCapabilities(zoneId));
-  loxoneNotifier.setCoverOriginLookup(
-    () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090`,
+  loxoneNotifier.setCoverProxy(
+    new LoxoneCoverProxy({
+      host: () => resolveCoverHost(configPort.getSystemConfig().audioserver.ip),
+      port: loadEnvironment().loxoneAppPort,
+      uuid: () => configPort.getSystemConfig().audioserver.uuid ?? null,
+    }),
   );
   loxoneNotifier.setSettingsUrlLookup(
     () => `http://${resolveCoverHost(configPort.getSystemConfig().audioserver.ip)}:7090/`,

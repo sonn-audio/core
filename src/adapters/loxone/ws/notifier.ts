@@ -1,4 +1,5 @@
 import { createLogger } from '@/shared/logging/logger';
+import type { LoxoneCoverProxy } from '@/adapters/loxone/coverProxy';
 import type { StorageConfig } from '@/adapters/content/storage/storageManager';
 import type { ZoneState } from '@/domain/zones/zoneState';
 import {
@@ -36,7 +37,7 @@ export class LoxoneWsNotifier {
   private serviceAccountsLookup: (() => ReadonlyArray<LoxoneServiceAccount>) | null = null;
   private settingsUrlLookup: (() => string | null) | null = null;
   private transportLookup: ((zoneId: number) => LoxoneTransport | null) | null = null;
-  private coverOriginLookup: (() => string | null) | null = null;
+  private coverProxy: LoxoneCoverProxy | null = null;
   private readonly dialogThrottle = new DialogThrottle();
 
   constructor(
@@ -99,11 +100,21 @@ export class LoxoneWsNotifier {
   }
 
   /**
-   * This server's own origin for covers the client cannot load from where they are, such as
-   * a Sonos speaker's album art (#449). When unset, every cover goes out as it is.
+   * Wraps the covers in everything sent to the Loxone clients so a client that cannot load one
+   * gets it through the Miniserver (#449); see {@link LoxoneCoverProxy}. When unset, every cover
+   * goes out as it is.
    */
-  public setCoverOriginLookup(lookup: (() => string | null) | null): void {
-    this.coverOriginLookup = lookup;
+  public setCoverProxy(proxy: LoxoneCoverProxy | null): void {
+    this.coverProxy = proxy;
+  }
+
+  public getCoverProxy(): LoxoneCoverProxy | null {
+    return this.coverProxy;
+  }
+
+  /** `payload` with its covers as the Loxone clients get them. */
+  public rewriteCovers<T>(payload: T): T {
+    return this.coverProxy ? this.coverProxy.rewrite(payload) : payload;
   }
 
   /**
@@ -188,7 +199,7 @@ export class LoxoneWsNotifier {
   public projectForLoxone(state: ZoneState): LoxoneZoneState {
     const group = this.groupTracker.getGroupByZone(state.id);
     const isLeader = group?.leader === state.id;
-    return toLoxoneZoneState(state, {
+    return this.rewriteCovers(toLoxoneZoneState(state, {
       group: group ? { leader: group.leader, members: group.members } : null,
       leaderVolume:
         !group || isLeader
@@ -203,13 +214,12 @@ export class LoxoneWsNotifier {
       serviceAccounts: () => this.serviceAccountsLookup?.() ?? [],
       transport: this.transportLookup?.(state.id) ?? null,
       alertEvent: this.alertEventLookup?.(state.id) ?? null,
-      coverOrigin: this.coverOriginLookup?.() ?? null,
-    });
+    }));
   }
 
   private emit(payload: unknown, event: string, context?: Record<string, unknown>): void {
     try {
-      this.registry.broadcastMessage(JSON.stringify(payload));
+      this.registry.broadcastMessage(JSON.stringify(this.rewriteCovers(payload)));
       this.log.spam(`${event} broadcast`, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
