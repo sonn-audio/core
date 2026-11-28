@@ -11,6 +11,7 @@ import type {
 } from '@/ports/OutputsTypes';
 import {
   SonosClient,
+  detectGeneration,
   type Container as SonosContainer,
   type SonosGroup,
   type SonosPlayer,
@@ -163,6 +164,9 @@ export class SonosOutput implements ZoneOutput {
   private s2Client: SonosClient | null = null;
   private s2ClientPromise?: Promise<SonosClient | null>;
   private s2RetryAfter = 0;
+  // The firmware generation of the speaker behind `host`, once known: an S1 speaker has no S2 API
+  // to try, and trying it on every command is what led to the crash in #444.
+  private generation: { host: string; kind: 'S1' | 'S2' | 'unknown' } | null = null;
   private pendingVolume: number | null = null;
   private volumeRetryTimer: NodeJS.Timeout | null = null;
   private volumeRetryCount = 0;
@@ -750,6 +754,9 @@ export class SonosOutput implements ZoneOutput {
     }
 
     const pending = (async (): Promise<SonosClient | null> => {
+      if ((await this.speakerGeneration(host)) === 'S1') {
+        return null;
+      }
       const client = new SonosClient(host, { logger: console });
       const connecting = client.connect();
       try {
@@ -790,6 +797,19 @@ export class SonosOutput implements ZoneOutput {
     this.s2ClientPromise = tracked;
 
     return tracked;
+  }
+
+  /** The speaker's firmware generation, asked once per host. */
+  private async speakerGeneration(host: string): Promise<'S1' | 'S2' | 'unknown'> {
+    if (this.generation?.host === host && this.generation.kind !== 'unknown') {
+      return this.generation.kind;
+    }
+    const kind = await detectGeneration(host).catch(() => 'unknown' as const);
+    this.generation = { host, kind };
+    if (kind === 'S1') {
+      this.log.info('sonos speaker is S1; using UPnP only', { zoneId: this.zoneId, host });
+    }
+    return kind;
   }
 
   private async playViaS2(uri: string, session: PlaybackSession): Promise<boolean> {
