@@ -199,7 +199,10 @@ function onPlayerStarted(
     // And to the Spotify app, when Spotify is what started. A Connect device carries a level of its
     // own, remembered from whenever it last played; saying what the room is at replaces it, so the
     // slider stands where the zone does instead of where some other room left it.
-    coordinator.spotifyVolume?.(zoneId, volume);
+    // Never an alert's level: it is the room's for a moment, not the level Spotify should carry (#445).
+    if (!ctx.alert) {
+      coordinator.spotifyVolume?.(zoneId, volume);
+    }
     const patch = {
       ...buildStartedPatch({ ctx, session, audioHelpers: coordinator.audioHelpers }),
       volume,
@@ -371,7 +374,9 @@ function onPlayerVolume(
   // Every volume the zone settles on passes here — a command, a mute, a group, or the Spotify app
   // itself. Told unconditionally: only the input service can say whether Spotify is what this room
   // is playing, and a level it has just reported is one it already knows, so nothing echoes.
-  coordinator.spotifyVolume?.(zoneId, clamped);
+  if (!ctx.alert) {
+    coordinator.spotifyVolume?.(zoneId, clamped);
+  }
 }
 
 function onPlayerEnded(coordinator: PlayerListenerCoordinator, zoneId: number): void {
