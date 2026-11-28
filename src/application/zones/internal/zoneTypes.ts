@@ -161,4 +161,17 @@ export interface ZoneContext {
    * One-shot -- `onPlayerStarted` consumes it -- so it cannot leak into the next cold start.
    */
   startAtCurrentVolume?: boolean;
+
+  /**
+   * Set when the speaker went to a source of its own (#452). The queue is kept, but nothing
+   * advances it until somebody asks for this zone's music again: a play, a queue step, a row
+   * picked, new content. The end of a track never clears it.
+   */
+  queueHeld?: boolean;
+
+  /**
+   * Bumped each time the zone gives its speaker up. A start that was still resolving its source
+   * then gives up instead of taking the speaker back (#452).
+   */
+  yieldCount?: number;
 }

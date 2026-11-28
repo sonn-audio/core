@@ -21,6 +21,18 @@ export type ExecutePlaybackPlanArgs = {
 
 export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promise<PlaybackSession | null> {
   const { ctx, plan, content, inputs, log, zoneAudioPrefs, startAtSec } = args;
+  // Resolving a source can take seconds. A zone that gave its speaker up to a source of its own
+  // in the meantime must not take it back with what comes in late (#452).
+  const yieldsAtStart = ctx.yieldCount ?? 0;
+  const speakerGivenUp = (label: string | null): boolean => {
+    if ((ctx.yieldCount ?? 0) === yieldsAtStart) return false;
+    log.info('playback start dropped; the speaker went to another source meanwhile', {
+      zoneId: ctx.id,
+      audiopath: plan.audiopath,
+    });
+    if (label === 'spotify') inputs.stopSpotifySession(ctx.id, 'switch_to_external');
+    return true;
+  };
   applyPreferredPlaybackSettings(zoneAudioPrefs, ctx.id, plan.preferredSettings);
   const normalizedStartAt =
     typeof startAtSec === 'number' && Number.isFinite(startAtSec) && startAtSec > 0 ? startAtSec : undefined;
@@ -50,6 +62,9 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
         zoneConfig: ctx.config,
       },
     );
+    if (speakerGivenUp('musicassistant')) {
+      return null;
+    }
     if (result.playbackSource) {
       return ctx.player.playExternal(
         'musicassistant',
@@ -69,6 +84,9 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
       audiopath: plan.audiopath,
       requester: { kind: 'zone', zoneId: plan.zoneId },
     });
+    if (speakerGivenUp(plan.playExternalLabel)) {
+      return null;
+    }
     if (result.playbackSource) {
       return ctx.player.playExternal(
         plan.playExternalLabel,
@@ -105,6 +123,9 @@ export async function executePlaybackPlan(args: ExecutePlaybackPlanArgs): Promis
     });
     if (!playbackSource) {
       log.warn('spotify input not ready; blocking playback to avoid skips', { zoneId: ctx.id });
+      return null;
+    }
+    if (speakerGivenUp('spotify')) {
       return null;
     }
     const queueUris = ctx.queue.items.map((q) => q.audiopath);

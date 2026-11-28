@@ -150,6 +150,7 @@ import './sonosExternalTakeover.test';
 import './sonosSpeakerVolume.test';
 import './sonosPosition.test';
 import './sonosExternalSeek.test';
+import './queueHeldAfterTakeover.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
 import './inputSourceConfigurator.test';
@@ -1746,11 +1747,20 @@ test('a zone whose speaker went to another source ends its session but leaves th
     assert.equal(ctx.queue.authority, 'local');
     assert.ok(!stub.calls.includes(`${ZONE}:stop`), 'the speaker playing the TV is not stopped');
 
+    assert.equal(ctx.queueHeld, true, 'the queue waits until somebody asks for it again (#452)');
+
     spotifyStops.length = 0;
     playerStops.length = 0;
+    const yields = ctx.yieldCount ?? 0;
     assert.equal(yieldToExternalSource(ZONE), false, 'with nothing of its own left there is nothing to end');
-    assert.deepEqual(spotifyStops, []);
+    // A session that ended just before the speaker went elsewhere can leave its Spotify run alive,
+    // moving on to the next track; it is let go of all the same (#452).
+    assert.deepEqual(spotifyStops, [`${ZONE}:switch_to_external`]);
     assert.deepEqual(playerStops, []);
+    assert.equal(ctx.yieldCount, yields + 1, 'a start still on its way gives up');
+
+    await zoneManager.handleCommand(ZONE, 'play');
+    assert.equal(ctx.queueHeld, false, 'a play asks for the queue again');
   } finally {
     inputs.stopSpotifySession = realStopSpotify;
     ctx.player.stop = realPlayerStop;

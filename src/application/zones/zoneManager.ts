@@ -657,6 +657,8 @@ export class ZoneManager {
     metadata?: PlaybackMetadata,
     options?: { startAtSec?: number },
   ): Promise<void> {
+    const started = this.zoneRepo.get(zoneId);
+    if (started) started.queueHeld = false;
     try {
       this.contentStartHook?.(zoneId);
     } catch (error) {
@@ -1385,7 +1387,19 @@ export class ZoneManager {
    */
   private endOwnSession(ctx: ZoneContext, reason: 'joined_group' | 'switch_to_external'): boolean {
     const input = ctx.activeInput ?? ctx.inputMode;
+    if (reason === 'switch_to_external') {
+      // The speaker is somebody else's now. The queue stays as the listener left it but does not
+      // walk on by itself, and a start still on its way gives up: a queue advance took a Sonos
+      // back minutes after it had gone to a Spotify session started from the app (#452).
+      ctx.queueHeld = true;
+      ctx.yieldCount = (ctx.yieldCount ?? 0) + 1;
+    }
     if (!this.audioManager.getSession(ctx.id) && !input) {
+      if (reason === 'switch_to_external') {
+        // Our session can have ended just before the speaker went elsewhere, and still leave the
+        // Spotify run that fed it alive, holding the account and moving on to the next track.
+        this.inputsPort.stopSpotifySession(ctx.id, reason);
+      }
       return false;
     }
     if (reason === 'joined_group') {

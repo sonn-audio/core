@@ -63,6 +63,11 @@ export class QueueAdvanceController {
   constructor(private readonly deps: QueueAdvanceControllerDeps) {}
 
   public async advanceTrack(ctx: ZoneContext): Promise<void> {
+    if (ctx.queueHeld) {
+      // The speaker went to a source of its own; the queue waits for somebody to ask (#452).
+      this.deps.log.debug('queue advance held; the speaker plays another source', { zoneId: ctx.id });
+      return;
+    }
     const suppressMs =
       ((this.deps.configPort.getSystemConfig()?.audioserver?.crossfadeSec ?? 5) + 5) * 1000;
     if (this.deps.crossfade.consumeRecentTrigger(ctx.id, suppressMs)) {

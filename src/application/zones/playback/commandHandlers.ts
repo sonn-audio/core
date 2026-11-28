@@ -131,6 +131,9 @@ function handlePlayResume(
     coordinator.applyPatch(zoneId, { mode: 'play', clientState: 'on', power: 'on' });
     return;
   }
+  // A play is somebody asking for this zone's music: a queue held after the speaker went to a
+  // source of its own walks again from here (#452).
+  ctx.queueHeld = false;
   holdSpotify(coordinator, ctx, false);
   const session = ctx.player.resume();
   if (!session && isQueueDrivenInput(mode) && coordinator.isLocalQueueAuthority(ctx.queue.authority)) {
@@ -526,6 +529,7 @@ function handleQueuePlayCurrent(
     coordinator.log.debug('queue play-current ignored; no current item', { zoneId });
     return;
   }
+  ctx.queueHeld = false;
   const isRadio = coordinator.audioHelpers.isRadioAudiopath(current.audiopath, current.audiotype);
   const metadata: PlaybackMetadata = {
     title: current.title,

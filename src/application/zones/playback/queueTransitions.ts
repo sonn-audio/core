@@ -40,6 +40,7 @@ export async function stepQueueAsync(args: {
   if (!coordinator.isLocalQueueAuthority(ctx.queue.authority)) {
     return;
   }
+  ctx.queueHeld = false;
 
   const nextIndex = ctx.queueController.step(delta);
   if (nextIndex < 0) {
