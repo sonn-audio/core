@@ -258,7 +258,9 @@ export class RecentsManager {
     const preferredAudiopath = existing?.audiopath ?? audiopath;
     const entry = {
       audiopath: preferredAudiopath,
-      coverurl: item.coverurl ?? meta?.coverurl ?? '',
+      // An empty field on the queue row means the row does not know it, as for a radio
+      // station's logo; `??` took the empty string and hid the cover metadata had (#449).
+      coverurl: item.coverurl || meta?.coverurl || '',
       owner: ownerBase,
       owner_id: ownerBase,
       service: service.service,
@@ -267,8 +269,8 @@ export class RecentsManager {
         ? safeTitle
         : '',
       type: service.type,
-      album: item.album ?? meta?.album ?? '',
-      artist: item.artist ?? meta?.artist ?? '',
+      album: item.album || meta?.album || '',
+      artist: item.artist || meta?.artist || '',
     };
 
     // Merge with existing entry to avoid wiping metadata when replaying an old recent.

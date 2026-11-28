@@ -223,6 +223,7 @@ import './loxoneClientSchemas.test';
 import './loxoneClientEvents.test';
 import './loxoneHeartbeat.test';
 import './loxoneSpeakerCover.test';
+import './radioParadiseRecentCover.test';
 import './loxoneDiscovery.test';
 import './loxoneSettings.test';
 import './loxoneSecureForget.test';

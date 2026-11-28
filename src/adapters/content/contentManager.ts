@@ -1001,6 +1001,13 @@ export class ContentManager {
     const decodedPath = decodeAudiopath(audiopath);
     const detectedService = detectServiceFromAudiopath(audiopath);
 
+    // A Radio Paradise station is known from the catalogue, not from a per-track lookup. Without
+    // this its recent got no cover and Loxone drew the generic radio icon (#449).
+    const radioParadise = this.radioParadise.stationMetadata(decodedPath || audiopath);
+    if (radioParadise) {
+      return { title: radioParadise.name, artist: '', album: '', coverurl: radioParadise.coverurl, station: radioParadise.name };
+    }
+
     // Music Assistant bridge items: try to resolve via bridge provider (stored under spotify manager).
     if (detectedService === 'musicassistant') {
       const providerSegment = (audiopath.split(':')[0] ?? '').trim();
