@@ -4,7 +4,9 @@ import {
   SonosClient,
   detectGeneration,
   type S1SonosGroup,
+  type S1SonosPlayer,
   type SonosGroup,
+  type SonosPlayer,
 } from '@sonn-audio/node-sonos';
 
 // Either backend exposes the same `player.group.*` shape that the snapshot
@@ -19,6 +21,7 @@ import { SONOS_OWN_CONTAINER_SERVICE_ID, isOwnStreamUrl } from '@/domain/outputs
 import { buildBaseUrl } from '@/shared/streamUrl';
 import type { ConfigPort } from '@/ports/ConfigPort';
 import { createLogger } from '@/shared/logging/logger';
+import { clampVolumeForZone } from '@/application/zones/helpers/stateHelpers';
 import type { ExternalTakeover, ZoneStateController } from '@/application/zones/state/StateController';
 
 type SonosControllerOptions = {
@@ -461,6 +464,8 @@ export class SonosStateController implements ZoneStateController {
       String(patch.artist ?? ''),
       String(patch.album ?? ''),
       String(patch.station ?? ''),
+      String(patch.volume ?? ''),
+      String(patch.muted ?? ''),
     ].join('|');
 
     if (snapshotSignature !== this.lastLoggedSnapshotSignature) {
@@ -474,6 +479,8 @@ export class SonosStateController implements ZoneStateController {
         artist: patch.artist,
         album: patch.album,
         hasCover: Boolean(patch.coverurl),
+        volume: patch.volume,
+        muted: patch.muted,
         keys: Object.keys(patch),
       });
     }
@@ -572,6 +579,20 @@ export class SonosStateController implements ZoneStateController {
 
     if (typeof trackDurationSec === 'number') {
       patch.duration = trackDurationSec;
+    }
+
+    const speakerVolume = readSpeakerVolume(player, group);
+    if (speakerVolume) {
+      // The level the speaker reports is the zone's level, whoever set it: the Sonos app and the
+      // speaker's own buttons left no trace in the zone, and Loxone kept showing the last level
+      // sonn had sent (#447). A muted speaker is a silent zone, muted; the reducer clears the
+      // mute again once a level above zero comes in.
+      if (speakerVolume.muted) {
+        patch.volume = 0;
+        patch.muted = true;
+      } else {
+        patch.volume = clampVolumeForZone(this.zone, speakerVolume.level);
+      }
     }
 
     if (coverurl) {
@@ -890,6 +911,30 @@ function extractHostname(url: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The volume the speaker reports. S2 keeps it per player, S1 on the group. Null while the speaker
+ * has not said yet, or says something that is not a level, and for a speaker with a fixed line
+ * level: taking any of those as 0 would silence the zone on every connect.
+ */
+function readSpeakerVolume(
+  player: SonosPlayer | S1SonosPlayer,
+  group: AnySonosGroup,
+): { level: number; muted: boolean } | null {
+  if ('volumeLevel' in player) {
+    if (player.hasFixedVolume === true || !isVolumeLevel(player.volumeLevel)) return null;
+    return { level: player.volumeLevel, muted: player.volumeMuted === true };
+  }
+  if ('volume' in group) {
+    if (!isVolumeLevel(group.volume)) return null;
+    return { level: group.volume, muted: group.muted === true };
+  }
+  return null;
+}
+
+function isVolumeLevel(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
 }
 
 function mapPlaybackState(state: string | null | undefined): ZoneState['mode'] {
