@@ -141,6 +141,8 @@ type ZoneRunner = {
   volume: number | null;
   /** Armed while the volume Connect reports for an activation is still to be ignored. */
   volumeLatch: VolumeLatch | null;
+  /** The room's level, held while the device is idle and sent once it takes the account (#445). */
+  heldVolume: number | null;
 };
 
 /**
@@ -622,6 +624,7 @@ export class SoloistPlaybackService {
       paused: false,
       volume: null,
       volumeLatch: null,
+      heldVolume: null,
     };
     ws.on('event', (event: SoloistStateEvent) => this.onEvent(zoneId, event));
     // If the process dies the control channel goes with it; drop the runner so the next play
@@ -668,6 +671,7 @@ export class SoloistPlaybackService {
       }
       return;
     }
+    this.releaseHeldVolume(zoneId, runner);
     // This server is driving the room from its own queue, through a run of its own. Whatever the
     // room's Connect device has to say, it is not about the music that is playing in here.
     if (runner.owner === 'queue') {
@@ -849,6 +853,14 @@ export class SoloistPlaybackService {
       return false;
     }
     const clamped = clampVolume(level);
+    if (!runner.ws.isActive) {
+      // Held, not sent. Connect applied a level sent to an idle device to the account's session
+      // wherever it was playing: a phone playing Spotify at 80 % dropped to the 5 % of a doorbell
+      // in a room it had nothing to do with (#445). It goes out once this device takes the account.
+      runner.heldVolume = clamped;
+      return true;
+    }
+    runner.heldVolume = null;
     if (clamped === runner.volume) {
       return true;
     }
@@ -856,6 +868,15 @@ export class SoloistPlaybackService {
     runner.volumeLatch = null;
     runner.volume = clamped;
     return runner.ws.setVolume(clamped);
+  }
+
+  /** Send the level held while the device was idle, now that it plays (#445). */
+  private releaseHeldVolume(zoneId: number, runner: ZoneRunner): void {
+    if (runner.heldVolume == null || !runner.ws.isActive) {
+      return;
+    }
+    const level = runner.heldVolume;
+    this.setVolume(zoneId, level);
   }
 
   /**

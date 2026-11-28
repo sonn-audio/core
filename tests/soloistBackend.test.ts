@@ -78,10 +78,11 @@ type FakeWs = {
   setVolume: (level: number) => boolean;
 };
 
-function withRunner(args: { loggedIn: boolean; owner: string; zoneVolume?: number | null }): {
+function withRunner(args: { loggedIn: boolean; owner: string; zoneVolume?: number | null; active?: boolean }): {
   service: SoloistPlaybackService;
   sent: number[];
   login: () => void;
+  activate: () => void;
 } {
   const service = new SoloistPlaybackService(
     fakeConfigPort({ content: { spotify: { soloist: { apiKey: 'spak_test' } } }, zones: [{ id: 1 }] }),
@@ -89,13 +90,13 @@ function withRunner(args: { loggedIn: boolean; owner: string; zoneVolume?: numbe
   const sent: number[] = [];
   const ws: FakeWs = {
     isLoggedIn: args.loggedIn,
-    isActive: false,
+    isActive: args.active === true,
     setVolume: (level: number) => {
       sent.push(level);
       return true;
     },
   };
-  const runner = { ws, owner: args.owner, volume: null, volumeLatch: null };
+  const runner = { ws, owner: args.owner, volume: null, volumeLatch: null, heldVolume: null };
   (service as unknown as { runners: Map<number, unknown> }).runners.set(1, runner);
   (service as unknown as { controller: unknown }).controller = {
     currentZoneVolume: () => args.zoneVolume ?? null,
@@ -103,15 +104,25 @@ function withRunner(args: { loggedIn: boolean; owner: string; zoneVolume?: numbe
   const internals = service as unknown as {
     onEvent: (zoneId: number, event: { type: string; logged_in?: boolean }) => void;
   };
-  return { service, sent, login: () => internals.onEvent(1, { type: 'auth_state', logged_in: true }) };
+  return {
+    service,
+    sent,
+    login: () => internals.onEvent(1, { type: 'auth_state', logged_in: true }),
+    activate: () => {
+      ws.isActive = true;
+      internals.onEvent(1, { type: 'playback_state' });
+    },
+  };
 }
 
-test('a room nobody is listening to is still told what it is at', () => {
-  // The case that was broken. An idle device is exactly the one somebody is looking at in the
-  // device picker, so "only the room that is sounding" was the wrong condition to gate on.
-  const { service, sent } = withRunner({ loggedIn: true, owner: 'idle' });
+test('an idle room\'s level is held until it plays, not sent (#445)', () => {
+  // Connect applied a level sent to an idle device to the account's session wherever it played:
+  // a phone playing at 80 % dropped to a doorbell's 5 % in a room it had nothing to do with.
+  const { service, sent, activate } = withRunner({ loggedIn: true, owner: 'idle' });
   assert.equal(service.setVolume(1, 12), true);
-  assert.deepEqual(sent, [12]);
+  assert.deepEqual(sent, [], 'nothing reaches Spotify while the device is idle');
+  activate();
+  assert.deepEqual(sent, [12], 'the room\'s level goes out once the device takes the account');
 });
 
 test('a daemon that has not signed in is not told anything', () => {
@@ -124,17 +135,18 @@ test('a daemon that has not signed in is not told anything', () => {
 
 test('the level already agreed on is not said again', () => {
   // Every `set_volume` comes back as a `volume_changed`, so repeating one is how a loop starts.
-  const { service, sent } = withRunner({ loggedIn: true, owner: 'idle' });
+  const { service, sent } = withRunner({ loggedIn: true, owner: 'connect', active: true });
   service.setVolume(1, 40);
   service.setVolume(1, 40);
   assert.deepEqual(sent, [40]);
 });
 
-test('signing in is when a room can first say what it is at', () => {
-  // A daemon comes up at boot, long before anybody turns a knob — without this the app would show
-  // the room at full until the first volume change of the day.
-  const { sent, login } = withRunner({ loggedIn: true, owner: 'idle', zoneVolume: 34 });
+test('signing in holds the room\'s level for when the device first plays', () => {
+  // A daemon comes up at boot, long before anybody picks the room; its level waits for that.
+  const { sent, login, activate } = withRunner({ loggedIn: true, owner: 'idle', zoneVolume: 34 });
   login();
+  assert.deepEqual(sent, []);
+  activate();
   assert.deepEqual(sent, [34]);
 });
 
