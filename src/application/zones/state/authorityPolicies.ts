@@ -38,6 +38,12 @@ const CONTROLLER_AUTHORITY_POLICIES: Record<string, StateControllerAuthorityPoli
     ownsVolumeState: true,
     commandAuthorityWhenLocalSessionActive: () => true,
   },
+  sonos: {
+    // The speaker keeps its own level and the controller reports it (#447), so a restart or a
+    // configuration reload has no level to push: pushing the default there put every Sonos
+    // speaker in the house at another volume, at 0 while -1 still read as a level (#458).
+    ownsVolumeState: true,
+  },
 };
 
 export function shouldUseStateControllerForCommand(
