@@ -48,6 +48,9 @@ export class SnapcastOutput implements ZoneOutput {
 
   private readonly log = createLogger('Output', 'Snapcast');
   private currentStream: NodeJS.ReadableStream | null = null;
+  // Bumped by every start and stop, so a start still waiting for its first audio knows it was
+  // overtaken; see `startStream`.
+  private streamGeneration = 0;
   private activeOutputSettings = audioOutputSettings;
   private readonly baseStreamId: string;
   private readonly baseClientIds: string[];
@@ -158,6 +161,7 @@ export class SnapcastOutput implements ZoneOutput {
 
   private async startStream(session: PlaybackSession | null): Promise<void> {
     this.stopStream();
+    const generation = this.streamGeneration;
     const plan = this.ports.snapcastGroup.buildPlan(
       this.zoneId,
       this.baseStreamId,
@@ -185,6 +189,14 @@ export class SnapcastOutput implements ZoneOutput {
     // bytes exist, snapclient can briefly see "old" chunks and drop them. Waiting here keeps the initial
     // timeline aligned without delaying the main playback pipeline.
     const ready = await this.ports.engine.waitForFirstChunk(zoneSessionKey(this.zoneId), 'pcm', 1500);
+    if (generation !== this.streamGeneration) {
+      // A play and the resume right behind it both started a stream while neither had registered
+      // one yet. Both then registered the zone's stream, the second replaced the first, and the
+      // client was left with neither: Spotify Connect played with no sound (#457). Only the
+      // latest start goes on.
+      (pcmStream as { destroy?: () => void }).destroy?.();
+      return;
+    }
     if (!ready) {
       this.log.debug('Snapcast stream started without first chunk', { zoneId: this.zoneId });
     }
@@ -220,6 +232,7 @@ export class SnapcastOutput implements ZoneOutput {
   }
 
   private stopStream(): void {
+    this.streamGeneration += 1;
     this.ports.snapcastCore.clearStream(this.zoneId);
     if (this.currentStream) {
       const destroyable = this.currentStream as { destroy?: () => void };

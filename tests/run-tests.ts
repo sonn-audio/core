@@ -152,6 +152,7 @@ import './sonosPosition.test';
 import './sonosExternalSeek.test';
 import './sonosOwnStreamUrl.test';
 import './sonosOwnStreamState.test';
+import './snapcastStartRace.test';
 import './queueHeldAfterTakeover.test';
 import './equalizerRestartScheduler.test';
 import './zoneHeartbeatService.test';
